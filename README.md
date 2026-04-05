@@ -32,6 +32,7 @@ z autopilot watch          # observe running autopilot workflows
 
 - [PRD](docs/PRD.md) — problem, solution, user stories, decisions
 - [Specs](docs/SPECS.md) — architecture, config format, TUI design, autopilot DSL, phasing
+- [Sandcastle](.sandcastle/README.md) — AI agent orchestration (parallel issue solving via Claude Code in Docker)
 
 ## License
 

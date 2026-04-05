@@ -1,0 +1,28 @@
+{
+  "name": "z",
+  "version": "1.0.0",
+  "description": "TUI/CLI project manager for [Zellij](https://github.com/zellij-org/zellij) — orchestrates sessions, git worktrees, and autopilot workflows.",
+  "homepage": "https://github.com/arkan/z#readme",
+  "bugs": {
+    "url": "https://github.com/arkan/z/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkan/z.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "postinstall": "bash scripts/patch-sandcastle.sh",
+    "sandcastle": "npx tsx ./.sandcastle/main.ts"
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "^0.2.3"
+  }
+}
