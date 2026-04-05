@@ -257,12 +257,18 @@ impl TuiState {
 
     /// Poll the in-flight preview channel; update `preview_data` if data arrived.
     pub fn poll_preview(&mut self) {
-        // Borrow rx, try_recv, drop borrow, then update self.
-        let received = match &self.preview_rx {
-            Some(rx) => rx.try_recv().ok(),
+        let outcome = match &self.preview_rx {
+            Some(rx) => match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => None,
+                // Sender dropped without sending (e.g. thread panicked).
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("preview fetch failed (worker dropped)".to_string()))
+                }
+            },
             None => return,
         };
-        if let Some(result) = received {
+        if let Some(result) = outcome {
             self.preview_data = match result {
                 Ok(info) => PreviewData::Ready(info),
                 Err(e) => PreviewData::Error(e),
@@ -1057,6 +1063,80 @@ mod tests {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
         state.preview_rx = None;
         state.poll_preview(); // should not panic
+    }
+
+    #[test]
+    fn poll_preview_handles_disconnected_channel() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let (tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
+        state.preview_rx = Some(rx);
+        state.preview_data = PreviewData::Loading;
+
+        // Drop sender without sending — simulates thread panic
+        drop(tx);
+        state.poll_preview();
+
+        assert!(
+            matches!(state.preview_data, PreviewData::Error(_)),
+            "disconnected channel should transition to Error, not stay Loading"
+        );
+        assert!(state.preview_rx.is_none(), "preview_rx should be cleared");
+    }
+
+    #[test]
+    fn poll_preview_noop_when_channel_empty_but_alive() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let (_tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
+        state.preview_rx = Some(rx);
+        state.preview_data = PreviewData::Loading;
+
+        // Don't send anything — channel still open
+        state.poll_preview();
+
+        assert!(
+            matches!(state.preview_data, PreviewData::Loading),
+            "should remain Loading when channel is open but empty"
+        );
+        assert!(state.preview_rx.is_some(), "preview_rx should still be set");
+    }
+
+    #[test]
+    fn preview_key_includes_session_branch_when_sessions_focused() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.focused_panel = Panel::Sessions;
+        state.selected_session = 0;
+        let key0 = state.current_preview_key().unwrap();
+
+        state.selected_session = 1;
+        let key1 = state.current_preview_key().unwrap();
+
+        assert_ne!(key0, key1, "key should differ when selected session changes");
+        assert!(key0.contains("main"), "first session is main");
+        assert!(key1.contains("feat/login"), "second session is feat/login");
+    }
+
+    #[test]
+    fn preview_key_uses_first_session_when_projects_focused() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.focused_panel = Panel::Projects;
+        state.selected_session = 1; // should be ignored — uses first session
+        let key = state.current_preview_key().unwrap();
+        assert!(key.contains("main"), "should use first session branch when projects focused");
+    }
+
+    #[test]
+    fn preview_key_empty_branch_for_no_sessions() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.selected_project = 1; // hermes has no sessions
+        let key = state.current_preview_key().unwrap();
+        assert!(key.ends_with(':'), "key should end with ':' when project has no sessions");
+    }
+
+    #[test]
+    fn renders_preview_at_minimum_terminal_height() {
+        // 8 (preview) + 3 (status) + 1 (min main) = 12 minimum
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        let _out = render_to_string(&state, 80, 12); // should not panic
     }
 
     #[test]
