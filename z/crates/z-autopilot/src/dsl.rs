@@ -77,6 +77,10 @@ pub struct AutopilotWorkflow {
     pub trigger: Trigger,
     pub poll_interval: Option<String>,
     pub steps: Vec<Step>,
+    /// Per-workflow override: if set, overrides the project-level auto_push setting.
+    pub auto_push: Option<bool>,
+    /// Per-workflow override: if set, overrides the project-level review setting.
+    pub review: Option<bool>,
 }
 
 fn first_string_arg(node: &KdlNode) -> Option<&str> {
@@ -197,6 +201,8 @@ fn parse_autopilot_node(node: &KdlNode) -> Result<AutopilotWorkflow> {
     let mut trigger: Option<Trigger> = None;
     let mut poll_interval: Option<String> = None;
     let mut steps: Vec<Step> = Vec::new();
+    let mut auto_push: Option<bool> = None;
+    let mut review: Option<bool> = None;
 
     for child in children.nodes() {
         match child.name().value() {
@@ -217,6 +223,16 @@ fn parse_autopilot_node(node: &KdlNode) -> Result<AutopilotWorkflow> {
             "step" => {
                 steps.push(parse_step(child)?);
             }
+            "auto-push" => {
+                auto_push = child.entries().iter()
+                    .find(|e| e.name().is_none())
+                    .and_then(|e| e.value().as_bool());
+            }
+            "review" => {
+                review = child.entries().iter()
+                    .find(|e| e.name().is_none())
+                    .and_then(|e| e.value().as_bool());
+            }
             _ => {} // forward-compatible
         }
     }
@@ -225,7 +241,7 @@ fn parse_autopilot_node(node: &KdlNode) -> Result<AutopilotWorkflow> {
         ZError::ConfigParse(format!("autopilot '{name}' missing trigger"))
     })?;
 
-    Ok(AutopilotWorkflow { name, description, trigger, poll_interval, steps })
+    Ok(AutopilotWorkflow { name, description, trigger, poll_interval, steps, auto_push, review })
 }
 
 /// Parse all `autopilot` nodes from a KDL document string.
@@ -237,7 +253,11 @@ pub fn parse_autopilot_workflows(content: &str) -> Result<Vec<AutopilotWorkflow>
     let mut workflows = Vec::new();
     for node in doc.nodes() {
         if node.name().value() == "autopilot" {
-            workflows.push(parse_autopilot_node(node)?);
+            // Skip unnamed `autopilot { ... }` config blocks (no positional string arg).
+            let has_name = node.entries().iter().any(|e| e.name().is_none());
+            if has_name {
+                workflows.push(parse_autopilot_node(node)?);
+            }
         }
     }
     Ok(workflows)
@@ -670,17 +690,21 @@ autopilot "test" {
     }
 
     #[test]
-    fn test_parse_autopilot_missing_name_error() {
+    fn test_parse_autopilot_unnamed_block_is_config_not_workflow() {
+        // An unnamed `autopilot { ... }` block is a config block (auto-push/review settings),
+        // not a workflow definition — it is silently skipped by parse_autopilot_workflows.
         let kdl = r#"
 autopilot {
-    trigger "manual"
-    step "s" {
-        run "cmd"
-    }
+    auto-push false
+    review true
 }
 "#;
+        // No workflow definitions found — parse_autopilot_workflow returns "no autopilot block found".
         let err = parse_autopilot_workflow(kdl).unwrap_err();
-        assert!(err.to_string().contains("missing name"));
+        assert!(err.to_string().contains("no autopilot block found"));
+        // parse_autopilot_workflows returns empty list.
+        let workflows = parse_autopilot_workflows(kdl).unwrap();
+        assert!(workflows.is_empty());
     }
 
     #[test]
