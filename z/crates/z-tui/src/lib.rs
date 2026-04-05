@@ -1,12 +1,16 @@
 /// z-tui: ratatui-based TUI frontend for z.
 ///
-/// Three-panel layout:
-///   - Left:   PROJECTS list (with ● active and 🌐 remote indicators)
-///   - Right:  SESSIONS list for the selected project
-///   - Bottom: STATUS bar with project info + keyboard hint strip
+/// Layout (four sections):
+///   - Top-left:    PROJECTS list (with ● active and 🌐 remote indicators)
+///   - Top-right:   SESSIONS list for the selected project
+///   - Middle:      PREVIEW pane — git branch / status / commits (async)
+///   - Bottom:      STATUS bar with project info + keyboard hint strip
 ///
 /// Navigation defaults to arrow keys; pass `Navigation::Vim` for hjkl.
 use std::io;
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
@@ -70,6 +74,37 @@ pub enum TuiAction {
 }
 
 // ---------------------------------------------------------------------------
+// Preview pane types
+// ---------------------------------------------------------------------------
+
+/// A single git commit entry shown in the preview pane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommitInfo {
+    pub hash: String,
+    pub message: String,
+}
+
+/// Git information fetched asynchronously for the selected project/session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GitInfo {
+    pub branch: String,
+    pub ahead: usize,
+    pub behind: usize,
+    pub is_dirty: bool,
+    pub commits: Vec<CommitInfo>,
+}
+
+/// State of the preview pane data.
+pub enum PreviewData {
+    /// Fetch in progress — show a spinner/indicator.
+    Loading,
+    /// Data arrived successfully.
+    Ready(GitInfo),
+    /// Fetch failed — show a brief error.
+    Error(String),
+}
+
+// ---------------------------------------------------------------------------
 // TUI state
 // ---------------------------------------------------------------------------
 
@@ -81,6 +116,13 @@ pub struct TuiState {
     pub navigation: Navigation,
     pub search_mode: bool,
     pub search_query: String,
+    /// Current preview pane data (loading / ready / error).
+    pub preview_data: PreviewData,
+    /// Key identifying what we last requested a preview for.
+    /// Format: `"{project_name}:{branch}"`.
+    pub preview_key: String,
+    /// Receiver for the in-flight async git fetch, if any.
+    pub preview_rx: Option<mpsc::Receiver<Result<GitInfo, String>>>,
 }
 
 impl TuiState {
@@ -93,6 +135,9 @@ impl TuiState {
             navigation,
             search_mode: false,
             search_query: String::new(),
+            preview_data: PreviewData::Loading,
+            preview_key: String::new(),
+            preview_rx: None,
         }
     }
 
@@ -159,6 +204,159 @@ impl TuiState {
             Panel::Sessions => Panel::Projects,
         };
     }
+
+    /// Compute the preview key for the current selection.
+    ///
+    /// Returns `None` when there is no selected entry.
+    fn current_preview_key(&self) -> Option<String> {
+        self.selected_entry().map(|entry| {
+            let branch = if self.focused_panel == Panel::Sessions {
+                entry
+                    .sessions
+                    .get(self.selected_session)
+                    .map(|s| s.branch.as_str())
+                    .unwrap_or("")
+            } else {
+                entry
+                    .sessions
+                    .first()
+                    .map(|s| s.branch.as_str())
+                    .unwrap_or("")
+            };
+            format!("{}:{}", entry.project.name, branch)
+        })
+    }
+
+    /// Kick off an async git fetch for the currently selected project/session.
+    ///
+    /// Does nothing if the selection hasn't changed since the last fetch.
+    pub fn trigger_preview_load(&mut self) {
+        let Some(key) = self.current_preview_key() else {
+            return;
+        };
+        if key == self.preview_key {
+            return; // already loading or loaded for this key
+        }
+
+        let path: PathBuf = self
+            .selected_entry()
+            .map(|e| e.project.path.clone())
+            .unwrap_or_default();
+
+        self.preview_key = key;
+        self.preview_data = PreviewData::Loading;
+
+        let (tx, rx) = mpsc::channel();
+        self.preview_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let result = fetch_git_info(&path.to_string_lossy());
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Poll the in-flight preview channel; update `preview_data` if data arrived.
+    pub fn poll_preview(&mut self) {
+        // Borrow rx, try_recv, drop borrow, then update self.
+        let received = match &self.preview_rx {
+            Some(rx) => rx.try_recv().ok(),
+            None => return,
+        };
+        if let Some(result) = received {
+            self.preview_data = match result {
+                Ok(info) => PreviewData::Ready(info),
+                Err(e) => PreviewData::Error(e),
+            };
+            self.preview_rx = None;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Git data fetching (runs in a background thread)
+// ---------------------------------------------------------------------------
+
+/// Fetch git information for `path` using subprocess git commands.
+///
+/// Returns `Err` if the directory is not a git repository or git is not found.
+fn fetch_git_info(path: &str) -> Result<GitInfo, String> {
+    use std::process::Command;
+
+    // Current branch
+    let branch_out = Command::new("git")
+        .args(["-C", path, "symbolic-ref", "--short", "HEAD"])
+        .output()
+        .map_err(|e| format!("git error: {}", e))?;
+
+    if !branch_out.status.success() {
+        return Err("not a git repository".to_string());
+    }
+    let branch = String::from_utf8_lossy(&branch_out.stdout)
+        .trim()
+        .to_string();
+
+    // Dirty / clean status
+    let status_out = Command::new("git")
+        .args(["-C", path, "status", "--short"])
+        .output()
+        .map_err(|e| format!("git error: {}", e))?;
+    let is_dirty = !String::from_utf8_lossy(&status_out.stdout)
+        .trim()
+        .is_empty();
+
+    // Ahead / behind relative to upstream (best effort — 0/0 if no upstream)
+    let (ahead, behind) = fetch_ahead_behind(path);
+
+    // Recent commits
+    let log_out = Command::new("git")
+        .args(["-C", path, "log", "--oneline", "-5"])
+        .output()
+        .map_err(|e| format!("git error: {}", e))?;
+    let commits = String::from_utf8_lossy(&log_out.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let mut parts = l.splitn(2, ' ');
+            let hash = parts.next().unwrap_or("").to_string();
+            let message = parts.next().unwrap_or("").to_string();
+            CommitInfo { hash, message }
+        })
+        .collect();
+
+    Ok(GitInfo {
+        branch,
+        ahead,
+        behind,
+        is_dirty,
+        commits,
+    })
+}
+
+/// Returns (ahead, behind) counts for HEAD vs its upstream; (0, 0) on failure.
+fn fetch_ahead_behind(path: &str) -> (usize, usize) {
+    use std::process::Command;
+
+    let out = Command::new("git")
+        .args([
+            "-C",
+            path,
+            "rev-list",
+            "--left-right",
+            "--count",
+            "HEAD...@{u}",
+        ])
+        .output();
+
+    match out {
+        Ok(output) if output.status.success() => {
+            let s = String::from_utf8_lossy(&output.stdout);
+            let mut parts = s.trim().split_whitespace();
+            let ahead = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            let behind = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            (ahead, behind)
+        }
+        _ => (0, 0),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +375,9 @@ pub fn run_tui(entries: Vec<ProjectEntry>, navigation: Navigation) -> io::Result
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = TuiState::new(entries, navigation);
+    // Kick off the first preview fetch immediately.
+    state.trigger_preview_load();
+
     let result = event_loop(&mut terminal, &mut state);
 
     // Always restore the terminal, even if the event loop returned an error.
@@ -196,7 +397,16 @@ fn event_loop<B: Backend>(
     state: &mut TuiState,
 ) -> io::Result<TuiAction> {
     loop {
+        // Check if async preview data has arrived.
+        state.poll_preview();
+
         terminal.draw(|f| render(f, state))?;
+
+        // Poll with a short timeout so we can refresh the preview pane
+        // without waiting for a keypress.
+        if !event::poll(Duration::from_millis(100))? {
+            continue;
+        }
 
         if let Event::Key(key) = event::read()? {
             // ── Search mode ────────────────────────────────────────────────
@@ -223,6 +433,7 @@ fn event_loop<B: Backend>(
                     }
                     _ => {}
                 }
+                state.trigger_preview_load();
                 continue;
             }
 
@@ -314,6 +525,9 @@ fn event_loop<B: Backend>(
                     _ => {}
                 }
             }
+
+            // After any navigation event, check if we need to refresh the preview.
+            state.trigger_preview_load();
         }
     }
 }
@@ -322,15 +536,21 @@ fn event_loop<B: Backend>(
 // Rendering
 // ---------------------------------------------------------------------------
 
-/// Top-level render: splits the terminal area into main content and status bar.
+/// Top-level render: splits the terminal into main panels, preview, and status.
 pub fn render(f: &mut Frame, state: &TuiState) {
     let area = f.area();
 
+    // Vertical split: main panels | preview pane | status bar
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .constraints([
+            Constraint::Min(1),     // main panels (takes all remaining space)
+            Constraint::Length(8),  // preview pane (fixed 8 lines)
+            Constraint::Length(3),  // status bar
+        ])
         .split(area);
 
+    // Horizontal split for main panels
     let main = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
@@ -338,7 +558,8 @@ pub fn render(f: &mut Frame, state: &TuiState) {
 
     render_projects(f, main[0], state);
     render_sessions(f, main[1], state);
-    render_status(f, outer[1], state);
+    render_preview(f, outer[1], state);
+    render_status(f, outer[2], state);
 }
 
 fn render_projects(f: &mut Frame, area: Rect, state: &TuiState) {
@@ -417,6 +638,36 @@ fn render_sessions(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_stateful_widget(list, area, &mut list_state);
 }
 
+fn render_preview(f: &mut Frame, area: Rect, state: &TuiState) {
+    let content = match &state.preview_data {
+        PreviewData::Loading => " Loading\u{2026}".to_string(),
+        PreviewData::Error(e) => format!(" Error: {}", e),
+        PreviewData::Ready(info) => {
+            let tracking = if info.ahead > 0 || info.behind > 0 {
+                format!(" ({} ahead, {} behind)", info.ahead, info.behind)
+            } else {
+                String::new()
+            };
+            let dirt = if info.is_dirty { "\u{25cf} dirty" } else { "\u{25cf} clean" };
+            let mut lines = vec![
+                format!(" branch: {}{} {}", info.branch, tracking, dirt),
+            ];
+            if !info.commits.is_empty() {
+                lines.push(String::new());
+                lines.push(" recent commits:".to_string());
+                for commit in &info.commits {
+                    lines.push(format!("  {} {}", commit.hash, commit.message));
+                }
+            }
+            lines.join("\n")
+        }
+    };
+
+    let paragraph = Paragraph::new(content)
+        .block(Block::default().borders(Borders::ALL).title(" PREVIEW "));
+    f.render_widget(paragraph, area);
+}
+
 fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
     let project_info = state
         .selected_entry()
@@ -445,6 +696,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::path::PathBuf;
+    use std::sync::mpsc;
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -481,6 +733,25 @@ mod tests {
         ]
     }
 
+    fn make_git_info() -> GitInfo {
+        GitInfo {
+            branch: "feat/login".to_string(),
+            ahead: 3,
+            behind: 1,
+            is_dirty: true,
+            commits: vec![
+                CommitInfo {
+                    hash: "a1b2c3".to_string(),
+                    message: "fix: auth token refresh".to_string(),
+                },
+                CommitInfo {
+                    hash: "d4e5f6".to_string(),
+                    message: "feat: login form validation".to_string(),
+                },
+            ],
+        }
+    }
+
     /// Render `state` into a `width × height` TestBackend buffer and return
     /// the result as a string (each row separated by `\n`).
     fn render_to_string(state: &TuiState, width: u16, height: u16) -> String {
@@ -498,7 +769,7 @@ mod tests {
         out
     }
 
-    // ── Rendering snapshot tests ──────────────────────────────────────────
+    // ── Rendering snapshot tests — existing panels ─────────────────────────
 
     #[test]
     fn renders_projects_panel_header() {
@@ -581,7 +852,228 @@ mod tests {
         assert!(out.contains("/my"), "search query should appear in PROJECTS header");
     }
 
-    // ── State / navigation unit tests ─────────────────────────────────────
+    // ── Preview pane snapshot tests ────────────────────────────────────────
+
+    #[test]
+    fn renders_preview_pane_header() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("PREVIEW"), "should render PREVIEW panel header");
+    }
+
+    #[test]
+    fn renders_preview_loading_indicator() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        // Initial state is Loading
+        let out = render_to_string(&state, 80, 30);
+        assert!(
+            out.contains("Loading") || out.contains("loading"),
+            "should show loading indicator in preview pane"
+        );
+    }
+
+    #[test]
+    fn renders_preview_ready_with_branch_and_tracking() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.preview_data = PreviewData::Ready(make_git_info());
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("feat"), "should show branch name");
+        assert!(out.contains("login"), "should show branch name (login part)");
+        assert!(out.contains('3'), "should show ahead count");
+        assert!(out.contains('1'), "should show behind count");
+        assert!(out.contains("ahead"), "should show 'ahead'");
+        assert!(out.contains("behind"), "should show 'behind'");
+    }
+
+    #[test]
+    fn renders_preview_dirty_status() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.preview_data = PreviewData::Ready(make_git_info()); // is_dirty = true
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("dirty"), "should show dirty working tree status");
+    }
+
+    #[test]
+    fn renders_preview_clean_status() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.preview_data = PreviewData::Ready(GitInfo {
+            branch: "main".to_string(),
+            ahead: 0,
+            behind: 0,
+            is_dirty: false,
+            commits: vec![],
+        });
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("clean"), "should show clean working tree status");
+    }
+
+    #[test]
+    fn renders_preview_commit_list() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.preview_data = PreviewData::Ready(make_git_info());
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("a1b2c3"), "should show commit hash");
+        assert!(out.contains("d4e5f6"), "should show second commit hash");
+    }
+
+    #[test]
+    fn renders_preview_recent_commits_label() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.preview_data = PreviewData::Ready(make_git_info());
+        let out = render_to_string(&state, 80, 30);
+        assert!(
+            out.contains("recent commits") || out.contains("recent"),
+            "should label the commit section"
+        );
+    }
+
+    #[test]
+    fn renders_preview_error_state() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.preview_data = PreviewData::Error("not a git repository".to_string());
+        let out = render_to_string(&state, 80, 30);
+        assert!(
+            out.contains("Error") || out.contains("error") || out.contains("not a git"),
+            "should show error message in preview pane"
+        );
+    }
+
+    #[test]
+    fn renders_preview_no_tracking_when_zero_ahead_behind() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.preview_data = PreviewData::Ready(GitInfo {
+            branch: "main".to_string(),
+            ahead: 0,
+            behind: 0,
+            is_dirty: false,
+            commits: vec![],
+        });
+        let out = render_to_string(&state, 80, 30);
+        // When 0 ahead/0 behind, tracking info should not appear
+        assert!(
+            !out.contains("ahead") && !out.contains("behind"),
+            "should not show ahead/behind when both are zero"
+        );
+    }
+
+    // ── Preview key / trigger tests ────────────────────────────────────────
+
+    #[test]
+    fn initial_preview_state_is_loading() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        assert!(
+            matches!(state.preview_data, PreviewData::Loading),
+            "initial preview_data should be Loading"
+        );
+    }
+
+    #[test]
+    fn initial_preview_key_is_empty() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        assert_eq!(state.preview_key, "");
+    }
+
+    #[test]
+    fn trigger_preview_load_sets_key() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.trigger_preview_load();
+        assert!(!state.preview_key.is_empty(), "preview_key should be set after trigger");
+        assert!(
+            state.preview_key.contains("myapp"),
+            "preview_key should reference the selected project"
+        );
+    }
+
+    #[test]
+    fn trigger_preview_load_sets_loading_state() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // Overwrite with Ready so we can confirm it reverts to Loading on change
+        state.preview_data = PreviewData::Ready(make_git_info());
+        state.preview_key = "different:key".to_string();
+        state.trigger_preview_load();
+        assert!(
+            matches!(state.preview_data, PreviewData::Loading),
+            "preview_data should be Loading after trigger"
+        );
+    }
+
+    #[test]
+    fn trigger_preview_load_noop_when_key_unchanged() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.trigger_preview_load(); // sets key + spawns thread
+        let key_after_first = state.preview_key.clone();
+        state.preview_data = PreviewData::Ready(make_git_info()); // simulate data arrived
+        state.trigger_preview_load(); // same key → should NOT overwrite Ready with Loading
+        assert!(
+            matches!(state.preview_data, PreviewData::Ready(_)),
+            "trigger with same key should not overwrite Ready data"
+        );
+        assert_eq!(state.preview_key, key_after_first);
+    }
+
+    #[test]
+    fn trigger_preview_load_noop_on_empty_entries() {
+        let mut state = TuiState::new(vec![], Navigation::Arrows);
+        state.trigger_preview_load(); // should not panic
+        assert_eq!(state.preview_key, "");
+        assert!(matches!(state.preview_data, PreviewData::Loading));
+    }
+
+    #[test]
+    fn poll_preview_updates_state_from_channel() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let (tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
+        state.preview_rx = Some(rx);
+        state.preview_data = PreviewData::Loading;
+
+        // Send data before polling
+        tx.send(Ok(make_git_info())).unwrap();
+        state.poll_preview();
+
+        assert!(
+            matches!(state.preview_data, PreviewData::Ready(_)),
+            "poll_preview should transition Loading → Ready when channel has data"
+        );
+        assert!(state.preview_rx.is_none(), "preview_rx should be cleared after data received");
+    }
+
+    #[test]
+    fn poll_preview_handles_error_from_channel() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let (tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
+        state.preview_rx = Some(rx);
+
+        tx.send(Err("not a git repo".to_string())).unwrap();
+        state.poll_preview();
+
+        assert!(
+            matches!(state.preview_data, PreviewData::Error(_)),
+            "poll_preview should transition to Error when channel sends Err"
+        );
+    }
+
+    #[test]
+    fn poll_preview_noop_when_no_channel() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.preview_rx = None;
+        state.poll_preview(); // should not panic
+    }
+
+    #[test]
+    fn preview_key_changes_on_project_navigation() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.trigger_preview_load();
+        let key1 = state.preview_key.clone();
+
+        state.move_down(); // move to hermes
+        state.trigger_preview_load();
+        let key2 = state.preview_key.clone();
+
+        assert_ne!(key1, key2, "preview key should change when project changes");
+        assert!(key2.contains("hermes"));
+    }
+
+    // ── State / navigation unit tests (unchanged) ─────────────────────────
 
     #[test]
     fn navigate_down_increments_selection() {
@@ -720,17 +1212,13 @@ mod tests {
 
     #[test]
     fn search_resets_selected_session() {
-        // Bug: selected_session was not reset when search changed the active
-        // project, leading to a stale index pointing past the new project's
-        // session list.
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
         state.focused_panel = Panel::Sessions;
-        state.selected_session = 1; // myapp has 2 sessions, pointing at index 1
+        state.selected_session = 1;
 
-        // Simulate typing a search character that filters to a different project
         state.search_query = "hermes".to_string();
         state.selected_project = 0;
-        state.selected_session = 0; // this is what the fix does
+        state.selected_session = 0;
 
         let entry = state.selected_entry().unwrap();
         assert_eq!(entry.project.name, "hermes");
@@ -798,7 +1286,6 @@ mod tests {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
         state.search_mode = true;
         state.search_query = "zzz_no_match".to_string();
-        // Should not panic even though no projects match
         let out = render_to_string(&state, 80, 24);
         assert!(out.contains("PROJECTS"));
     }
@@ -822,15 +1309,13 @@ mod tests {
     #[test]
     fn navigate_project_down_then_up_resets_session() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
-        // Start on myapp, move session cursor
         state.focused_panel = Panel::Sessions;
         state.move_down();
         assert_eq!(state.selected_session, 1);
-        // Switch to projects, move up (noop at 0) then down
         state.focused_panel = Panel::Projects;
-        state.move_down(); // go to hermes
+        state.move_down();
         assert_eq!(state.selected_session, 0, "session resets on project change via down");
-        state.move_up(); // back to myapp
+        state.move_up();
         assert_eq!(state.selected_session, 0, "session resets on project change via up");
     }
 }
