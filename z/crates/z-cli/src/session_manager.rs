@@ -60,6 +60,20 @@ impl SessionManager for ZellijSessionManager {
         Ok(())
     }
 
+    fn detach_session(&self, session: &Session) -> Result<()> {
+        let status = Command::new("zellij")
+            .args(["attach", &session.name, "--detach"])
+            .status()
+            .map_err(|e| ZError::Session(e.to_string()))?;
+        if !status.success() {
+            return Err(ZError::Session(format!(
+                "zellij attach --detach exited with status {}",
+                status
+            )));
+        }
+        Ok(())
+    }
+
     fn kill_session(&self, session: &Session) -> Result<()> {
         let status = Command::new("zellij")
             .args(["delete-session", &session.name])
@@ -73,6 +87,19 @@ impl SessionManager for ZellijSessionManager {
         }
         Ok(())
     }
+}
+
+/// Parse a session name string `"project:branch"` into `(project, branch)`.
+///
+/// Returns `None` if the string does not contain a `:` separator or either part is empty.
+pub fn parse_session_name(s: &str) -> Option<(String, String)> {
+    let mut parts = s.splitn(2, ':');
+    let project = parts.next()?.to_string();
+    let branch = parts.next()?.to_string();
+    if project.is_empty() || branch.is_empty() {
+        return None;
+    }
+    Some((project, branch))
 }
 
 /// Write a Zellij KDL layout string to a temporary file and return its path.
@@ -229,5 +256,44 @@ mod tests {
         assert_ne!(path1, path2);
         let _ = std::fs::remove_file(&path1);
         let _ = std::fs::remove_file(&path2);
+    }
+
+    #[test]
+    fn parse_session_name_valid() {
+        let result = parse_session_name("myapp:main");
+        assert_eq!(result, Some(("myapp".to_string(), "main".to_string())));
+    }
+
+    #[test]
+    fn parse_session_name_with_dashes() {
+        let result = parse_session_name("myapp:feat-login");
+        assert_eq!(result, Some(("myapp".to_string(), "feat-login".to_string())));
+    }
+
+    #[test]
+    fn parse_session_name_colon_in_branch() {
+        // splitn(2, ':') — only first colon splits; remainder is branch
+        let result = parse_session_name("myapp:feat:extra");
+        assert_eq!(result, Some(("myapp".to_string(), "feat:extra".to_string())));
+    }
+
+    #[test]
+    fn parse_session_name_no_colon_returns_none() {
+        assert!(parse_session_name("myapp-main").is_none());
+    }
+
+    #[test]
+    fn parse_session_name_empty_project_returns_none() {
+        assert!(parse_session_name(":main").is_none());
+    }
+
+    #[test]
+    fn parse_session_name_empty_branch_returns_none() {
+        assert!(parse_session_name("myapp:").is_none());
+    }
+
+    #[test]
+    fn parse_session_name_empty_string_returns_none() {
+        assert!(parse_session_name("").is_none());
     }
 }

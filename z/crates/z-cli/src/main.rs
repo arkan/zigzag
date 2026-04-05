@@ -2,12 +2,15 @@ mod config_store;
 mod depcheck_impl;
 mod session_manager;
 
+use std::io::Write as _;
+
 use z_core::depcheck::{check_deps, format_dep_error, DepCheckStatus};
+use z_core::domain::Session;
 use z_core::traits::{ProjectStore, SessionManager};
 
 use crate::config_store::KdlProjectStore;
 use crate::depcheck_impl::ProcessDepChecker;
-use crate::session_manager::ZellijSessionManager;
+use crate::session_manager::{parse_session_name, ZellijSessionManager};
 
 fn main() {
     let checker = ProcessDepChecker;
@@ -57,6 +60,24 @@ fn run() {
                 std::process::exit(1);
             }
         }
+        Some("close") => {
+            let session = args.get(1).map(|s| s.as_str());
+            if let Err(e) = cmd_close(session) {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Some("delete") => {
+            let session = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            if session.is_empty() {
+                eprintln!("usage: z delete <project:branch>");
+                std::process::exit(1);
+            }
+            if let Err(e) = cmd_delete(session) {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Some(cmd) => {
             eprintln!("CLI command not yet implemented: {:?}", cmd);
         }
@@ -84,6 +105,138 @@ fn cmd_open(project_name: &str) -> z_core::error::Result<()> {
     }
 
     Ok(())
+}
+
+/// Detach from a Zellij session, keeping it running in the background.
+///
+/// `session_name` — if `None`, detects the current session from `ZELLIJ_SESSION_NAME`.
+fn cmd_close(session_name: Option<&str>) -> z_core::error::Result<()> {
+    let session_mgr = ZellijSessionManager;
+
+    let name = match session_name {
+        Some(n) if !n.is_empty() => n.to_string(),
+        _ => std::env::var("ZELLIJ_SESSION_NAME").map_err(|_| {
+            z_core::error::ZError::Session(
+                "no session specified and not inside a Zellij session \
+                 (ZELLIJ_SESSION_NAME not set)"
+                    .to_string(),
+            )
+        })?,
+    };
+
+    let (project, branch) =
+        parse_session_name(&name).ok_or_else(|| {
+            z_core::error::ZError::Session(format!(
+                "invalid session name {:?}: expected project:branch",
+                name
+            ))
+        })?;
+
+    let session = Session { name: name.clone(), project, branch };
+    session_mgr.detach_session(&session)?;
+    println!("Detached from session: {}", name);
+    Ok(())
+}
+
+/// Kill a Zellij session and optionally remove its worktree.
+fn cmd_delete(session_name: &str) -> z_core::error::Result<()> {
+    let session_mgr = ZellijSessionManager;
+
+    let (project, branch) =
+        parse_session_name(session_name).ok_or_else(|| {
+            z_core::error::ZError::Session(format!(
+                "invalid session name {:?}: expected project:branch",
+                session_name
+            ))
+        })?;
+
+    let session = Session {
+        name: session_name.to_string(),
+        project,
+        branch: branch.clone(),
+    };
+
+    session_mgr.kill_session(&session)?;
+    println!("Session {} killed.", session_name);
+
+    // Prompt user to optionally remove the worktree.
+    eprint!("Delete worktree {}? (y/N) ", branch);
+    let _ = std::io::stderr().flush();
+
+    let mut response = String::new();
+    std::io::stdin()
+        .read_line(&mut response)
+        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+
+    if parse_confirm_response(&response) {
+        remove_worktree(&branch)?;
+        println!("Worktree {} removed.", branch);
+    } else {
+        println!("Worktree kept.");
+    }
+
+    Ok(())
+}
+
+/// Returns `true` if the user typed "y" or "Y".
+pub fn parse_confirm_response(response: &str) -> bool {
+    matches!(response.trim().to_lowercase().as_str(), "y")
+}
+
+/// Shell out to `wt remove <branch>` to remove a worktree.
+fn remove_worktree(branch: &str) -> z_core::error::Result<()> {
+    let status = std::process::Command::new("wt")
+        .args(["remove", branch])
+        .status()
+        .map_err(|e| z_core::error::ZError::Worktree(e.to_string()))?;
+    if !status.success() {
+        return Err(z_core::error::ZError::Worktree(format!(
+            "wt remove exited with status {}",
+            status
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirm_response_y_returns_true() {
+        assert!(parse_confirm_response("y"));
+    }
+
+    #[test]
+    fn confirm_response_y_uppercase_returns_true() {
+        assert!(parse_confirm_response("Y"));
+    }
+
+    #[test]
+    fn confirm_response_y_with_newline_returns_true() {
+        assert!(parse_confirm_response("y\n"));
+    }
+
+    #[test]
+    fn confirm_response_n_returns_false() {
+        assert!(!parse_confirm_response("n"));
+    }
+
+    #[test]
+    fn confirm_response_empty_returns_false() {
+        assert!(!parse_confirm_response(""));
+    }
+
+    #[test]
+    fn confirm_response_yes_returns_false() {
+        // Only single "y" is accepted, not "yes"
+        assert!(!parse_confirm_response("yes"));
+    }
+
+    #[test]
+    fn confirm_response_whitespace_only_returns_false() {
+        assert!(!parse_confirm_response("   "));
+    }
 }
 
 fn cmd_list() -> z_core::error::Result<()> {
