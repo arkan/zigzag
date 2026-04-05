@@ -198,7 +198,7 @@ fn parse_layout_node(node: &KdlNode) -> Result<Layout> {
             }
         }
     }
-    Ok(Layout { tabs })
+    Ok(Layout { tabs, cwd: None })
 }
 
 fn parse_tab_node(node: &KdlNode) -> Result<Tab> {

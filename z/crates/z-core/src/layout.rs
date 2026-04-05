@@ -14,7 +14,11 @@ use crate::domain::{Layout, Pane, Tab};
 /// }
 /// ```
 pub fn generate_layout_kdl(layout: &Layout) -> String {
-    let mut out = String::from("layout {\n");
+    let mut out = if let Some(ref cwd) = layout.cwd {
+        format!("layout cwd=\"{}\" {{\n", escape_kdl_string(&cwd.to_string_lossy()))
+    } else {
+        String::from("layout {\n")
+    };
     for tab in &layout.tabs {
         out.push_str(&generate_tab_kdl(tab));
     }
@@ -77,6 +81,7 @@ pub fn default_layout() -> Layout {
                 }],
             },
         ],
+        cwd: None,
     }
 }
 
@@ -86,9 +91,32 @@ mod tests {
 
     #[test]
     fn generate_kdl_empty_layout() {
-        let layout = Layout { tabs: vec![] };
+        let layout = Layout { tabs: vec![], cwd: None };
         let kdl = generate_layout_kdl(&layout);
         assert_eq!(kdl, "layout {\n}\n");
+    }
+
+    #[test]
+    fn generate_kdl_with_cwd() {
+        let layout = Layout {
+            tabs: vec![],
+            cwd: Some(std::path::PathBuf::from("/home/user/projects/myapp-feat-login")),
+        };
+        let kdl = generate_layout_kdl(&layout);
+        assert_eq!(
+            kdl,
+            "layout cwd=\"/home/user/projects/myapp-feat-login\" {\n}\n"
+        );
+    }
+
+    #[test]
+    fn generate_kdl_cwd_with_special_chars() {
+        let layout = Layout {
+            tabs: vec![],
+            cwd: Some(std::path::PathBuf::from(r#"/home/user/my "project""#)),
+        };
+        let kdl = generate_layout_kdl(&layout);
+        assert!(kdl.starts_with("layout cwd=\"/home/user/my \\\"project\\\"\""));
     }
 
     #[test]
@@ -101,6 +129,7 @@ mod tests {
                     args: vec![],
                 }],
             }],
+            cwd: None,
         };
         let kdl = generate_layout_kdl(&layout);
         assert_eq!(
@@ -119,6 +148,7 @@ mod tests {
                     args: vec![],
                 }],
             }],
+            cwd: None,
         };
         let kdl = generate_layout_kdl(&layout);
         assert!(kdl.contains("pane command=\"claude\""));
@@ -135,6 +165,7 @@ mod tests {
                     args: vec!["--headless".to_string()],
                 }],
             }],
+            cwd: None,
         };
         let kdl = generate_layout_kdl(&layout);
         assert!(kdl.contains("pane command=\"nvim\" args=\"--headless\""));
@@ -182,6 +213,7 @@ mod tests {
                 name: "empty".to_string(),
                 panes: vec![],
             }],
+            cwd: None,
         };
         let kdl = generate_layout_kdl(&layout);
         assert_eq!(kdl, "layout {\n    tab name=\"empty\" {\n    }\n}\n");
@@ -197,6 +229,7 @@ mod tests {
                     args: vec![],
                 }],
             }],
+            cwd: None,
         };
         let kdl = generate_layout_kdl(&layout);
         assert!(kdl.contains(r#"tab name="my \"tab\"""#));
@@ -212,6 +245,7 @@ mod tests {
                     args: vec![],
                 }],
             }],
+            cwd: None,
         };
         let kdl = generate_layout_kdl(&layout);
         assert!(kdl.contains(r#"pane command="C:\\bin\\tool""#));
@@ -227,6 +261,7 @@ mod tests {
                     args: vec!["hello \"world\"".to_string()],
                 }],
             }],
+            cwd: None,
         };
         let kdl = generate_layout_kdl(&layout);
         assert!(kdl.contains(r#"args="hello \"world\"""#));
@@ -248,6 +283,7 @@ mod tests {
                     },
                 ],
             }],
+            cwd: None,
         };
         let kdl = generate_layout_kdl(&layout);
         assert!(kdl.contains("pane command=\"htop\""));
@@ -264,6 +300,7 @@ mod tests {
                     args: vec!["-u".to_string(), "NONE".to_string(), "file.txt".to_string()],
                 }],
             }],
+            cwd: None,
         };
         let kdl = generate_layout_kdl(&layout);
         assert!(kdl.contains(r#"pane command="nvim" args="-u" "NONE" "file.txt""#));

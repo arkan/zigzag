@@ -68,6 +68,13 @@ pub enum CiStatus {
 #[derive(Debug, Clone)]
 pub struct Layout {
     pub tabs: Vec<Tab>,
+    /// Optional working directory for the session. When set, all panes open in this directory.
+    pub cwd: Option<PathBuf>,
+}
+
+/// Normalize a branch name to a session-safe string (replace `/` with `-`).
+pub fn sanitize_branch_name(branch: &str) -> String {
+    branch.replace('/', "-")
 }
 
 #[derive(Debug, Clone)]
@@ -88,4 +95,55 @@ pub enum NotifyLevel {
     Info,
     Warning,
     Error,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_plain_branch() {
+        assert_eq!(sanitize_branch_name("main"), "main");
+    }
+
+    #[test]
+    fn sanitize_slash_to_dash() {
+        assert_eq!(sanitize_branch_name("feat/login"), "feat-login");
+    }
+
+    #[test]
+    fn sanitize_multiple_slashes() {
+        assert_eq!(sanitize_branch_name("feat/user/auth"), "feat-user-auth");
+    }
+
+    #[test]
+    fn sanitize_no_slashes_unchanged() {
+        assert_eq!(sanitize_branch_name("fix-bug-123"), "fix-bug-123");
+    }
+
+    #[test]
+    fn sanitize_empty_string() {
+        assert_eq!(sanitize_branch_name(""), "");
+    }
+
+    #[test]
+    fn session_new_normalizes_slash() {
+        let s = Session::new("myapp", "feat/login");
+        assert_eq!(s.name, "myapp:feat-login");
+        assert_eq!(s.branch, "feat/login");
+        assert_eq!(s.project, "myapp");
+    }
+
+    #[test]
+    fn session_new_main() {
+        let s = Session::new("myapp", "main");
+        assert_eq!(s.name, "myapp:main");
+    }
+
+    #[test]
+    fn session_new_preserves_original_branch() {
+        let s = Session::new("proj", "feat/a/b");
+        assert_eq!(s.branch, "feat/a/b");
+        assert_eq!(s.name, "proj:feat-a-b");
+    }
 }
