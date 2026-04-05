@@ -22,7 +22,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(project: &str, branch: &str) -> Self {
-        let normalized = branch.replace('/', "-");
+        let normalized = sanitize_branch_name(branch);
         Self {
             name: format!("{}:{}", project, normalized),
             project: project.to_string(),
@@ -145,5 +145,31 @@ mod tests {
         let s = Session::new("proj", "feat/a/b");
         assert_eq!(s.branch, "feat/a/b");
         assert_eq!(s.name, "proj:feat-a-b");
+    }
+
+    #[test]
+    fn sanitize_leading_slash() {
+        assert_eq!(sanitize_branch_name("/leading"), "-leading");
+    }
+
+    #[test]
+    fn sanitize_trailing_slash() {
+        assert_eq!(sanitize_branch_name("trailing/"), "trailing-");
+    }
+
+    #[test]
+    fn sanitize_consecutive_slashes() {
+        assert_eq!(sanitize_branch_name("a//b"), "a--b");
+    }
+
+    #[test]
+    fn session_new_uses_sanitize_branch_name() {
+        // Verify Session::new produces the same result as sanitize_branch_name
+        let branch = "feat/complex/nested/branch";
+        let s = Session::new("proj", branch);
+        assert_eq!(
+            s.name,
+            format!("proj:{}", sanitize_branch_name(branch))
+        );
     }
 }

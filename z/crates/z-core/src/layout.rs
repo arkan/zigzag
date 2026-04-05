@@ -307,6 +307,35 @@ mod tests {
     }
 
     #[test]
+    fn generate_kdl_cwd_with_tabs() {
+        let layout = Layout {
+            tabs: vec![Tab {
+                name: "shell".to_string(),
+                panes: vec![Pane {
+                    command: None,
+                    args: vec![],
+                }],
+            }],
+            cwd: Some(std::path::PathBuf::from("/home/user/myapp-feat")),
+        };
+        let kdl = generate_layout_kdl(&layout);
+        assert!(kdl.starts_with("layout cwd=\"/home/user/myapp-feat\" {\n"));
+        assert!(kdl.contains("tab name=\"shell\""));
+        assert!(kdl.ends_with("}\n"));
+    }
+
+    #[test]
+    fn generate_kdl_default_layout_with_cwd() {
+        let mut layout = default_layout();
+        layout.cwd = Some(std::path::PathBuf::from("/worktree/path"));
+        let kdl = generate_layout_kdl(&layout);
+        assert!(kdl.starts_with("layout cwd=\"/worktree/path\""));
+        assert!(kdl.contains("tab name=\"claude\""));
+        assert!(kdl.contains("pane command=\"claude\""));
+        assert!(kdl.contains("tab name=\"shell\""));
+    }
+
+    #[test]
     fn escape_kdl_string_no_special_chars() {
         assert_eq!(escape_kdl_string("hello"), "hello");
     }
