@@ -60,35 +60,36 @@ pub enum AutopilotEvent {
 /// - `Some(MaxRetriesExhausted)` — retries exhausted but workflow continues
 /// - `None`            — workflow is still running normally
 pub fn event_from_advance(run: &WorkflowRun) -> Option<AutopilotEvent> {
+    let last_step_name = || {
+        run.history
+            .last()
+            .map(|h| h.step_name.clone())
+            .unwrap_or_default()
+    };
+
     match run.status {
         WorkflowStatus::Completed => {
-            let final_step = run
-                .history
-                .last()
-                .map(|h| h.step_name.clone())
-                .unwrap_or_default();
             return Some(AutopilotEvent::Completed {
                 workflow_name: run.workflow_name.clone(),
-                final_step,
+                final_step: last_step_name(),
             });
         }
         WorkflowStatus::Failed => {
-            let final_step = run
-                .history
-                .last()
-                .map(|h| h.step_name.clone())
-                .unwrap_or_default();
             return Some(AutopilotEvent::Failed {
                 workflow_name: run.workflow_name.clone(),
-                final_step,
+                final_step: last_step_name(),
             });
         }
         WorkflowStatus::Stuck => {
-            let last = run.history.last()?;
+            let (step_name, retry_count) = run
+                .history
+                .last()
+                .map(|h| (h.step_name.clone(), h.retry_count))
+                .unwrap_or_default();
             return Some(AutopilotEvent::Stuck {
                 workflow_name: run.workflow_name.clone(),
-                step_name: last.step_name.clone(),
-                retry_count: last.retry_count,
+                step_name,
+                retry_count,
             });
         }
         WorkflowStatus::Running => {}
@@ -182,7 +183,7 @@ pub fn notify_autopilot_event(notifier: &dyn Notifier, event: &AutopilotEvent) -
 mod tests {
     use super::*;
     use crate::dsl::parse_autopilot_workflow;
-    use crate::state::{advance, StepResult, WorkflowRun, WorkflowStatus};
+    use crate::state::{advance, StepExecution, StepResult, WorkflowRun, WorkflowStatus};
     use std::sync::{Arc, Mutex};
     use z_core::error::ZError;
 
@@ -545,8 +546,8 @@ autopilot "test" {
         assert!(matches!(event, AutopilotEvent::MaxRetriesExhausted { .. }));
 
         // notify-stuck completes → workflow Completed.
-        let event2_result = advance(&wf, &mut run, StepResult::Success { output: None }).unwrap();
-        assert!(event2_result.is_none()); // notify-stuck is terminal
+        let next_step = advance(&wf, &mut run, StepResult::Success { output: None }).unwrap();
+        assert!(next_step.is_none()); // notify-stuck is terminal
         let event2 = event_from_advance(&run).expect("should produce Completed event");
         assert!(matches!(event2, AutopilotEvent::Completed { .. }));
     }
@@ -593,5 +594,169 @@ autopilot "test" {
         };
         let result = notify_autopilot_event(&FailingNotifier, &event);
         assert!(result.is_err());
+    }
+
+    // ── Edge case: Stuck status with empty history ──────────────────────
+
+    #[test]
+    fn stuck_event_with_empty_history_returns_defaults() {
+        // Stuck status but no history entries (e.g. deserialized corrupt state).
+        // Should still return Some(Stuck) with default step_name and retry_count.
+        let mut run = make_run("monitor-ci");
+        run.status = WorkflowStatus::Stuck;
+        run.current_step = None;
+
+        let event = event_from_advance(&run).expect("should produce Stuck event even with empty history");
+        assert_eq!(
+            event,
+            AutopilotEvent::Stuck {
+                workflow_name: "pr-ci-fix".to_string(),
+                step_name: String::new(),
+                retry_count: 0,
+            }
+        );
+    }
+
+    // ── Edge case: Completed/Failed with empty history ──────────────────
+
+    #[test]
+    fn completed_event_with_empty_history_has_empty_final_step() {
+        let mut run = make_run("monitor-ci");
+        run.status = WorkflowStatus::Completed;
+        run.current_step = None;
+
+        let event = event_from_advance(&run).expect("should produce Completed event");
+        assert_eq!(
+            event,
+            AutopilotEvent::Completed {
+                workflow_name: "pr-ci-fix".to_string(),
+                final_step: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn failed_event_with_empty_history_has_empty_final_step() {
+        let mut run = make_run("monitor-ci");
+        run.status = WorkflowStatus::Failed;
+        run.current_step = None;
+
+        let event = event_from_advance(&run).expect("should produce Failed event");
+        assert_eq!(
+            event,
+            AutopilotEvent::Failed {
+                workflow_name: "pr-ci-fix".to_string(),
+                final_step: String::new(),
+            }
+        );
+    }
+
+    // ── Edge case: empty / special-character workflow/step names ─────────
+
+    #[test]
+    fn build_message_with_empty_names() {
+        let event = AutopilotEvent::Completed {
+            workflow_name: String::new(),
+            final_step: String::new(),
+        };
+        let msg = build_message(&event);
+        assert!(msg.contains("\"\""), "empty names should appear as quoted empty strings");
+    }
+
+    #[test]
+    fn build_message_with_quotes_in_names() {
+        let event = AutopilotEvent::Failed {
+            workflow_name: "wf with \"quotes\"".to_string(),
+            final_step: "step \"x\"".to_string(),
+        };
+        let msg = build_message(&event);
+        assert!(msg.contains("wf with \"quotes\""));
+        assert!(msg.contains("step \"x\""));
+    }
+
+    // ── Edge case: zero retry count in messages ─────────────────────────
+
+    #[test]
+    fn build_message_stuck_zero_retries() {
+        let event = AutopilotEvent::Stuck {
+            workflow_name: "w".into(),
+            step_name: "s".into(),
+            retry_count: 0,
+        };
+        let msg = build_message(&event);
+        assert!(msg.contains("0 retries"));
+    }
+
+    #[test]
+    fn build_message_max_retries_zero_retries() {
+        let event = AutopilotEvent::MaxRetriesExhausted {
+            workflow_name: "w".into(),
+            step_name: "s".into(),
+            retry_count: 0,
+        };
+        let msg = build_message(&event);
+        assert!(msg.contains("0 retries"));
+    }
+
+    // ── Edge case: Running with non-MaxRetriesExhausted last entry ──────
+
+    #[test]
+    fn no_event_when_running_and_last_entry_is_succeeded() {
+        let mut run = make_run("monitor-ci");
+        run.history.push(StepExecution {
+            step_name: "monitor-ci".into(),
+            status: StepStatus::Succeeded,
+            retry_count: 0,
+            output: None,
+        });
+        assert!(event_from_advance(&run).is_none());
+    }
+
+    #[test]
+    fn no_event_when_running_and_last_entry_is_failed() {
+        let mut run = make_run("monitor-ci");
+        run.history.push(StepExecution {
+            step_name: "monitor-ci".into(),
+            status: StepStatus::Failed,
+            retry_count: 1,
+            output: None,
+        });
+        assert!(event_from_advance(&run).is_none());
+    }
+
+    // ── Edge case: multiple advance calls — MaxRetriesExhausted is lost ──
+
+    #[test]
+    fn max_retries_event_lost_after_second_advance() {
+        let wf = parse_autopilot_workflow(WF_KDL).unwrap();
+        let mut run = make_run("fix-ci");
+        run.retry_count = 3;
+
+        // First advance: max retries exhausted → transitions to notify-stuck.
+        advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        let event = event_from_advance(&run);
+        assert!(matches!(event, Some(AutopilotEvent::MaxRetriesExhausted { .. })));
+
+        // Second advance: notify-stuck completes → workflow Completed.
+        advance(&wf, &mut run, StepResult::Success { output: None }).unwrap();
+        // The MaxRetriesExhausted event is now gone — last history entry is notify-stuck.
+        let event = event_from_advance(&run);
+        assert!(
+            matches!(event, Some(AutopilotEvent::Completed { .. })),
+            "after second advance, MaxRetriesExhausted should not persist"
+        );
+    }
+
+    // ── Edge case: AutopilotEvent Clone and PartialEq ────────────────────
+
+    #[test]
+    fn autopilot_event_clone_and_eq() {
+        let event = AutopilotEvent::MaxRetriesExhausted {
+            workflow_name: "w".into(),
+            step_name: "s".into(),
+            retry_count: 42,
+        };
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
     }
 }
