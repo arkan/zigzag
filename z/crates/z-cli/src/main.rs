@@ -18,6 +18,8 @@ use crate::depcheck_impl::ProcessDepChecker;
 use crate::session_manager::{parse_session_name, ZellijSessionManager};
 use crate::worktree_manager::WtWorktreeManager;
 
+use z_tui::{Navigation, ProjectEntry, TuiAction};
+
 fn main() {
     let checker = ProcessDepChecker;
     let results = check_deps(&checker);
@@ -47,7 +49,10 @@ fn run() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(|s| s.as_str()) {
         None => {
-            eprintln!("TUI mode not yet implemented (phase 1b).");
+            if let Err(e) = cmd_tui() {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
         }
         Some("list") => {
             if let Err(e) = cmd_list() {
@@ -89,6 +94,60 @@ fn run() {
             eprintln!("CLI command not yet implemented: {:?}", cmd);
         }
     }
+}
+
+/// Launch the interactive TUI and execute whatever action the user chooses.
+fn cmd_tui() -> z_core::error::Result<()> {
+    let store = KdlProjectStore::new();
+    let session_mgr = ZellijSessionManager;
+    let global = load_global_config();
+
+    let projects = store.list_projects()?;
+
+    let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
+    for project in &projects {
+        let sessions = session_mgr.list_sessions(&project.name)?;
+        entries.push(ProjectEntry { project: project.clone(), sessions });
+    }
+
+    let navigation = match global.navigation.as_deref() {
+        Some("vim") => Navigation::Vim,
+        _ => Navigation::Arrows,
+    };
+
+    let action = z_tui::run_tui(entries, navigation)
+        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+
+    match action {
+        TuiAction::Quit => {}
+
+        TuiAction::Open { project, session } => {
+            // Extract branch from "project:branch" session name, or open default.
+            let branch_owned: Option<String> = session
+                .as_deref()
+                .and_then(|s| parse_session_name(s))
+                .map(|(_, b)| b);
+            cmd_open(&project, branch_owned.as_deref())?;
+        }
+
+        TuiAction::New { project } => {
+            cmd_open(&project, None)?;
+        }
+
+        TuiAction::Delete { session } => {
+            cmd_delete(&session)?;
+        }
+
+        TuiAction::Prune => {
+            eprintln!("prune: not yet implemented");
+        }
+
+        TuiAction::Autopilot { project: _ } => {
+            eprintln!("autopilot: not yet implemented");
+        }
+    }
+
+    Ok(())
 }
 
 fn load_global_config() -> GlobalConfig {

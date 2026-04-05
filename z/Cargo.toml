@@ -15,6 +15,7 @@ edition = "2021"
 
 [workspace.dependencies]
 z-core = { path = "crates/z-core" }
+z-tui = { path = "crates/z-tui" }
 thiserror = "2"
 semver = "1"
 kdl = "4"
