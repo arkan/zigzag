@@ -1,0 +1,400 @@
+/// Notifier implementations for z-cli.
+///
+/// Provides concrete `Notifier` trait implementations:
+/// - `FileNotifier`   — writes to `/tmp/z/notifications/{session}/` (TUI badge source)
+/// - `MacosNotifier`  — sends a macOS native notification via `osascript`
+/// - `TelegramNotifier` — sends a Telegram message via `curl`
+/// - `DispatchNotifier` — fans out to all configured notifiers
+use z_core::config::NotificationsConfig;
+use z_core::domain::NotifyLevel;
+use z_core::error::{Result, ZError};
+use z_core::traits::Notifier;
+
+// ---------------------------------------------------------------------------
+// FileNotifier
+// ---------------------------------------------------------------------------
+
+/// Writes a notification event file so the TUI can display a 🔔 badge.
+pub struct FileNotifier {
+    pub session: String,
+}
+
+impl Notifier for FileNotifier {
+    fn notify(&self, message: &str, level: NotifyLevel) -> Result<()> {
+        z_core::notification::write_notification(&self.session, message, level)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MacosNotifier
+// ---------------------------------------------------------------------------
+
+/// Sends a macOS native notification via `osascript`.
+pub struct MacosNotifier;
+
+impl Notifier for MacosNotifier {
+    fn notify(&self, message: &str, level: NotifyLevel) -> Result<()> {
+        let title = match level {
+            NotifyLevel::Info => "z",
+            NotifyLevel::Warning => "z \u{26a0}\u{fe0f}",
+            NotifyLevel::Error => "z \u{274c}",
+        };
+        let script = format!(
+            "display notification {} with title {}",
+            applescript_quote(message),
+            applescript_quote(title),
+        );
+        let status = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .status()
+            .map_err(|e| ZError::Io(format!("osascript: {}", e)))?;
+        if !status.success() {
+            return Err(ZError::Io(format!(
+                "osascript exited with status {}",
+                status
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Wrap a string in AppleScript double-quoted string literals.
+fn applescript_quote(s: &str) -> String {
+    // AppleScript strings use double quotes; escape backslash first, then quote.
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+// ---------------------------------------------------------------------------
+// TelegramNotifier
+// ---------------------------------------------------------------------------
+
+/// Sends a Telegram message via the Bot API using `curl`.
+pub struct TelegramNotifier {
+    pub token: String,
+    pub chat_id: String,
+}
+
+impl Notifier for TelegramNotifier {
+    fn notify(&self, message: &str, level: NotifyLevel) -> Result<()> {
+        let prefix = match level {
+            NotifyLevel::Info => "",
+            NotifyLevel::Warning => "\u{26a0}\u{fe0f} ",
+            NotifyLevel::Error => "\u{274c} ",
+        };
+        let text = format!("{}{}", prefix, message);
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendMessage",
+            self.token
+        );
+        let body = format!(
+            "chat_id={}&text={}",
+            percent_encode(&self.chat_id),
+            percent_encode(&text)
+        );
+        let status = std::process::Command::new("curl")
+            .args([
+                "-s",
+                "-X", "POST",
+                &url,
+                "--data", &body,
+            ])
+            .status()
+            .map_err(|e| ZError::Io(format!("curl (telegram): {}", e)))?;
+        if !status.success() {
+            return Err(ZError::Io(format!(
+                "curl telegram request failed with status {}",
+                status
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Minimal percent-encoding for `application/x-www-form-urlencoded` data.
+fn percent_encode(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            ' ' => "%20".to_string(),
+            '&' => "%26".to_string(),
+            '+' => "%2B".to_string(),
+            '#' => "%23".to_string(),
+            '=' => "%3D".to_string(),
+            '\n' => "%0A".to_string(),
+            _ => c.to_string(),
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// DispatchNotifier
+// ---------------------------------------------------------------------------
+
+/// Dispatches a notification to all configured channels.
+///
+/// The `FileNotifier` (TUI badge) is always included. Additional channels
+/// (`MacosNotifier`, `TelegramNotifier`) are added based on `config`.
+///
+/// If any notifier fails, the error is returned after attempting all of them
+/// (best-effort delivery).
+pub struct DispatchNotifier {
+    notifiers: Vec<Box<dyn Notifier>>,
+}
+
+impl DispatchNotifier {
+    pub fn from_config(config: &NotificationsConfig, session: &str) -> Self {
+        let mut notifiers: Vec<Box<dyn Notifier>> = Vec::new();
+
+        // TUI badge: always write file notification (required by spec).
+        notifiers.push(Box::new(FileNotifier {
+            session: session.to_string(),
+        }));
+
+        if config.macos_native {
+            notifiers.push(Box::new(MacosNotifier));
+        }
+
+        if config.telegram {
+            if let (Some(token), Some(chat_id)) =
+                (&config.telegram_token, &config.telegram_chat_id)
+            {
+                notifiers.push(Box::new(TelegramNotifier {
+                    token: token.clone(),
+                    chat_id: chat_id.clone(),
+                }));
+            }
+        }
+
+        Self { notifiers }
+    }
+}
+
+impl Notifier for DispatchNotifier {
+    fn notify(&self, message: &str, level: NotifyLevel) -> Result<()> {
+        let mut last_err: Option<ZError> = None;
+        for notifier in &self.notifiers {
+            if let Err(e) = notifier.notify(message, level.clone()) {
+                last_err = Some(e);
+            }
+        }
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // ── Mock notifier ─────────────────────────────────────────────────────
+
+    struct MockNotifier {
+        calls: Arc<Mutex<Vec<(String, NotifyLevel)>>>,
+        fail: bool,
+    }
+
+    impl MockNotifier {
+        fn new() -> (Self, Arc<Mutex<Vec<(String, NotifyLevel)>>>) {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let notifier = Self { calls: Arc::clone(&calls), fail: false };
+            (notifier, calls)
+        }
+
+        fn failing() -> Self {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            Self { calls, fail: true }
+        }
+    }
+
+    impl Notifier for MockNotifier {
+        fn notify(&self, message: &str, level: NotifyLevel) -> Result<()> {
+            self.calls.lock().unwrap().push((message.to_string(), level));
+            if self.fail {
+                Err(ZError::Io("mock failure".to_string()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_session(prefix: &str) -> String {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("notify__{}_{}", prefix, n)
+    }
+
+    fn cleanup(session: &str) {
+        let _ = z_core::notification::clear_notifications(session);
+    }
+
+    // ── FileNotifier tests ────────────────────────────────────────────────
+
+    #[test]
+    fn file_notifier_writes_notification() {
+        let session = unique_session("file");
+        cleanup(&session);
+
+        let n = FileNotifier { session: session.clone() };
+        n.notify("hello", NotifyLevel::Info).unwrap();
+
+        assert!(z_core::notification::has_notifications(&session));
+        cleanup(&session);
+    }
+
+    // ── applescript_quote tests ───────────────────────────────────────────
+
+    #[test]
+    fn applescript_quote_plain_string() {
+        assert_eq!(applescript_quote("hello"), "\"hello\"");
+    }
+
+    #[test]
+    fn applescript_quote_escapes_double_quote() {
+        assert_eq!(applescript_quote("say \"hi\""), "\"say \\\"hi\\\"\"");
+    }
+
+    #[test]
+    fn applescript_quote_escapes_backslash() {
+        assert_eq!(applescript_quote("a\\b"), "\"a\\\\b\"");
+    }
+
+    // ── percent_encode tests ──────────────────────────────────────────────
+
+    #[test]
+    fn percent_encode_plain_string() {
+        assert_eq!(percent_encode("hello"), "hello");
+    }
+
+    #[test]
+    fn percent_encode_space() {
+        assert_eq!(percent_encode("hello world"), "hello%20world");
+    }
+
+    #[test]
+    fn percent_encode_ampersand() {
+        assert_eq!(percent_encode("a&b"), "a%26b");
+    }
+
+    #[test]
+    fn percent_encode_equals() {
+        assert_eq!(percent_encode("a=b"), "a%3Db");
+    }
+
+    #[test]
+    fn percent_encode_newline() {
+        assert_eq!(percent_encode("a\nb"), "a%0Ab");
+    }
+
+    // ── DispatchNotifier channel selection tests ──────────────────────────
+
+    #[test]
+    fn dispatch_always_includes_file_notifier() {
+        let session = unique_session("dispatch_file");
+        cleanup(&session);
+
+        let config = NotificationsConfig {
+            macos_native: false,
+            telegram: false,
+            tui: true,
+            telegram_token: None,
+            telegram_chat_id: None,
+        };
+        let dispatcher = DispatchNotifier::from_config(&config, &session);
+        dispatcher.notify("test msg", NotifyLevel::Info).unwrap();
+
+        assert!(
+            z_core::notification::has_notifications(&session),
+            "file notifier should always be included"
+        );
+        cleanup(&session);
+    }
+
+    #[test]
+    fn dispatch_telegram_skipped_when_disabled() {
+        // Telegram is configured but disabled — only file notifier runs.
+        let session = unique_session("dispatch_no_tg");
+        cleanup(&session);
+
+        let config = NotificationsConfig {
+            macos_native: false,
+            telegram: false,
+            tui: true,
+            telegram_token: Some("fake_token".to_string()),
+            telegram_chat_id: Some("123".to_string()),
+        };
+        let dispatcher = DispatchNotifier::from_config(&config, &session);
+        // Should succeed (no curl call attempted).
+        dispatcher.notify("test", NotifyLevel::Info).unwrap();
+        cleanup(&session);
+    }
+
+    #[test]
+    fn dispatch_telegram_skipped_when_token_missing() {
+        // Telegram enabled but no token configured — skipped gracefully.
+        let session = unique_session("dispatch_no_token");
+        cleanup(&session);
+
+        let config = NotificationsConfig {
+            macos_native: false,
+            telegram: true,
+            tui: true,
+            telegram_token: None,
+            telegram_chat_id: Some("123".to_string()),
+        };
+        let dispatcher = DispatchNotifier::from_config(&config, &session);
+        dispatcher.notify("test", NotifyLevel::Info).unwrap();
+        cleanup(&session);
+    }
+
+    // ── DispatchNotifier with mock notifiers ──────────────────────────────
+
+    #[test]
+    fn dispatch_notifier_calls_all_notifiers() {
+        let (mock1, calls1) = MockNotifier::new();
+        let (mock2, calls2) = MockNotifier::new();
+
+        let dispatcher = DispatchNotifier {
+            notifiers: vec![Box::new(mock1), Box::new(mock2)],
+        };
+        dispatcher.notify("hello", NotifyLevel::Warning).unwrap();
+
+        let c1 = calls1.lock().unwrap();
+        let c2 = calls2.lock().unwrap();
+        assert_eq!(c1.len(), 1);
+        assert_eq!(c2.len(), 1);
+        assert_eq!(c1[0].0, "hello");
+        assert_eq!(c1[0].1, NotifyLevel::Warning);
+    }
+
+    #[test]
+    fn dispatch_continues_after_one_notifier_fails() {
+        let (mock_ok, calls_ok) = MockNotifier::new();
+        let mock_fail = MockNotifier::failing();
+
+        let dispatcher = DispatchNotifier {
+            notifiers: vec![Box::new(mock_fail), Box::new(mock_ok)],
+        };
+        // Should attempt both even though the first fails.
+        let result = dispatcher.notify("msg", NotifyLevel::Error);
+        assert!(result.is_err(), "should propagate the error");
+
+        let c = calls_ok.lock().unwrap();
+        assert_eq!(c.len(), 1, "second notifier should still have been called");
+    }
+
+    #[test]
+    fn dispatch_empty_notifiers_succeeds() {
+        let dispatcher = DispatchNotifier { notifiers: vec![] };
+        dispatcher.notify("anything", NotifyLevel::Info).unwrap();
+    }
+}
