@@ -133,6 +133,9 @@ fn parse_step(node: &KdlNode) -> Result<Step> {
                     .find(|e| e.name().is_none())
                     .and_then(|e| e.value().as_i64())
                     .ok_or_else(|| ZError::ConfigParse(format!("step '{name}': max-retries must be an integer")))?;
+                if v < 0 {
+                    return Err(ZError::ConfigParse(format!("step '{name}': max-retries must be non-negative, got {v}")));
+                }
                 max_retries = Some(v as u32);
             }
             "timeout" => {
@@ -251,11 +254,26 @@ pub fn parse_autopilot_workflow(content: &str) -> Result<AutopilotWorkflow> {
 
 /// Validate a workflow:
 /// - All transition targets must name existing steps.
-/// - No cycles (each step visited at most once from any path starting at the first step).
+/// - No duplicate step names.
+/// - No orphan steps (every step reachable from the first).
+/// - Cycles are intentionally allowed (retry loops are the core autopilot pattern).
 /// - Trigger must be valid (already guaranteed by parsing).
 pub fn validate_workflow(workflow: &AutopilotWorkflow) -> Result<()> {
     let step_names: std::collections::HashSet<&str> =
         workflow.steps.iter().map(|s| s.name.as_str()).collect();
+
+    // Check for duplicate step names.
+    if step_names.len() != workflow.steps.len() {
+        let mut seen = std::collections::HashSet::new();
+        for step in &workflow.steps {
+            if !seen.insert(step.name.as_str()) {
+                return Err(ZError::ConfigParse(format!(
+                    "workflow '{}': duplicate step name '{}'",
+                    workflow.name, step.name
+                )));
+            }
+        }
+    }
 
     // Check all transition targets exist.
     for step in &workflow.steps {
@@ -615,6 +633,84 @@ autopilot "empty" {
     fn test_parse_empty_document() {
         let workflows = parse_autopilot_workflows("").unwrap();
         assert!(workflows.is_empty());
+    }
+
+    #[test]
+    fn test_parse_negative_max_retries_error() {
+        let kdl = r#"
+autopilot "bad" {
+    trigger "manual"
+    step "s" {
+        run "cmd"
+        max-retries -1
+    }
+}
+"#;
+        let err = parse_autopilot_workflow(kdl).unwrap_err();
+        assert!(err.to_string().contains("non-negative"));
+    }
+
+    #[test]
+    fn test_validate_duplicate_step_names() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "s" {
+        run "cmd1"
+        on-complete "s"
+    }
+    step "s" {
+        run "cmd2"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(err.to_string().contains("duplicate step name"));
+    }
+
+    #[test]
+    fn test_parse_autopilot_missing_name_error() {
+        let kdl = r#"
+autopilot {
+    trigger "manual"
+    step "s" {
+        run "cmd"
+    }
+}
+"#;
+        let err = parse_autopilot_workflow(kdl).unwrap_err();
+        assert!(err.to_string().contains("missing name"));
+    }
+
+    #[test]
+    fn test_parse_step_missing_name_error() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step {
+        run "cmd"
+    }
+}
+"#;
+        let err = parse_autopilot_workflow(kdl).unwrap_err();
+        assert!(err.to_string().contains("step missing name"));
+    }
+
+    #[test]
+    fn test_trigger_as_str_roundtrips() {
+        let triggers = [
+            Trigger::PostPush,
+            Trigger::PrApproved,
+            Trigger::PrReviewReceived,
+            Trigger::PrOpenedByDependabot,
+            Trigger::PostMergeMain,
+            Trigger::NewCommitsOnMain,
+            Trigger::Manual,
+        ];
+        for t in &triggers {
+            assert_eq!(Trigger::from_str(t.as_str()).as_ref(), Some(t));
+        }
     }
 
     #[test]
