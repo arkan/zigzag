@@ -155,4 +155,28 @@ mod tests {
         let sessions = parse_zellij_sessions(output, "myapp");
         assert_eq!(sessions[0].branch, "feat-some-long-branch");
     }
+
+    #[test]
+    fn parse_sessions_whitespace_only_lines_ignored() {
+        let output = "  \n\nmyapp:main\n  \n";
+        let sessions = parse_zellij_sessions(output, "myapp");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].name, "myapp:main");
+    }
+
+    #[test]
+    fn parse_sessions_no_false_prefix_match() {
+        // "myapp-ext:main" should NOT match project "myapp"
+        let output = "myapp-ext:main\nmyapp:dev\n";
+        let sessions = parse_zellij_sessions(output, "myapp");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].name, "myapp:dev");
+    }
+
+    #[test]
+    fn parse_sessions_all_exited() {
+        let output = "myapp:main (EXITED)\nmyapp:dev (EXITED)\n";
+        let sessions = parse_zellij_sessions(output, "myapp");
+        assert!(sessions.is_empty());
+    }
 }

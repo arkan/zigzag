@@ -127,7 +127,11 @@ fn parse_project_node(node: &KdlNode) -> Result<Project> {
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
+    if path == "~" {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home);
+        }
+    } else if let Some(rest) = path.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
             return PathBuf::from(home).join(rest);
         }
@@ -573,10 +577,128 @@ config {
     }
 
     // -----------------------------------------------------------------------
-    // Config merging: global < project (future)
+    // expand_tilde edge cases
     // -----------------------------------------------------------------------
-    // The merge logic is intentionally simple for phase 1: project-level layout
-    // overrides global when it exists. This is a property tested indirectly
-    // through the KdlProjectStore which will read both files.
-    // A dedicated merge function can be added in a later phase.
+
+    #[test]
+    fn expand_tilde_bare_tilde() {
+        std::env::set_var("HOME", "/home/testuser");
+        assert_eq!(expand_tilde("~"), PathBuf::from("/home/testuser"));
+    }
+
+    #[test]
+    fn expand_tilde_no_tilde() {
+        assert_eq!(expand_tilde("/absolute/path"), PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn expand_tilde_tilde_in_middle_not_expanded() {
+        assert_eq!(expand_tilde("/some/~/path"), PathBuf::from("/some/~/path"));
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_env_token edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_env_token_empty_var_name_is_error() {
+        let err = resolve_env_token("env:").unwrap_err();
+        assert!(matches!(err, ZError::EnvVarNotFound(ref v) if v.is_empty()));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_projects_kdl edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_projects_with_plain_token() {
+        let kdl = r#"
+project "myapp" {
+    path "/code/myapp"
+    token "literal-token-value"
+}
+"#;
+        let projects = parse_projects_kdl(kdl).unwrap();
+        assert_eq!(projects[0].token.as_deref(), Some("literal-token-value"));
+    }
+
+    #[test]
+    fn parse_projects_ignores_non_project_nodes() {
+        let kdl = r#"
+something-else "foo"
+project "myapp" {
+    path "/code/myapp"
+}
+another-thing "bar"
+"#;
+        let projects = parse_projects_kdl(kdl).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "myapp");
+    }
+
+    #[test]
+    fn parse_projects_duplicate_names_both_returned() {
+        let kdl = r#"
+project "dup" {
+    path "/code/dup1"
+}
+project "dup" {
+    path "/code/dup2"
+}
+"#;
+        let projects = parse_projects_kdl(kdl).unwrap();
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].path, PathBuf::from("/code/dup1"));
+        assert_eq!(projects[1].path, PathBuf::from("/code/dup2"));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_global_config_kdl edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_global_config_notifications_missing_values_default_false() {
+        let kdl = r#"
+config {
+    notifications {
+        macos-native
+        telegram
+        tui
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert!(!cfg.notifications.macos_native);
+        assert!(!cfg.notifications.telegram);
+        assert!(!cfg.notifications.tui);
+    }
+
+    #[test]
+    fn parse_global_config_deps_tool_without_version_ignored() {
+        let kdl = r#"
+config {
+    deps {
+        zellij ">=0.44.0"
+        wt
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert_eq!(cfg.deps.len(), 1);
+        assert!(cfg.deps.contains_key("zellij"));
+        assert!(!cfg.deps.contains_key("wt"));
+    }
+
+    #[test]
+    fn parse_global_config_empty_layout() {
+        let kdl = r#"
+config {
+    default-layout {
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        let layout = cfg.default_layout.unwrap();
+        assert!(layout.tabs.is_empty());
+    }
 }
