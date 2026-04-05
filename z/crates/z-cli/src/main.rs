@@ -1,6 +1,7 @@
 mod config_store;
 mod depcheck_impl;
 mod prune;
+mod remote;
 mod session_manager;
 mod worktree_manager;
 
@@ -187,6 +188,11 @@ fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<(
 
     let effective_branch = branch.unwrap_or("main");
 
+    // Remote project: SSH worktree setup + Zellij HTTPS attach.
+    if let Some(host) = project.host.clone() {
+        return cmd_open_remote(&project, &host, effective_branch);
+    }
+
     // Build the expected session name (branch "/" → "-" normalization applied).
     let target_session = z_core::domain::Session::new(&project.name, effective_branch);
 
@@ -227,6 +233,48 @@ fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<(
     Ok(())
 }
 
+/// Open a session on a remote project:
+/// 1. SSH to the remote host and run `wt switch -c <branch>` to set up the worktree.
+/// 2. Attach to the remote Zellij session via HTTPS.
+fn cmd_open_remote(
+    project: &z_core::domain::Project,
+    host: &str,
+    branch: &str,
+) -> z_core::error::Result<()> {
+    let ssh_host = remote::extract_ssh_host(host)?;
+
+    // SSH: set up (or reuse) the worktree on the remote machine.
+    let ssh_cmd = format!(
+        "cd {} && wt switch -c {}",
+        remote::shell_quote(&project.path.display().to_string()),
+        remote::shell_quote(branch)
+    );
+    remote::ssh_run_remote(&ssh_host, &ssh_cmd)?;
+
+    // Build session name and HTTPS attach URL.
+    let session = z_core::domain::Session::new(&project.name, branch);
+    let url = remote::build_remote_attach_url(host, &session.name);
+
+    // Attach via Zellij HTTPS (with optional token).
+    let mut cmd = std::process::Command::new("zellij");
+    cmd.args(["attach", &url]);
+    if let Some(token) = &project.token {
+        if !token.is_empty() {
+            cmd.args(["--token", token]);
+        }
+    }
+    let status = cmd
+        .status()
+        .map_err(|e| z_core::error::ZError::Session(e.to_string()))?;
+    if !status.success() {
+        return Err(z_core::error::ZError::Session(format!(
+            "zellij attach {} failed with status {}",
+            url, status
+        )));
+    }
+    Ok(())
+}
+
 /// Detach from a Zellij session, keeping it running in the background.
 ///
 /// `session_name` — if `None`, detects the current session from `ZELLIJ_SESSION_NAME`.
@@ -259,10 +307,13 @@ fn cmd_close(session_name: Option<&str>) -> z_core::error::Result<()> {
 }
 
 /// Kill a Zellij session and optionally remove its worktree.
+///
+/// For remote projects (those with a `host` field), delegates session killing
+/// and worktree removal to the remote machine via SSH.
 fn cmd_delete(session_name: &str) -> z_core::error::Result<()> {
     let session_mgr = ZellijSessionManager;
 
-    let (project, branch) =
+    let (project_name, branch) =
         parse_session_name(session_name).ok_or_else(|| {
             z_core::error::ZError::Session(format!(
                 "invalid session name {:?}: expected project:branch",
@@ -270,9 +321,20 @@ fn cmd_delete(session_name: &str) -> z_core::error::Result<()> {
             ))
         })?;
 
+    // Look up the project to check if it's remote.
+    let store = KdlProjectStore::new();
+    let project = store.get_project(&project_name).ok();
+
+    if let Some(proj) = &project {
+        if let Some(host) = &proj.host {
+            return cmd_delete_remote(proj, host, session_name, &branch);
+        }
+    }
+
+    // Local session flow.
     let session = Session {
         name: session_name.to_string(),
-        project,
+        project: project_name,
         branch: branch.clone(),
     };
 
@@ -293,6 +355,38 @@ fn cmd_delete(session_name: &str) -> z_core::error::Result<()> {
         println!("Worktree {} removed.", branch);
     } else {
         println!("Worktree kept.");
+    }
+
+    Ok(())
+}
+
+/// Kill a remote Zellij session via SSH and optionally remove its remote worktree.
+fn cmd_delete_remote(
+    project: &z_core::domain::Project,
+    host: &str,
+    session_name: &str,
+    branch: &str,
+) -> z_core::error::Result<()> {
+    let ssh_host = remote::extract_ssh_host(host)?;
+
+    remote::delete_remote_session(&ssh_host, session_name)?;
+    println!("Session {} killed.", session_name);
+
+    // Prompt user to optionally remove the worktree on the remote machine.
+    eprint!("Delete remote worktree {}? (y/N) ", branch);
+    let _ = std::io::stderr().flush();
+
+    let mut response = String::new();
+    std::io::stdin()
+        .read_line(&mut response)
+        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+
+    if parse_confirm_response(&response) {
+        let project_path = project.path.to_string_lossy();
+        remote::remove_remote_worktree(&ssh_host, &project_path, branch)?;
+        println!("Remote worktree {} removed.", branch);
+    } else {
+        println!("Remote worktree kept.");
     }
 
     Ok(())
@@ -485,7 +579,24 @@ fn cmd_list() -> z_core::error::Result<()> {
     println!("Projects:\n");
 
     for project in &projects {
-        let sessions = session_mgr.list_sessions(&project.name)?;
+        // Remote projects: list sessions on the remote host via SSH.
+        // Local projects: query the local Zellij instance.
+        let sessions = if let Some(host) = &project.host {
+            match remote::extract_ssh_host(host)
+                .and_then(|ssh_host| remote::list_remote_sessions(&ssh_host, &project.name))
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!(
+                        "  warning: could not list remote sessions for {}: {}",
+                        project.name, e
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            session_mgr.list_sessions(&project.name)?
+        };
 
         let remote_indicator = if project.host.is_some() { " 🌐" } else { "" };
 
