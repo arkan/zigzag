@@ -983,6 +983,7 @@ claude {
                     name: "custom".to_string(),
                     panes: vec![],
                 }],
+                cwd: None,
             }),
             ..Default::default()
         };
@@ -1000,6 +1001,7 @@ claude {
                     name: "global-tab".to_string(),
                     panes: vec![],
                 }],
+                cwd: None,
             }),
             ..Default::default()
         };
@@ -1018,6 +1020,7 @@ claude {
                         panes: vec![],
                     },
                 ],
+                cwd: None,
             }),
             ..Default::default()
         };
@@ -1073,6 +1076,7 @@ claude {
                         args: vec![],
                     }],
                 }],
+                cwd: None,
             }),
             ..Default::default()
         };
@@ -1098,6 +1102,7 @@ claude {
                         args: vec!["--verbose".to_string()],
                     }],
                 }],
+                cwd: None,
             }),
             claude_args: vec!["--resume".to_string()],
             ..Default::default()
@@ -1159,6 +1164,7 @@ deploy {
                     args: vec![],
                 }],
             }],
+            cwd: None,
         };
         // Should not panic even when there's no claude pane
         apply_claude_args(&mut layout, &["--resume".to_string()]);
