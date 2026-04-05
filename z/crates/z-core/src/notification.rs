@@ -6,10 +6,16 @@
 /// the session.
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::domain::NotifyLevel;
 use crate::error::{Result, ZError};
+
+/// Monotonic counter appended to filenames to avoid collisions when two
+/// notifications are written within the same nanosecond (or on systems with
+/// coarse clock resolution).
+static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -25,6 +31,22 @@ pub fn session_notifications_dir(session: &str) -> PathBuf {
     notifications_dir().join(session)
 }
 
+/// Reject session names that could escape the notifications directory.
+fn validate_session_name(session: &str) -> Result<()> {
+    if session.is_empty()
+        || session.contains('/')
+        || session.contains('\\')
+        || session.contains("..")
+        || session == "."
+    {
+        return Err(ZError::Io(format!(
+            "invalid session name for notifications: {:?}",
+            session
+        )));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Write / clear
 // ---------------------------------------------------------------------------
@@ -37,6 +59,8 @@ pub fn session_notifications_dir(session: &str) -> PathBuf {
 /// <message>
 /// ```
 pub fn write_notification(session: &str, message: &str, level: NotifyLevel) -> Result<()> {
+    validate_session_name(session)?;
+
     let dir = session_notifications_dir(session);
     fs::create_dir_all(&dir).map_err(|e| ZError::Io(e.to_string()))?;
 
@@ -44,6 +68,7 @@ pub fn write_notification(session: &str, message: &str, level: NotifyLevel) -> R
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
+    let seq = WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
 
     let level_str = match level {
         NotifyLevel::Info => "info",
@@ -52,13 +77,15 @@ pub fn write_notification(session: &str, message: &str, level: NotifyLevel) -> R
     };
 
     let content = format!("{}\n{}", level_str, message);
-    let path = dir.join(format!("{}", ts));
+    let path = dir.join(format!("{}_{}", ts, seq));
     fs::write(&path, content).map_err(|e| ZError::Io(e.to_string()))?;
     Ok(())
 }
 
 /// Remove all notification files for `session`.
 pub fn clear_notifications(session: &str) -> Result<()> {
+    validate_session_name(session)?;
+
     let dir = session_notifications_dir(session);
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|e| ZError::Io(e.to_string()))?;
@@ -214,6 +241,38 @@ mod tests {
         let count = fs::read_dir(&dir).unwrap().count();
         assert_eq!(count, 2, "expected 2 notification files");
         cleanup(&session);
+    }
+
+    // ── Path traversal validation tests ──────────────────────────────────
+
+    #[test]
+    fn write_rejects_session_with_slash() {
+        let result = write_notification("../escape", "msg", NotifyLevel::Info);
+        assert!(result.is_err(), "should reject session name with ..");
+    }
+
+    #[test]
+    fn write_rejects_session_with_path_separator() {
+        let result = write_notification("foo/bar", "msg", NotifyLevel::Info);
+        assert!(result.is_err(), "should reject session name with /");
+    }
+
+    #[test]
+    fn write_rejects_empty_session() {
+        let result = write_notification("", "msg", NotifyLevel::Info);
+        assert!(result.is_err(), "should reject empty session name");
+    }
+
+    #[test]
+    fn write_rejects_dot_session() {
+        let result = write_notification(".", "msg", NotifyLevel::Info);
+        assert!(result.is_err(), "should reject '.' session name");
+    }
+
+    #[test]
+    fn clear_rejects_traversal_session() {
+        let result = clear_notifications("../../etc");
+        assert!(result.is_err(), "should reject traversal in clear");
     }
 
     #[test]

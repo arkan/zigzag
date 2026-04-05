@@ -59,9 +59,18 @@ impl Notifier for MacosNotifier {
 }
 
 /// Wrap a string in AppleScript double-quoted string literals.
+///
+/// AppleScript double-quoted strings only support `\\` and `\"` as escape
+/// sequences — there is no `\n`. Newlines and carriage returns are replaced
+/// with spaces to avoid syntax errors or injection.
 fn applescript_quote(s: &str) -> String {
-    // AppleScript strings use double quotes; escape backslash first, then quote.
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', " ")
+            .replace('\r', " ")
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +123,7 @@ impl Notifier for TelegramNotifier {
 fn percent_encode(s: &str) -> String {
     s.chars()
         .map(|c| match c {
+            '%' => "%25".to_string(),
             ' ' => "%20".to_string(),
             '&' => "%26".to_string(),
             '+' => "%2B".to_string(),
@@ -396,5 +406,63 @@ mod tests {
     fn dispatch_empty_notifiers_succeeds() {
         let dispatcher = DispatchNotifier { notifiers: vec![] };
         dispatcher.notify("anything", NotifyLevel::Info).unwrap();
+    }
+
+    // ── percent_encode edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn percent_encode_percent_sign() {
+        assert_eq!(percent_encode("100%"), "100%25");
+    }
+
+    #[test]
+    fn percent_encode_already_encoded_sequence() {
+        // %26 in input must not be passed through as-is (would decode to &).
+        assert_eq!(percent_encode("%26"), "%2526");
+    }
+
+    #[test]
+    fn percent_encode_combined_specials() {
+        assert_eq!(percent_encode("a=1&b=2"), "a%3D1%26b%3D2");
+    }
+
+    // ── applescript_quote edge cases ──────────────────────────────────────
+
+    #[test]
+    fn applescript_quote_strips_newlines() {
+        assert_eq!(applescript_quote("line1\nline2"), "\"line1 line2\"");
+    }
+
+    #[test]
+    fn applescript_quote_strips_carriage_return() {
+        assert_eq!(applescript_quote("a\rb"), "\"a b\"");
+    }
+
+    #[test]
+    fn applescript_quote_combined_escapes() {
+        assert_eq!(
+            applescript_quote("say \"hi\"\nand \\bye"),
+            "\"say \\\"hi\\\" and \\\\bye\""
+        );
+    }
+
+    // ── DispatchNotifier: telegram with missing chat_id ───────────────────
+
+    #[test]
+    fn dispatch_telegram_skipped_when_chat_id_missing() {
+        let session = unique_session("dispatch_no_chatid");
+        cleanup(&session);
+
+        let config = NotificationsConfig {
+            macos_native: false,
+            telegram: true,
+            tui: true,
+            telegram_token: Some("tok".to_string()),
+            telegram_chat_id: None,
+        };
+        let dispatcher = DispatchNotifier::from_config(&config, &session);
+        // Should succeed — no curl call attempted.
+        dispatcher.notify("test", NotifyLevel::Info).unwrap();
+        cleanup(&session);
     }
 }
