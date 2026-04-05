@@ -1,0 +1,8 @@
+[package]
+name = "z-web"
+version.workspace = true
+edition.workspace = true
+description = "z-web: future web server with axum (phase 5)"
+
+[dependencies]
+z-core.workspace = true

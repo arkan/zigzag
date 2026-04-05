@@ -18,7 +18,8 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "typecheck": "cargo check --manifest-path z/Cargo.toml --all",
+    "test": "cargo test --manifest-path z/Cargo.toml --all",
     "postinstall": "bash scripts/patch-sandcastle.sh",
     "sandcastle": "npx tsx ./.sandcastle/main.ts"
   },

@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "crates/z-core",
+    "crates/z-tui",
+    "crates/z-cli",
+    "crates/z-autopilot",
+    "crates/z-plugin",
+    "crates/z-web",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+z-core = { path = "crates/z-core" }
+thiserror = "2"
+semver = "1"

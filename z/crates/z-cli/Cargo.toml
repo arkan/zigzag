@@ -1,0 +1,12 @@
+[package]
+name = "z-cli"
+version.workspace = true
+edition.workspace = true
+description = "z: CLI/TUI project manager built on Zellij"
+
+[[bin]]
+name = "z"
+path = "src/main.rs"
+
+[dependencies]
+z-core.workspace = true
