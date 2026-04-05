@@ -77,6 +77,25 @@ pub struct AutopilotWorkflow {
     pub trigger: Trigger,
     pub poll_interval: Option<String>,
     pub steps: Vec<Step>,
+    /// Per-workflow override: if set, overrides the project-level auto_push setting.
+    pub auto_push: Option<bool>,
+    /// Per-workflow override: if set, overrides the project-level review setting.
+    pub review: Option<bool>,
+}
+
+/// Extract a boolean positional arg from a KDL node, returning an error if
+/// a positional arg exists but is not a boolean (e.g. `auto-push "false"`).
+pub(crate) fn require_bool_arg(node: &KdlNode, context: &str) -> Result<Option<bool>> {
+    let entry = node.entries().iter().find(|e| e.name().is_none());
+    match entry {
+        None => Ok(None),
+        Some(e) => match e.value().as_bool() {
+            Some(b) => Ok(Some(b)),
+            None => Err(ZError::ConfigParse(format!(
+                "{context}: '{}' expects a boolean (true/false), got {}", node.name().value(), e.value()
+            ))),
+        },
+    }
 }
 
 fn first_string_arg(node: &KdlNode) -> Option<&str> {
@@ -197,6 +216,8 @@ fn parse_autopilot_node(node: &KdlNode) -> Result<AutopilotWorkflow> {
     let mut trigger: Option<Trigger> = None;
     let mut poll_interval: Option<String> = None;
     let mut steps: Vec<Step> = Vec::new();
+    let mut auto_push: Option<bool> = None;
+    let mut review: Option<bool> = None;
 
     for child in children.nodes() {
         match child.name().value() {
@@ -217,6 +238,12 @@ fn parse_autopilot_node(node: &KdlNode) -> Result<AutopilotWorkflow> {
             "step" => {
                 steps.push(parse_step(child)?);
             }
+            "auto-push" => {
+                auto_push = require_bool_arg(child, &format!("autopilot '{name}'"))?;
+            }
+            "review" => {
+                review = require_bool_arg(child, &format!("autopilot '{name}'"))?;
+            }
             _ => {} // forward-compatible
         }
     }
@@ -225,7 +252,7 @@ fn parse_autopilot_node(node: &KdlNode) -> Result<AutopilotWorkflow> {
         ZError::ConfigParse(format!("autopilot '{name}' missing trigger"))
     })?;
 
-    Ok(AutopilotWorkflow { name, description, trigger, poll_interval, steps })
+    Ok(AutopilotWorkflow { name, description, trigger, poll_interval, steps, auto_push, review })
 }
 
 /// Parse all `autopilot` nodes from a KDL document string.
@@ -237,7 +264,11 @@ pub fn parse_autopilot_workflows(content: &str) -> Result<Vec<AutopilotWorkflow>
     let mut workflows = Vec::new();
     for node in doc.nodes() {
         if node.name().value() == "autopilot" {
-            workflows.push(parse_autopilot_node(node)?);
+            // Skip unnamed `autopilot { ... }` config blocks (no positional string arg).
+            let has_name = node.entries().iter().any(|e| e.name().is_none());
+            if has_name {
+                workflows.push(parse_autopilot_node(node)?);
+            }
         }
     }
     Ok(workflows)
@@ -681,17 +712,21 @@ autopilot "test" {
     }
 
     #[test]
-    fn test_parse_autopilot_missing_name_error() {
+    fn test_parse_autopilot_unnamed_block_is_config_not_workflow() {
+        // An unnamed `autopilot { ... }` block is a config block (auto-push/review settings),
+        // not a workflow definition — it is silently skipped by parse_autopilot_workflows.
         let kdl = r#"
 autopilot {
-    trigger "manual"
-    step "s" {
-        run "cmd"
-    }
+    auto-push false
+    review true
 }
 "#;
+        // No workflow definitions found — parse_autopilot_workflow returns "no autopilot block found".
         let err = parse_autopilot_workflow(kdl).unwrap_err();
-        assert!(err.to_string().contains("missing name"));
+        assert!(err.to_string().contains("no autopilot block found"));
+        // parse_autopilot_workflows returns empty list.
+        let workflows = parse_autopilot_workflows(kdl).unwrap();
+        assert!(workflows.is_empty());
     }
 
     #[test]
@@ -792,5 +827,35 @@ autopilot "real" {
         let workflows = parse_autopilot_workflows(kdl).unwrap();
         assert_eq!(workflows.len(), 1);
         assert_eq!(workflows[0].name, "real");
+    }
+
+    #[test]
+    fn test_parse_workflow_review_string_value_is_error() {
+        let kdl = r#"
+autopilot "wf" {
+    trigger "manual"
+    review "true"
+    step "s" {
+        run "cmd"
+    }
+}
+"#;
+        let err = parse_autopilot_workflow(kdl).unwrap_err();
+        assert!(err.to_string().contains("boolean"));
+    }
+
+    #[test]
+    fn test_parse_workflow_auto_push_integer_is_error() {
+        let kdl = r#"
+autopilot "wf" {
+    trigger "manual"
+    auto-push 1
+    step "s" {
+        run "cmd"
+    }
+}
+"#;
+        let err = parse_autopilot_workflow(kdl).unwrap_err();
+        assert!(err.to_string().contains("boolean"));
     }
 }
