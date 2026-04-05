@@ -2,10 +2,11 @@
 ///
 /// Three-panel layout:
 ///   - Left:   PROJECTS list (with ● active and 🌐 remote indicators)
-///   - Right:  SESSIONS list for the selected project
+///   - Right:  SESSIONS list for the selected project (with 🔔 notification badges)
 ///   - Bottom: STATUS bar with project info + keyboard hint strip
 ///
 /// Navigation defaults to arrow keys; pass `Navigation::Vim` for hjkl.
+use std::collections::HashSet;
 use std::io;
 
 use crossterm::{
@@ -81,6 +82,9 @@ pub struct TuiState {
     pub navigation: Navigation,
     pub search_mode: bool,
     pub search_query: String,
+    /// Session names (e.g. `"myapp:feat-login"`) that have pending notifications.
+    /// Sessions in this set render with a 🔔 badge in the SESSIONS panel.
+    pub notifications: HashSet<String>,
 }
 
 impl TuiState {
@@ -93,6 +97,7 @@ impl TuiState {
             navigation,
             search_mode: false,
             search_query: String::new(),
+            notifications: HashSet::new(),
         }
     }
 
@@ -169,7 +174,14 @@ impl TuiState {
 ///
 /// Sets up the terminal, runs the event loop, restores the terminal on exit,
 /// and returns the action the user chose.
-pub fn run_tui(entries: Vec<ProjectEntry>, navigation: Navigation) -> io::Result<TuiAction> {
+///
+/// `notifications` — set of session names that have pending notifications;
+/// these sessions will display a 🔔 badge in the SESSIONS panel.
+pub fn run_tui(
+    entries: Vec<ProjectEntry>,
+    navigation: Navigation,
+    notifications: HashSet<String>,
+) -> io::Result<TuiAction> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -177,6 +189,7 @@ pub fn run_tui(entries: Vec<ProjectEntry>, navigation: Navigation) -> io::Result
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = TuiState::new(entries, navigation);
+    state.notifications = notifications;
     let result = event_loop(&mut terminal, &mut state);
 
     // Always restore the terminal, even if the event loop returned an error.
@@ -392,7 +405,14 @@ fn render_sessions(f: &mut Frame, area: Rect, state: &TuiState) {
 
     let items: Vec<ListItem> = sessions
         .iter()
-        .map(|s| ListItem::new(s.name.as_str()))
+        .map(|s| {
+            let badge = if state.notifications.contains(&s.name) {
+                " \u{1f514}" // 🔔
+            } else {
+                ""
+            };
+            ListItem::new(format!("{}{}", s.name, badge))
+        })
         .collect();
 
     let mut list_state = ListState::default();
@@ -832,5 +852,47 @@ mod tests {
         assert_eq!(state.selected_session, 0, "session resets on project change via down");
         state.move_up(); // back to myapp
         assert_eq!(state.selected_session, 0, "session resets on project change via up");
+    }
+
+    // ── Notification badge tests ──────────────────────────────────────────
+
+    #[test]
+    fn renders_bell_badge_on_session_with_notification() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // myapp:main has a pending notification
+        state.notifications.insert("myapp:main".to_string());
+        let out = render_to_string(&state, 80, 24);
+        // The 🔔 Unicode codepoint U+1F514 should appear in the output
+        assert!(
+            out.contains('\u{1f514}'),
+            "should render 🔔 badge for session with notification"
+        );
+    }
+
+    #[test]
+    fn does_not_render_bell_badge_without_notification() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        let out = render_to_string(&state, 80, 24);
+        assert!(
+            !out.contains('\u{1f514}'),
+            "should not render 🔔 badge when no notifications pending"
+        );
+    }
+
+    #[test]
+    fn renders_bell_only_on_notified_session() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // Only myapp:feat-login has a notification
+        state.notifications.insert("myapp:feat-login".to_string());
+        let out = render_to_string(&state, 80, 24);
+        assert!(out.contains('\u{1f514}'), "🔔 should appear for feat-login");
+        // myapp:main has no notification
+        assert!(out.contains("myapp:main"), "myapp:main should still render");
+    }
+
+    #[test]
+    fn notifications_field_default_is_empty() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        assert!(state.notifications.is_empty());
     }
 }

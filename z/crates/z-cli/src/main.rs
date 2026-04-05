@@ -1,10 +1,12 @@
 mod config_store;
 mod depcheck_impl;
+mod notify;
 mod prune;
 mod remote;
 mod session_manager;
 mod worktree_manager;
 
+use std::collections::HashSet;
 use std::io::Write as _;
 
 use std::fs;
@@ -12,11 +14,12 @@ use std::fs;
 use z_core::config::{effective_layout, parse_global_config_kdl, parse_per_repo_config_kdl,
     GlobalConfig, PerRepoConfig};
 use z_core::depcheck::{check_deps, format_dep_error, DepCheckStatus};
-use z_core::domain::Session;
-use z_core::traits::{ProjectStore, SessionManager, WorktreeManager};
+use z_core::domain::{NotifyLevel, Session};
+use z_core::traits::{ProjectStore, SessionManager, WorktreeManager, Notifier};
 
 use crate::config_store::KdlProjectStore;
 use crate::depcheck_impl::ProcessDepChecker;
+use crate::notify::DispatchNotifier;
 use crate::session_manager::{parse_session_name, ZellijSessionManager};
 use crate::worktree_manager::WtWorktreeManager;
 
@@ -99,6 +102,20 @@ fn run() {
                 std::process::exit(1);
             }
         }
+        Some("notify") => {
+            // Usage: z notify <session> <message> [--level info|warning|error]
+            let session = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            let message = args.get(2).map(|s| s.as_str()).unwrap_or("");
+            if session.is_empty() || message.is_empty() {
+                eprintln!("usage: z notify <session> <message> [--level info|warning|error]");
+                std::process::exit(1);
+            }
+            let level = parse_notify_level(args.iter().skip(3));
+            if let Err(e) = cmd_notify(session, message, level) {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Some(cmd) => {
             eprintln!("CLI command not yet implemented: {:?}", cmd);
         }
@@ -124,13 +141,21 @@ fn cmd_tui() -> z_core::error::Result<()> {
         _ => Navigation::Arrows,
     };
 
-    let action = z_tui::run_tui(entries, navigation)
+    // Load pending notifications so the TUI can display 🔔 badges.
+    let notifications: HashSet<String> =
+        z_core::notification::sessions_with_notifications().into_iter().collect();
+
+    let action = z_tui::run_tui(entries, navigation, notifications)
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
     match action {
         TuiAction::Quit => {}
 
         TuiAction::Open { project, session } => {
+            // Clear notifications for the session being opened.
+            if let Some(ref s) = session {
+                let _ = z_core::notification::clear_notifications(s);
+            }
             // Extract branch from "project:branch" session name, or open default.
             let branch_owned: Option<String> = session
                 .as_deref()
@@ -504,6 +529,39 @@ fn cmd_prune(dry_run: bool) -> z_core::error::Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Notification command
+// ---------------------------------------------------------------------------
+
+/// Write a notification for `session` and dispatch it to configured channels.
+///
+/// This is the integration point for Claude Code hooks and other external
+/// triggers. The file is always written (for TUI badge); additional channels
+/// (macOS native, Telegram) are dispatched based on `~/.config/z/config.kdl`.
+fn cmd_notify(session: &str, message: &str, level: NotifyLevel) -> z_core::error::Result<()> {
+    let global = load_global_config();
+    let dispatcher = DispatchNotifier::from_config(&global.notifications, session);
+    dispatcher.notify(message, level)?;
+    Ok(())
+}
+
+/// Parse `--level <value>` from an argument iterator.
+/// Defaults to `NotifyLevel::Info` when absent or unrecognised.
+fn parse_notify_level<'a>(mut args: impl Iterator<Item = &'a String>) -> NotifyLevel {
+    while let Some(arg) = args.next() {
+        if arg == "--level" {
+            if let Some(val) = args.next() {
+                return match val.as_str() {
+                    "warning" => NotifyLevel::Warning,
+                    "error" => NotifyLevel::Error,
+                    _ => NotifyLevel::Info,
+                };
+            }
+        }
+    }
+    NotifyLevel::Info
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,6 +620,44 @@ mod tests {
     #[test]
     fn confirm_response_random_text_returns_false() {
         assert!(!parse_confirm_response("maybe"));
+    }
+
+    // ── parse_notify_level tests ──────────────────────────────────────────
+
+    #[test]
+    fn parse_notify_level_default_is_info() {
+        let args: Vec<String> = vec![];
+        assert_eq!(parse_notify_level(args.iter()), NotifyLevel::Info);
+    }
+
+    #[test]
+    fn parse_notify_level_warning() {
+        let args: Vec<String> = vec!["--level".to_string(), "warning".to_string()];
+        assert_eq!(parse_notify_level(args.iter()), NotifyLevel::Warning);
+    }
+
+    #[test]
+    fn parse_notify_level_error() {
+        let args: Vec<String> = vec!["--level".to_string(), "error".to_string()];
+        assert_eq!(parse_notify_level(args.iter()), NotifyLevel::Error);
+    }
+
+    #[test]
+    fn parse_notify_level_info_explicit() {
+        let args: Vec<String> = vec!["--level".to_string(), "info".to_string()];
+        assert_eq!(parse_notify_level(args.iter()), NotifyLevel::Info);
+    }
+
+    #[test]
+    fn parse_notify_level_unknown_defaults_to_info() {
+        let args: Vec<String> = vec!["--level".to_string(), "critical".to_string()];
+        assert_eq!(parse_notify_level(args.iter()), NotifyLevel::Info);
+    }
+
+    #[test]
+    fn parse_notify_level_flag_without_value_defaults_to_info() {
+        let args: Vec<String> = vec!["--level".to_string()];
+        assert_eq!(parse_notify_level(args.iter()), NotifyLevel::Info);
     }
 }
 
