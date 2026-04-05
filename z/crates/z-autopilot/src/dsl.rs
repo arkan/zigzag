@@ -83,6 +83,21 @@ pub struct AutopilotWorkflow {
     pub review: Option<bool>,
 }
 
+/// Extract a boolean positional arg from a KDL node, returning an error if
+/// a positional arg exists but is not a boolean (e.g. `auto-push "false"`).
+pub(crate) fn require_bool_arg(node: &KdlNode, context: &str) -> Result<Option<bool>> {
+    let entry = node.entries().iter().find(|e| e.name().is_none());
+    match entry {
+        None => Ok(None),
+        Some(e) => match e.value().as_bool() {
+            Some(b) => Ok(Some(b)),
+            None => Err(ZError::ConfigParse(format!(
+                "{context}: '{}' expects a boolean (true/false), got {}", node.name().value(), e.value()
+            ))),
+        },
+    }
+}
+
 fn first_string_arg(node: &KdlNode) -> Option<&str> {
     node.entries().iter().find_map(|e| {
         if e.name().is_none() {
@@ -224,14 +239,10 @@ fn parse_autopilot_node(node: &KdlNode) -> Result<AutopilotWorkflow> {
                 steps.push(parse_step(child)?);
             }
             "auto-push" => {
-                auto_push = child.entries().iter()
-                    .find(|e| e.name().is_none())
-                    .and_then(|e| e.value().as_bool());
+                auto_push = require_bool_arg(child, &format!("autopilot '{name}'"))?;
             }
             "review" => {
-                review = child.entries().iter()
-                    .find(|e| e.name().is_none())
-                    .and_then(|e| e.value().as_bool());
+                review = require_bool_arg(child, &format!("autopilot '{name}'"))?;
             }
             _ => {} // forward-compatible
         }
@@ -753,5 +764,35 @@ autopilot "real" {
         let workflows = parse_autopilot_workflows(kdl).unwrap();
         assert_eq!(workflows.len(), 1);
         assert_eq!(workflows[0].name, "real");
+    }
+
+    #[test]
+    fn test_parse_workflow_review_string_value_is_error() {
+        let kdl = r#"
+autopilot "wf" {
+    trigger "manual"
+    review "true"
+    step "s" {
+        run "cmd"
+    }
+}
+"#;
+        let err = parse_autopilot_workflow(kdl).unwrap_err();
+        assert!(err.to_string().contains("boolean"));
+    }
+
+    #[test]
+    fn test_parse_workflow_auto_push_integer_is_error() {
+        let kdl = r#"
+autopilot "wf" {
+    trigger "manual"
+    auto-push 1
+    step "s" {
+        run "cmd"
+    }
+}
+"#;
+        let err = parse_autopilot_workflow(kdl).unwrap_err();
+        assert!(err.to_string().contains("boolean"));
     }
 }

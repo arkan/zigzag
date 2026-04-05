@@ -1,6 +1,6 @@
 use kdl::KdlDocument;
 use z_core::error::{ZError, Result};
-use crate::dsl::{AutopilotWorkflow, parse_autopilot_workflows};
+use crate::dsl::{AutopilotWorkflow, parse_autopilot_workflows, require_bool_arg};
 
 /// Project-level autopilot configuration.
 ///
@@ -71,18 +71,12 @@ fn parse_autopilot_config_block(content: &str) -> Result<AutopilotConfig> {
         for child in children.nodes() {
             match child.name().value() {
                 "auto-push" => {
-                    if let Some(v) = child.entries().iter()
-                        .find(|e| e.name().is_none())
-                        .and_then(|e| e.value().as_bool())
-                    {
+                    if let Some(v) = require_bool_arg(child, "autopilot config")? {
                         config.auto_push = v;
                     }
                 }
                 "review" => {
-                    if let Some(v) = child.entries().iter()
-                        .find(|e| e.name().is_none())
-                        .and_then(|e| e.value().as_bool())
-                    {
+                    if let Some(v) = require_bool_arg(child, "autopilot config")? {
                         config.review = v;
                     }
                 }
@@ -515,5 +509,123 @@ autopilot "escape-hatch" {
                 command: "bash -c 'echo hello && curl https://example.com | jq .'".into()
             }
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Edge cases: non-boolean values for auto-push/review
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_config_auto_push_string_false_is_error() {
+        // A user writing `auto-push "false"` (string) instead of `auto-push false` (bool)
+        // must be caught — silently defaulting to true would be a safety issue.
+        let kdl = "autopilot {\n    auto-push \"false\"\n}\n";
+        let err = parse_repo_autopilot_config(kdl).unwrap_err();
+        assert!(err.to_string().contains("boolean"));
+    }
+
+    #[test]
+    fn test_parse_config_review_string_true_is_error() {
+        let kdl = "autopilot {\n    review \"true\"\n}\n";
+        let err = parse_repo_autopilot_config(kdl).unwrap_err();
+        assert!(err.to_string().contains("boolean"));
+    }
+
+    #[test]
+    fn test_parse_config_auto_push_integer_is_error() {
+        let kdl = "autopilot {\n    auto-push 0\n}\n";
+        let err = parse_repo_autopilot_config(kdl).unwrap_err();
+        assert!(err.to_string().contains("boolean"));
+    }
+
+    #[test]
+    fn test_workflow_auto_push_string_is_error() {
+        let kdl = r#"
+autopilot "wf" {
+    trigger "manual"
+    auto-push "false"
+    step "s" {
+        run "cmd"
+        on-complete "done"
+    }
+    step "done" {
+        notify "Done"
+    }
+}
+"#;
+        let err = parse_repo_autopilot_config(kdl).unwrap_err();
+        assert!(err.to_string().contains("boolean"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Edge cases: multiple config blocks, empty body, unknown children
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_config_multiple_unnamed_blocks_last_wins() {
+        let kdl = r#"
+autopilot {
+    auto-push false
+}
+autopilot {
+    auto-push true
+    review true
+}
+"#;
+        let repo = parse_repo_autopilot_config(kdl).unwrap();
+        // Second block overwrites first
+        assert!(repo.config.auto_push);
+        assert!(repo.config.review);
+    }
+
+    #[test]
+    fn test_parse_config_empty_autopilot_body_uses_defaults() {
+        let kdl = "autopilot {\n}\n";
+        let repo = parse_repo_autopilot_config(kdl).unwrap();
+        assert!(repo.config.auto_push);
+        assert!(!repo.config.review);
+    }
+
+    #[test]
+    fn test_parse_config_unknown_children_ignored() {
+        let kdl = r#"
+autopilot {
+    auto-push false
+    future-setting "something"
+}
+"#;
+        let repo = parse_repo_autopilot_config(kdl).unwrap();
+        assert!(!repo.config.auto_push);
+    }
+
+    #[test]
+    fn test_parse_config_auto_push_no_arg_keeps_default() {
+        // `auto-push` with no positional arg — node exists but no value
+        // This is technically valid KDL. The node is recognized but no value is extracted.
+        let kdl = "autopilot {\n    auto-push\n}\n";
+        let repo = parse_repo_autopilot_config(kdl).unwrap();
+        assert!(repo.config.auto_push); // default preserved
+    }
+
+    // ---------------------------------------------------------------------------
+    // Edge cases: resolve_config with all combinations
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_config_both_overrides_same_as_project() {
+        let project = AutopilotConfig { auto_push: false, review: true };
+        let wf = make_workflow(Some(false), Some(true));
+        let resolved = resolve_config(&project, &wf);
+        assert_eq!(resolved.auto_push, false);
+        assert_eq!(resolved.review, true);
+    }
+
+    #[test]
+    fn test_resolve_config_workflow_flips_both() {
+        let project = AutopilotConfig { auto_push: false, review: true };
+        let wf = make_workflow(Some(true), Some(false));
+        let resolved = resolve_config(&project, &wf);
+        assert_eq!(resolved.auto_push, true);
+        assert_eq!(resolved.review, false);
     }
 }
