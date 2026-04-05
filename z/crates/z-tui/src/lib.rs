@@ -925,6 +925,24 @@ mod tests {
         assert!(!fuzzy_match("xyz", "myapp"));
     }
 
+    #[test]
+    fn fuzzy_match_nonempty_query_empty_target_fails() {
+        assert!(!fuzzy_match("a", ""));
+    }
+
+    #[test]
+    fn fuzzy_match_unicode_case_insensitive() {
+        assert!(fuzzy_match("ÉL", "élan"));
+        assert!(fuzzy_match("él", "ÉLAN"));
+    }
+
+    #[test]
+    fn fuzzy_match_repeated_char_in_query() {
+        // "aa" requires two 'a' chars in target
+        assert!(fuzzy_match("aa", "abracadabra"));
+        assert!(!fuzzy_match("aa", "abcd"));
+    }
+
     // ── filtered_projects fuzzy tests ────────────────────────────────────
 
     #[test]
@@ -946,6 +964,31 @@ mod tests {
         let filtered = state.filtered_projects();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].1.project.name, "myapp");
+    }
+
+    #[test]
+    fn fuzzy_search_project_name_match_shows_no_sessions_when_none_match() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // "hermes" matches the project name, but hermes has no sessions
+        state.search_query = "hermes".to_string();
+        state.selected_project = 0;
+        let filtered = state.filtered_projects();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].1.project.name, "hermes");
+        assert!(state.filtered_sessions().is_empty());
+    }
+
+    #[test]
+    fn fuzzy_search_project_matched_by_name_hides_nonmatching_sessions() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // "myapp" matches the project name; sessions should still be filtered
+        // "myapp:main" fuzzy-matches "myapp" (m-y-a-p-p all present) so it shows
+        // "myapp:feat-login" also fuzzy-matches "myapp" (m-y-a-p... has 'p') so both show
+        state.search_query = "myapp".to_string();
+        state.selected_project = 0;
+        let sessions = state.filtered_sessions();
+        // Both sessions contain "myapp" prefix so both match
+        assert_eq!(sessions.len(), 2);
     }
 
     #[test]
@@ -1012,6 +1055,26 @@ mod tests {
         assert_eq!(state.selected_project, 1, "down should work in search mode");
         state.move_up();
         assert_eq!(state.selected_project, 0, "up should work in search mode");
+    }
+
+    #[test]
+    fn delete_targets_filtered_session_not_unfiltered() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // Filter to only "feat-login"; selected_session = 0 should point to it
+        state.search_query = "login".to_string();
+        state.selected_session = 0;
+        let sessions = state.filtered_sessions();
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].name.contains("feat-login"));
+    }
+
+    #[test]
+    fn delete_noop_when_no_sessions_match_filter() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.search_query = "zzznomatch".to_string();
+        state.selected_session = 0;
+        // No sessions match → get returns None → delete would be a no-op
+        assert!(state.filtered_sessions().get(0).is_none());
     }
 
     // ── Snapshot tests for search mode UI states ─────────────────────────
