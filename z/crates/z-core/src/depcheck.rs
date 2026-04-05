@@ -54,6 +54,7 @@ pub enum DepCheckStatus {
     Ok { version: Version },
     Missing,
     VersionTooLow { found: Version, required: String },
+    VersionUnparseable { output: String },
 }
 
 /// Run all dependency checks and return one result per required tool.
@@ -79,7 +80,9 @@ fn check_one<C: DepChecker>(checker: &C, spec: &DepSpec) -> DepCheckResult {
                     }
                 }
             }
-            None => DepCheckStatus::Missing,
+            None => DepCheckStatus::VersionUnparseable {
+                output: output.trim().to_string(),
+            },
         },
         Ok(None) => DepCheckStatus::Missing,
         Err(_) => DepCheckStatus::Missing,
@@ -99,6 +102,10 @@ pub fn format_dep_error(result: &DepCheckResult) -> String {
         DepCheckStatus::VersionTooLow { found, required } => format!(
             "error: '{}' version {} does not satisfy {}.\n  Please upgrade before running z.",
             result.tool, found, required
+        ),
+        DepCheckStatus::VersionUnparseable { output } => format!(
+            "error: could not parse version from '{}' output: {:?}\n  Please check that '{}' is installed correctly.",
+            result.tool, output, result.tool
         ),
     }
 }
@@ -147,6 +154,32 @@ mod tests {
     fn test_parse_version_not_found_returns_none() {
         assert!(parse_version("no version here").is_none());
         assert!(parse_version("").is_none());
+    }
+
+    #[test]
+    fn test_parse_version_multiline_output() {
+        let v = parse_version("gh version 2.45.0 (2024-01-15)\nhttps://github.com/cli/cli/releases/tag/v2.45.0").unwrap();
+        assert_eq!(v, Version::new(2, 45, 0));
+    }
+
+    #[test]
+    fn test_parse_version_with_prerelease() {
+        let v = parse_version("tool 1.0.0-beta.1").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 0);
+        assert_eq!(v.patch, 0);
+        assert!(!v.pre.is_empty());
+    }
+
+    #[test]
+    fn test_parse_version_whitespace_only() {
+        assert!(parse_version("   \n\t  ").is_none());
+    }
+
+    #[test]
+    fn test_parse_version_only_major_minor() {
+        // "2.45" is not valid semver — should return None
+        assert!(parse_version("tool 2.45").is_none());
     }
 
     // ---- version requirement checks --------------------------------------
@@ -307,5 +340,70 @@ mod tests {
         ]));
         let results = check_deps(&checker);
         assert!(!all_ok(&results));
+    }
+
+    #[test]
+    fn test_check_deps_unparseable_version_output() {
+        let checker = MockDepChecker::new(HashMap::from([
+            ("zellij", Some("zellij version unknown")),
+            ("wt", Some("wt 0.34.0")),
+            ("gh", Some("gh version 2.45.0 (2024-01-15)")),
+        ]));
+        let results = check_deps(&checker);
+        assert!(!all_ok(&results));
+        let zellij = results.iter().find(|r| r.tool == "zellij").unwrap();
+        assert!(matches!(&zellij.status, DepCheckStatus::VersionUnparseable { .. }));
+    }
+
+    #[test]
+    fn test_format_dep_error_unparseable() {
+        let result = DepCheckResult {
+            tool: "zellij",
+            status: DepCheckStatus::VersionUnparseable {
+                output: "zellij version unknown".to_string(),
+            },
+        };
+        let msg = format_dep_error(&result);
+        assert!(msg.contains("could not parse version"));
+        assert!(msg.contains("zellij"));
+    }
+
+    #[test]
+    fn test_check_deps_empty_version_output() {
+        let checker = MockDepChecker::new(HashMap::from([
+            ("zellij", Some("")),
+            ("wt", Some("wt 0.34.0")),
+            ("gh", Some("gh version 2.45.0 (2024-01-15)")),
+        ]));
+        let results = check_deps(&checker);
+        assert!(!all_ok(&results));
+        let zellij = results.iter().find(|r| r.tool == "zellij").unwrap();
+        assert!(matches!(&zellij.status, DepCheckStatus::VersionUnparseable { .. }));
+    }
+
+    #[test]
+    fn test_check_deps_checker_returns_error() {
+        struct ErrorChecker;
+        impl DepChecker for ErrorChecker {
+            fn get_version_output(&self, _tool: &str) -> Result<Option<String>> {
+                Err(crate::error::ZError::Io("connection refused".to_string()))
+            }
+        }
+        let results = check_deps(&ErrorChecker);
+        assert!(!all_ok(&results));
+        assert!(results.iter().all(|r| matches!(r.status, DepCheckStatus::Missing)));
+    }
+
+    #[test]
+    fn test_check_deps_all_missing() {
+        let checker = MockDepChecker::new(HashMap::from([
+            ("zellij", None),
+            ("wt", None),
+            ("gh", None),
+        ]));
+        let results = check_deps(&checker);
+        assert!(!all_ok(&results));
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|r| matches!(r.status, DepCheckStatus::Missing)));
     }
 }
