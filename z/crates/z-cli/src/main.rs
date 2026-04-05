@@ -1,13 +1,15 @@
 mod config_store;
 mod depcheck_impl;
 mod session_manager;
+mod worktree_manager;
 
 use z_core::depcheck::{check_deps, format_dep_error, DepCheckStatus};
-use z_core::traits::{ProjectStore, SessionManager};
+use z_core::traits::{ProjectStore, SessionManager, WorktreeManager};
 
 use crate::config_store::KdlProjectStore;
 use crate::depcheck_impl::ProcessDepChecker;
 use crate::session_manager::ZellijSessionManager;
+use crate::worktree_manager::WtWorktreeManager;
 
 fn main() {
     let checker = ProcessDepChecker;
@@ -49,10 +51,11 @@ fn run() {
         Some("open") => {
             let project = args.get(1).map(|s| s.as_str()).unwrap_or("");
             if project.is_empty() {
-                eprintln!("usage: z open <project>");
+                eprintln!("usage: z open <project> [branch]");
                 std::process::exit(1);
             }
-            if let Err(e) = cmd_open(project) {
+            let branch = args.get(2).map(|s| s.as_str());
+            if let Err(e) = cmd_open(project, branch) {
                 eprintln!("error: {}", e);
                 std::process::exit(1);
             }
@@ -63,25 +66,48 @@ fn run() {
     }
 }
 
-fn cmd_open(project_name: &str) -> z_core::error::Result<()> {
+fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<()> {
     let store = KdlProjectStore::new();
     let session_mgr = ZellijSessionManager;
 
     // Resolve project — returns ProjectNotFound if not in config.
     let project = store.get_project(project_name)?;
 
-    // Check for an existing live session on main.
-    let sessions = session_mgr.list_sessions(&project.name)?;
-    let main_session_name = format!("{}:main", project.name);
+    let effective_branch = branch.unwrap_or("main");
 
-    if let Some(session) = sessions.iter().find(|s| s.name == main_session_name) {
-        // Session already exists — attach.
-        session_mgr.attach_session(session)?;
-    } else {
-        // No session — create one with the default layout.
-        let layout = z_core::layout::default_layout();
-        session_mgr.create_session(&project.name, "main", layout)?;
+    // Build the expected session name (branch "/" → "-" normalization applied).
+    let target_session = z_core::domain::Session::new(&project.name, effective_branch);
+
+    // Check for an existing live session.
+    let sessions = session_mgr.list_sessions(&project.name)?;
+    if let Some(existing) = sessions.iter().find(|s| s.name == target_session.name) {
+        return session_mgr.attach_session(existing);
     }
+
+    // Session doesn't exist — create it.
+    let cwd = if let Some(branch_name) = branch {
+        // Branch specified: find or create the worktree.
+        let wt_mgr = WtWorktreeManager::new(project.path.clone());
+        let worktrees = wt_mgr.list_worktrees(&project.name)?;
+        let worktree_path = if let Some(existing_wt) =
+            worktrees.iter().find(|w| w.branch == branch_name)
+        {
+            // Worktree already exists — just reuse its path.
+            existing_wt.path.clone()
+        } else {
+            // Create new worktree via `wt switch -c <branch>`.
+            let new_wt = wt_mgr.create_worktree(&project.name, branch_name)?;
+            new_wt.path
+        };
+        worktree_path
+    } else {
+        // No branch — open in the project root.
+        project.path.clone()
+    };
+
+    let mut layout = z_core::layout::default_layout();
+    layout.cwd = Some(cwd);
+    session_mgr.create_session(&project.name, effective_branch, layout)?;
 
     Ok(())
 }
