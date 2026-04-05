@@ -1,8 +1,11 @@
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use z_core::domain::{Layout, Session};
 use z_core::error::{Result, ZError};
 use z_core::traits::SessionManager;
+
+static LAYOUT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A `SessionManager` that shells out to `zellij` to manage sessions.
 pub struct ZellijSessionManager;
@@ -76,7 +79,8 @@ impl SessionManager for ZellijSessionManager {
 ///
 /// The caller is responsible for removing the file after use.
 pub fn write_temp_layout(content: &str) -> Result<String> {
-    let path = format!("/tmp/z-layout-{}.kdl", std::process::id());
+    let seq = LAYOUT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = format!("/tmp/z-layout-{}-{}.kdl", std::process::id(), seq);
     std::fs::write(&path, content)
         .map_err(|e| ZError::Io(format!("failed to write temp layout: {}", e)))?;
     Ok(path)
@@ -216,5 +220,14 @@ mod tests {
         assert!(read_back.contains("tab name=\"claude\""));
         assert!(read_back.contains("tab name=\"shell\""));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_temp_layout_concurrent_calls_get_unique_paths() {
+        let path1 = write_temp_layout("a").expect("first write");
+        let path2 = write_temp_layout("b").expect("second write");
+        assert_ne!(path1, path2);
+        let _ = std::fs::remove_file(&path1);
+        let _ = std::fs::remove_file(&path2);
     }
 }
