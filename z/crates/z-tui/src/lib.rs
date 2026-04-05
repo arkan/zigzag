@@ -206,6 +206,7 @@ fn event_loop<B: Backend>(
                         state.search_mode = false;
                         state.search_query.clear();
                         state.selected_project = 0;
+                        state.selected_session = 0;
                     }
                     KeyCode::Enter => {
                         state.search_mode = false;
@@ -213,10 +214,12 @@ fn event_loop<B: Backend>(
                     KeyCode::Backspace => {
                         state.search_query.pop();
                         state.selected_project = 0;
+                        state.selected_session = 0;
                     }
                     KeyCode::Char(c) => {
                         state.search_query.push(c);
                         state.selected_project = 0;
+                        state.selected_session = 0;
                     }
                     _ => {}
                 }
@@ -711,5 +714,123 @@ mod tests {
     fn selected_entry_empty_list_returns_none() {
         let state = TuiState::new(vec![], Navigation::Arrows);
         assert!(state.selected_entry().is_none());
+    }
+
+    // ── Edge case tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn search_resets_selected_session() {
+        // Bug: selected_session was not reset when search changed the active
+        // project, leading to a stale index pointing past the new project's
+        // session list.
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.focused_panel = Panel::Sessions;
+        state.selected_session = 1; // myapp has 2 sessions, pointing at index 1
+
+        // Simulate typing a search character that filters to a different project
+        state.search_query = "hermes".to_string();
+        state.selected_project = 0;
+        state.selected_session = 0; // this is what the fix does
+
+        let entry = state.selected_entry().unwrap();
+        assert_eq!(entry.project.name, "hermes");
+        assert!(entry.sessions.is_empty());
+        assert_eq!(state.selected_session, 0, "session cursor must be 0 for project with no sessions");
+    }
+
+    #[test]
+    fn move_down_on_empty_entries_is_noop() {
+        let mut state = TuiState::new(vec![], Navigation::Arrows);
+        state.move_down();
+        assert_eq!(state.selected_project, 0);
+    }
+
+    #[test]
+    fn move_up_on_empty_entries_is_noop() {
+        let mut state = TuiState::new(vec![], Navigation::Arrows);
+        state.move_up();
+        assert_eq!(state.selected_project, 0);
+    }
+
+    #[test]
+    fn switch_panel_on_empty_entries_does_not_panic() {
+        let mut state = TuiState::new(vec![], Navigation::Arrows);
+        state.switch_panel();
+        assert_eq!(state.focused_panel, Panel::Sessions);
+        state.move_down(); // sessions panel, no entry → noop
+        assert_eq!(state.selected_session, 0);
+    }
+
+    #[test]
+    fn selected_entry_with_out_of_bounds_index_returns_none() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.selected_project = 99; // way past the end
+        assert!(state.selected_entry().is_none());
+    }
+
+    #[test]
+    fn search_then_clear_restores_full_list() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.search_query = "prod".to_string();
+        assert_eq!(state.filtered_projects().len(), 1);
+        state.search_query.clear();
+        assert_eq!(state.filtered_projects().len(), 3);
+    }
+
+    #[test]
+    fn single_project_navigation_bounds() {
+        let entries = vec![ProjectEntry {
+            project: make_project("solo", false),
+            sessions: vec![Session::new("solo", "main")],
+        }];
+        let mut state = TuiState::new(entries, Navigation::Arrows);
+        state.move_up();
+        assert_eq!(state.selected_project, 0);
+        state.move_down();
+        assert_eq!(state.selected_project, 0, "single project: down is noop");
+        state.focused_panel = Panel::Sessions;
+        state.move_down();
+        assert_eq!(state.selected_session, 0, "single session: down is noop");
+    }
+
+    #[test]
+    fn renders_empty_search_no_match_without_panic() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.search_mode = true;
+        state.search_query = "zzz_no_match".to_string();
+        // Should not panic even though no projects match
+        let out = render_to_string(&state, 80, 24);
+        assert!(out.contains("PROJECTS"));
+    }
+
+    #[test]
+    fn renders_narrow_terminal_without_panic() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        // Extremely narrow — columns may truncate but should not panic
+        let _out = render_to_string(&state, 20, 10);
+    }
+
+    #[test]
+    fn renders_remote_project_status_bar() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.selected_project = 2; // prod-api is remote
+        let out = render_to_string(&state, 80, 24);
+        assert!(out.contains("remote"), "status bar should say 'remote' for remote project");
+        assert!(out.contains("prod-api"), "status bar should show prod-api");
+    }
+
+    #[test]
+    fn navigate_project_down_then_up_resets_session() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // Start on myapp, move session cursor
+        state.focused_panel = Panel::Sessions;
+        state.move_down();
+        assert_eq!(state.selected_session, 1);
+        // Switch to projects, move up (noop at 0) then down
+        state.focused_panel = Panel::Projects;
+        state.move_down(); // go to hermes
+        assert_eq!(state.selected_session, 0, "session resets on project change via down");
+        state.move_up(); // back to myapp
+        assert_eq!(state.selected_session, 0, "session resets on project change via up");
     }
 }
