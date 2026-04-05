@@ -54,6 +54,10 @@ pub struct NotificationsConfig {
     pub macos_native: bool,
     pub telegram: bool,
     pub tui: bool,
+    /// Telegram bot token (plain string or `env:VAR`).
+    pub telegram_token: Option<String>,
+    /// Telegram chat ID to send messages to.
+    pub telegram_chat_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +307,24 @@ fn parse_notifications_node(node: &KdlNode) -> Result<NotificationsConfig> {
                         .first()
                         .and_then(|e| e.value().as_bool())
                         .unwrap_or(false);
+                }
+                "telegram-token" => {
+                    if let Some(raw) = child
+                        .entries()
+                        .first()
+                        .and_then(|e| e.value().as_string())
+                    {
+                        cfg.telegram_token = resolve_env_token(raw).ok();
+                    }
+                }
+                "telegram-chat-id" => {
+                    if let Some(raw) = child
+                        .entries()
+                        .first()
+                        .and_then(|e| e.value().as_string())
+                    {
+                        cfg.telegram_chat_id = resolve_env_token(raw).ok();
+                    }
                 }
                 _ => {}
             }
