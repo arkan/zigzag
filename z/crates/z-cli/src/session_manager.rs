@@ -23,12 +23,17 @@ impl SessionManager for ZellijSessionManager {
         }
     }
 
-    fn create_session(&self, project: &str, branch: &str, _layout: Layout) -> Result<Session> {
+    fn create_session(&self, project: &str, branch: &str, layout: Layout) -> Result<Session> {
         let session = Session::new(project, branch);
-        let status = Command::new("zellij")
-            .args(["--session", &session.name])
+        let kdl = z_core::layout::generate_layout_kdl(&layout);
+        let layout_path = write_temp_layout(&kdl)?;
+        let result = Command::new("zellij")
+            .args(["--session", &session.name, "--layout", &layout_path])
             .status()
-            .map_err(|e| ZError::Session(e.to_string()))?;
+            .map_err(|e| ZError::Session(e.to_string()));
+        // Clean up temp file regardless of outcome.
+        let _ = std::fs::remove_file(&layout_path);
+        let status = result?;
         if !status.success() {
             return Err(ZError::Session(format!(
                 "zellij exited with status {}",
@@ -65,6 +70,16 @@ impl SessionManager for ZellijSessionManager {
         }
         Ok(())
     }
+}
+
+/// Write a Zellij KDL layout string to a temporary file and return its path.
+///
+/// The caller is responsible for removing the file after use.
+pub fn write_temp_layout(content: &str) -> Result<String> {
+    let path = format!("/tmp/z-layout-{}.kdl", std::process::id());
+    std::fs::write(&path, content)
+        .map_err(|e| ZError::Io(format!("failed to write temp layout: {}", e)))?;
+    Ok(path)
 }
 
 /// Parse `zellij list-sessions` output and return sessions belonging to `project`.
@@ -178,5 +193,28 @@ mod tests {
         let output = "myapp:main (EXITED)\nmyapp:dev (EXITED)\n";
         let sessions = parse_zellij_sessions(output, "myapp");
         assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn write_temp_layout_creates_file_with_content() {
+        let content = "layout {\n    tab name=\"test\" {\n        pane\n    }\n}\n";
+        let path = write_temp_layout(content).expect("write_temp_layout should succeed");
+        assert!(path.starts_with("/tmp/z-layout-"));
+        assert!(path.ends_with(".kdl"));
+        let read_back = std::fs::read_to_string(&path).expect("temp file should be readable");
+        assert_eq!(read_back, content);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_temp_layout_default_layout_roundtrip() {
+        use z_core::layout::{default_layout, generate_layout_kdl};
+        let layout = default_layout();
+        let kdl = generate_layout_kdl(&layout);
+        let path = write_temp_layout(&kdl).expect("write_temp_layout should succeed");
+        let read_back = std::fs::read_to_string(&path).expect("temp file should be readable");
+        assert!(read_back.contains("tab name=\"claude\""));
+        assert!(read_back.contains("tab name=\"shell\""));
+        let _ = std::fs::remove_file(&path);
     }
 }
