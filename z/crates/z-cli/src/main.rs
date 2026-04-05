@@ -1,5 +1,6 @@
 mod config_store;
 mod depcheck_impl;
+mod prune;
 mod session_manager;
 mod worktree_manager;
 
@@ -86,6 +87,13 @@ fn run() {
                 std::process::exit(1);
             }
             if let Err(e) = cmd_delete(session) {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Some("prune") => {
+            let dry_run = args.iter().any(|a| a == "--dry-run");
+            if let Err(e) = cmd_prune(dry_run) {
                 eprintln!("error: {}", e);
                 std::process::exit(1);
             }
@@ -307,6 +315,98 @@ fn remove_worktree(branch: &str) -> z_core::error::Result<()> {
             status
         )));
     }
+    Ok(())
+}
+
+/// Clean up orphaned Zellij sessions and worktrees across all projects.
+///
+/// A session is orphaned when no worktree exists for its branch.
+/// A worktree is orphaned when no active session exists for its branch
+/// (main/master worktrees are always excluded).
+///
+/// Passes `--dry-run` to preview what would be cleaned without acting.
+fn cmd_prune(dry_run: bool) -> z_core::error::Result<()> {
+    let store = KdlProjectStore::new();
+    let session_mgr = ZellijSessionManager;
+
+    let projects = store.list_projects()?;
+
+    let mut all_orphaned_sessions: Vec<z_core::domain::Session> = Vec::new();
+    let mut all_orphaned_worktrees: Vec<(z_core::domain::Worktree, std::path::PathBuf)> =
+        Vec::new();
+
+    for project in &projects {
+        let wt_mgr = WtWorktreeManager::new(project.path.clone());
+        let sessions = session_mgr.list_sessions(&project.name)?;
+        let worktrees = wt_mgr.list_worktrees(&project.name)?;
+
+        let orphaned_sessions = prune::find_orphaned_sessions(&sessions, &worktrees);
+        let orphaned_worktrees = prune::find_orphaned_worktrees(&worktrees, &sessions);
+
+        all_orphaned_sessions.extend(orphaned_sessions);
+        for wt in orphaned_worktrees {
+            all_orphaned_worktrees.push((wt, project.path.clone()));
+        }
+    }
+
+    if all_orphaned_sessions.is_empty() && all_orphaned_worktrees.is_empty() {
+        println!("Nothing to prune.");
+        return Ok(());
+    }
+
+    if !all_orphaned_sessions.is_empty() {
+        println!("Orphaned sessions (no matching worktree):");
+        for session in &all_orphaned_sessions {
+            println!("  - {}", session.name);
+        }
+    }
+
+    if !all_orphaned_worktrees.is_empty() {
+        println!("Orphaned worktrees (no active session):");
+        for (wt, _) in &all_orphaned_worktrees {
+            println!("  - {} ({})", wt.branch, wt.path.display());
+        }
+    }
+
+    if dry_run {
+        println!("\nDry run — no changes made.");
+        return Ok(());
+    }
+
+    eprint!("\nProceed with cleanup? (y/N) ");
+    let _ = std::io::stderr().flush();
+
+    let mut response = String::new();
+    std::io::stdin()
+        .read_line(&mut response)
+        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+
+    if !parse_confirm_response(&response) {
+        println!("Aborted.");
+        return Ok(());
+    }
+
+    let mut killed = 0usize;
+    let mut removed = 0usize;
+
+    for session in &all_orphaned_sessions {
+        session_mgr.kill_session(session)?;
+        println!("Killed session: {}", session.name);
+        killed += 1;
+    }
+
+    for (wt, project_path) in &all_orphaned_worktrees {
+        let wt_mgr = WtWorktreeManager::new(project_path.clone());
+        wt_mgr.remove_worktree(wt)?;
+        println!("Removed worktree: {}", wt.branch);
+        removed += 1;
+    }
+
+    println!(
+        "\nPrune complete: {} session(s) killed, {} worktree(s) removed.",
+        killed, removed
+    );
+
     Ok(())
 }
 
