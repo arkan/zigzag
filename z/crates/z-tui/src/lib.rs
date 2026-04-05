@@ -8,6 +8,31 @@
 /// Navigation defaults to arrow keys; pass `Navigation::Vim` for hjkl.
 use std::io;
 
+// ---------------------------------------------------------------------------
+// Fuzzy matching
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if every character in `query` appears in `target` in order
+/// (case-insensitive). Empty query always matches.
+pub fn fuzzy_match(query: &str, target: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let target_lower = target.to_lowercase();
+    let query_lower = query.to_lowercase();
+    let mut target_chars = target_lower.chars();
+    'outer: for qc in query_lower.chars() {
+        loop {
+            match target_chars.next() {
+                None => return false,
+                Some(tc) if tc == qc => continue 'outer,
+                Some(_) => {}
+            }
+        }
+    }
+    true
+}
+
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
@@ -97,13 +122,35 @@ impl TuiState {
     }
 
     /// Returns (original_index, &entry) pairs filtered by the current search query.
+    ///
+    /// Fuzzy-matches the query against each project name and all its session
+    /// names. A project is included if either its own name or any session name
+    /// matches.
     pub fn filtered_projects(&self) -> Vec<(usize, &ProjectEntry)> {
-        let q = self.search_query.to_lowercase();
+        let q = &self.search_query;
         self.entries
             .iter()
             .enumerate()
-            .filter(|(_, e)| q.is_empty() || e.project.name.to_lowercase().contains(&q))
+            .filter(|(_, e)| {
+                q.is_empty()
+                    || fuzzy_match(q, &e.project.name)
+                    || e.sessions.iter().any(|s| fuzzy_match(q, &s.name))
+            })
             .collect()
+    }
+
+    /// Returns sessions of the currently selected project filtered by the
+    /// current search query (fuzzy match against session name).
+    pub fn filtered_sessions(&self) -> Vec<&Session> {
+        let q = &self.search_query;
+        self.selected_entry()
+            .map(|e| {
+                e.sessions
+                    .iter()
+                    .filter(|s| q.is_empty() || fuzzy_match(q, &s.name))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Currently selected project entry (accounting for the active filter).
@@ -141,10 +188,7 @@ impl TuiState {
                 }
             }
             Panel::Sessions => {
-                let session_count = self
-                    .selected_entry()
-                    .map(|e| e.sessions.len())
-                    .unwrap_or(0);
+                let session_count = self.filtered_sessions().len();
                 if session_count > 0 && self.selected_session + 1 < session_count {
                     self.selected_session += 1;
                 }
@@ -209,8 +253,12 @@ fn event_loop<B: Backend>(
                         state.selected_session = 0;
                     }
                     KeyCode::Enter => {
+                        // Commit the selection and exit search mode; the next
+                        // iteration will handle an `o`/Enter action if needed.
                         state.search_mode = false;
                     }
+                    KeyCode::Up => state.move_up(),
+                    KeyCode::Down => state.move_down(),
                     KeyCode::Backspace => {
                         state.search_query.pop();
                         state.selected_project = 0;
@@ -259,19 +307,21 @@ fn event_loop<B: Backend>(
                     }
 
                     KeyCode::Char('o') | KeyCode::Enter => {
-                        if let Some(entry) = state.selected_entry() {
-                            let project = entry.project.name.clone();
-                            let session =
-                                if state.focused_panel == Panel::Sessions
-                                    && !entry.sessions.is_empty()
-                                {
-                                    entry
-                                        .sessions
+                        let project_name =
+                            state.selected_entry().map(|e| e.project.name.clone());
+                        if let Some(project) = project_name {
+                            let session = if state.focused_panel == Panel::Sessions {
+                                let sessions = state.filtered_sessions();
+                                if !sessions.is_empty() {
+                                    sessions
                                         .get(state.selected_session)
                                         .map(|s| s.name.clone())
                                 } else {
                                     None
-                                };
+                                }
+                            } else {
+                                None
+                            };
                             return Ok(TuiAction::Open { project, session });
                         }
                     }
@@ -285,14 +335,12 @@ fn event_loop<B: Backend>(
                     }
 
                     KeyCode::Char('d') => {
-                        if let Some(entry) = state.selected_entry() {
-                            if let Some(session) =
-                                entry.sessions.get(state.selected_session)
-                            {
-                                return Ok(TuiAction::Delete {
-                                    session: session.name.clone(),
-                                });
-                            }
+                        let session_name = state
+                            .filtered_sessions()
+                            .get(state.selected_session)
+                            .map(|s| s.name.clone());
+                        if let Some(session) = session_name {
+                            return Ok(TuiAction::Delete { session });
                         }
                     }
 
@@ -385,10 +433,7 @@ fn render_projects(f: &mut Frame, area: Rect, state: &TuiState) {
 fn render_sessions(f: &mut Frame, area: Rect, state: &TuiState) {
     let focused = state.focused_panel == Panel::Sessions;
 
-    let sessions: Vec<&Session> = state
-        .selected_entry()
-        .map(|e| e.sessions.iter().collect())
-        .unwrap_or_default();
+    let sessions = state.filtered_sessions();
 
     let items: Vec<ListItem> = sessions
         .iter()
@@ -832,5 +877,193 @@ mod tests {
         assert_eq!(state.selected_session, 0, "session resets on project change via down");
         state.move_up(); // back to myapp
         assert_eq!(state.selected_session, 0, "session resets on project change via up");
+    }
+
+    // ── Fuzzy match unit tests ────────────────────────────────────────────
+
+    #[test]
+    fn fuzzy_match_empty_query_always_matches() {
+        assert!(fuzzy_match("", "anything"));
+        assert!(fuzzy_match("", ""));
+    }
+
+    #[test]
+    fn fuzzy_match_exact_match() {
+        assert!(fuzzy_match("myapp", "myapp"));
+    }
+
+    #[test]
+    fn fuzzy_match_substring() {
+        assert!(fuzzy_match("app", "myapp"));
+    }
+
+    #[test]
+    fn fuzzy_match_non_contiguous_chars_in_order() {
+        // 'm', 'p', 'p' all appear in "myapp" in order
+        assert!(fuzzy_match("mpp", "myapp"));
+    }
+
+    #[test]
+    fn fuzzy_match_chars_out_of_order_fails() {
+        // 'p' before 'm' — not possible in "myapp"
+        assert!(!fuzzy_match("pm", "myapp"));
+    }
+
+    #[test]
+    fn fuzzy_match_is_case_insensitive() {
+        assert!(fuzzy_match("MYA", "myapp"));
+        assert!(fuzzy_match("mya", "MYAPP"));
+    }
+
+    #[test]
+    fn fuzzy_match_query_longer_than_target_fails() {
+        assert!(!fuzzy_match("myapplication", "myapp"));
+    }
+
+    #[test]
+    fn fuzzy_match_no_common_chars_fails() {
+        assert!(!fuzzy_match("xyz", "myapp"));
+    }
+
+    // ── filtered_projects fuzzy tests ────────────────────────────────────
+
+    #[test]
+    fn fuzzy_search_matches_project_non_contiguous() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // "mpp" → m..pp → matches "myapp"
+        state.search_query = "mpp".to_string();
+        let filtered = state.filtered_projects();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].1.project.name, "myapp");
+    }
+
+    #[test]
+    fn fuzzy_search_includes_project_with_matching_session() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // "feat" doesn't match "myapp" or "hermes" project names,
+        // but "myapp:feat-login" session contains "feat"
+        state.search_query = "feat".to_string();
+        let filtered = state.filtered_projects();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].1.project.name, "myapp");
+    }
+
+    #[test]
+    fn fuzzy_search_session_name_match_via_project_inclusion() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // "main" matches the "myapp:main" session, so myapp should appear
+        state.search_query = "main".to_string();
+        let filtered = state.filtered_projects();
+        assert!(filtered.iter().any(|(_, e)| e.project.name == "myapp"));
+    }
+
+    // ── filtered_sessions tests ───────────────────────────────────────────
+
+    #[test]
+    fn filtered_sessions_empty_query_returns_all() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        // myapp has 2 sessions; no query → all returned
+        let sessions = state.filtered_sessions();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn filtered_sessions_filters_by_fuzzy_match() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.search_query = "login".to_string();
+        // Only "myapp:feat-login" matches "login"
+        let sessions = state.filtered_sessions();
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].name.contains("login"));
+    }
+
+    #[test]
+    fn filtered_sessions_no_match_returns_empty() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.search_query = "zzznomatch".to_string();
+        assert!(state.filtered_sessions().is_empty());
+    }
+
+    #[test]
+    fn filtered_sessions_empty_project_returns_empty() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.selected_project = 1; // hermes has no sessions
+        assert!(state.filtered_sessions().is_empty());
+    }
+
+    #[test]
+    fn navigate_sessions_respects_filter() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // "login" matches only 1 session → moving down is a noop
+        state.search_query = "login".to_string();
+        state.focused_panel = Panel::Sessions;
+        state.move_down();
+        assert_eq!(state.selected_session, 0, "only 1 filtered session, down is noop");
+    }
+
+    #[test]
+    fn navigate_projects_while_in_search_mode() {
+        // Verifies that arrow-key navigation works while search mode is active.
+        // There are 3 entries; all match an empty query.
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.search_mode = true;
+        assert_eq!(state.selected_project, 0);
+        state.move_down();
+        assert_eq!(state.selected_project, 1, "down should work in search mode");
+        state.move_up();
+        assert_eq!(state.selected_project, 0, "up should work in search mode");
+    }
+
+    // ── Snapshot tests for search mode UI states ─────────────────────────
+
+    #[test]
+    fn renders_search_mode_filters_sessions() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.search_mode = true;
+        state.search_query = "login".to_string();
+        let out = render_to_string(&state, 80, 24);
+        // Only the login session should appear
+        assert!(out.contains("login"), "login session should be visible");
+    }
+
+    #[test]
+    fn renders_search_mode_hides_non_matching_sessions() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.search_mode = true;
+        state.search_query = "login".to_string();
+        let out = render_to_string(&state, 80, 24);
+        // "myapp:main" session does not fuzzy-match "login" (no 'l' in "myapp:main")
+        // so it must not appear in the rendered output
+        assert!(
+            !out.contains("myapp:main"),
+            "non-matching session myapp:main should be hidden"
+        );
+        assert!(
+            out.contains("feat-login"),
+            "matching session feat-login should be visible"
+        );
+    }
+
+    #[test]
+    fn renders_project_matched_by_session_name() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.search_mode = true;
+        state.search_query = "feat".to_string();
+        let out = render_to_string(&state, 80, 24);
+        // "myapp" should appear because its session "feat-login" matches "feat"
+        assert!(out.contains("myapp"), "myapp should appear because feat-login matches feat");
+        // "hermes" and "prod-api" should NOT appear
+        assert!(!out.contains("hermes"), "hermes should be filtered out");
+        assert!(!out.contains("prod-api"), "prod-api should be filtered out");
+    }
+
+    #[test]
+    fn renders_fuzzy_match_non_contiguous() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.search_mode = true;
+        state.search_query = "hms".to_string(); // h..m..s matches "hermes"
+        let out = render_to_string(&state, 80, 24);
+        assert!(out.contains("hermes"), "hermes should match fuzzy query 'hms'");
+        assert!(!out.contains("myapp"), "myapp should not match 'hms'");
     }
 }
