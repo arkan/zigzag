@@ -9,9 +9,10 @@ pub fn find_orphaned_sessions(sessions: &[Session], worktrees: &[Worktree]) -> V
     sessions
         .iter()
         .filter(|session| {
+            let session_normalized = sanitize_branch_name(&session.branch);
             !worktrees
                 .iter()
-                .any(|wt| sanitize_branch_name(&wt.branch) == session.branch)
+                .any(|wt| sanitize_branch_name(&wt.branch) == session_normalized)
         })
         .cloned()
         .collect()
@@ -29,7 +30,9 @@ pub fn find_orphaned_worktrees(worktrees: &[Worktree], sessions: &[Session]) -> 
                 return false;
             }
             let normalized = sanitize_branch_name(&wt.branch);
-            !sessions.iter().any(|s| s.branch == normalized)
+            !sessions
+                .iter()
+                .any(|s| sanitize_branch_name(&s.branch) == normalized)
         })
         .cloned()
         .collect()
@@ -190,6 +193,64 @@ mod tests {
         let worktrees = vec![make_worktree("proj", "feat/user/auth")];
         let sessions = vec![make_session("proj", "feat-user-auth")];
         let orphans = find_orphaned_worktrees(&worktrees, &sessions);
+        assert!(orphans.is_empty());
+    }
+
+    // --- edge cases: session.branch may contain slashes (Session::new stores raw) ---
+
+    #[test]
+    fn session_with_unsanitized_slash_branch_matches_worktree() {
+        // Session::new stores the original branch with slashes; the prune
+        // function must normalize both sides to avoid a false orphan.
+        let sessions = vec![Session {
+            name: "proj:feat-login".to_string(),
+            project: "proj".to_string(),
+            branch: "feat/login".to_string(), // raw, as Session::new stores it
+        }];
+        let worktrees = vec![make_worktree("proj", "feat/login")];
+        let orphans = find_orphaned_sessions(&sessions, &worktrees);
+        assert!(orphans.is_empty());
+    }
+
+    #[test]
+    fn worktree_matches_session_with_unsanitized_slash_branch() {
+        let sessions = vec![Session {
+            name: "proj:feat-login".to_string(),
+            project: "proj".to_string(),
+            branch: "feat/login".to_string(), // raw slash form
+        }];
+        let worktrees = vec![make_worktree("proj", "feat/login")];
+        let orphans = find_orphaned_worktrees(&worktrees, &sessions);
+        assert!(orphans.is_empty());
+    }
+
+    // --- both inputs empty ---
+
+    #[test]
+    fn both_empty_returns_no_orphaned_sessions() {
+        assert!(find_orphaned_sessions(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn both_empty_returns_no_orphaned_worktrees() {
+        assert!(find_orphaned_worktrees(&[], &[]).is_empty());
+    }
+
+    // --- worktree with already-dashed branch (no slashes) ---
+
+    #[test]
+    fn worktree_with_dashed_branch_matches_dashed_session() {
+        let worktrees = vec![make_worktree("proj", "feat-login")];
+        let sessions = vec![make_session("proj", "feat-login")];
+        let orphans = find_orphaned_worktrees(&worktrees, &sessions);
+        assert!(orphans.is_empty());
+    }
+
+    #[test]
+    fn session_with_dashed_branch_matches_dashed_worktree() {
+        let sessions = vec![make_session("proj", "feat-login")];
+        let worktrees = vec![make_worktree("proj", "feat-login")];
+        let orphans = find_orphaned_sessions(&sessions, &worktrees);
         assert!(orphans.is_empty());
     }
 }
