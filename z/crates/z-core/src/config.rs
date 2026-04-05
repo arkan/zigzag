@@ -5,6 +5,7 @@ use kdl::{KdlDocument, KdlNode};
 
 use crate::domain::{Layout, Pane, Project, Tab};
 use crate::error::{Result, ZError};
+use crate::layout::default_layout;
 
 /// Global configuration from `~/.config/z/config.kdl`.
 #[derive(Debug, Default, Clone)]
@@ -15,6 +16,37 @@ pub struct GlobalConfig {
     pub notifications: NotificationsConfig,
     /// Tool name → minimum version requirement string (e.g. `">=0.44.0"`).
     pub deps: HashMap<String, String>,
+}
+
+/// Per-repo configuration from `.config/z.kdl` in the project root.
+#[derive(Debug, Default, Clone)]
+pub struct PerRepoConfig {
+    /// Layout override — if set, replaces the global default layout.
+    pub layout: Option<Layout>,
+    /// Extra arguments passed to the `claude` command (e.g. `["--resume"]`).
+    pub claude_args: Vec<String>,
+    /// Shell command to run for deployment.
+    pub deploy_command: Option<String>,
+    /// Autopilot behaviour overrides.
+    pub autopilot: AutopilotConfig,
+}
+
+/// Autopilot behaviour overrides from per-repo config.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutopilotConfig {
+    /// Whether to auto-push after commits. Default: `true`.
+    pub auto_push: bool,
+    /// Whether to request review. Default: `false`.
+    pub review: bool,
+}
+
+impl Default for AutopilotConfig {
+    fn default() -> Self {
+        Self {
+            auto_push: true,
+            review: false,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -290,6 +322,128 @@ fn parse_deps_node(node: &KdlNode) -> Result<HashMap<String, String>> {
         }
     }
     Ok(deps)
+}
+
+// ---------------------------------------------------------------------------
+// per-repo config parsing
+// ---------------------------------------------------------------------------
+
+/// Parse the contents of `.config/z.kdl` (in the project root) into a `PerRepoConfig`.
+pub fn parse_per_repo_config_kdl(content: &str) -> Result<PerRepoConfig> {
+    let doc: KdlDocument = content
+        .parse()
+        .map_err(|e| ZError::ConfigParse(format!("{}", e)))?;
+
+    let mut cfg = PerRepoConfig::default();
+
+    for node in doc.nodes() {
+        match node.name().value() {
+            "layout" => {
+                cfg.layout = Some(parse_layout_node(node)?);
+            }
+            "claude" => {
+                cfg.claude_args = parse_claude_node(node);
+            }
+            "deploy" => {
+                cfg.deploy_command = parse_deploy_node(node);
+            }
+            "autopilot" => {
+                cfg.autopilot = parse_autopilot_config_node(node);
+            }
+            _ => {} // forward-compatible: ignore unknown nodes
+        }
+    }
+
+    Ok(cfg)
+}
+
+fn parse_claude_node(node: &KdlNode) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            if child.name().value() == "args" {
+                for entry in child.entries() {
+                    if let Some(s) = entry.value().as_string() {
+                        args.push(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    args
+}
+
+fn parse_deploy_node(node: &KdlNode) -> Option<String> {
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            if child.name().value() == "command" {
+                return child
+                    .entries()
+                    .first()
+                    .and_then(|e| e.value().as_string())
+                    .map(|s| s.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn parse_autopilot_config_node(node: &KdlNode) -> AutopilotConfig {
+    let mut cfg = AutopilotConfig::default();
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            match child.name().value() {
+                "auto-push" => {
+                    if let Some(v) = child.entries().first().and_then(|e| e.value().as_bool()) {
+                        cfg.auto_push = v;
+                    }
+                }
+                "review" => {
+                    if let Some(v) = child.entries().first().and_then(|e| e.value().as_bool()) {
+                        cfg.review = v;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    cfg
+}
+
+// ---------------------------------------------------------------------------
+// Three-tier config merging
+// ---------------------------------------------------------------------------
+
+/// Determine the effective layout using three-tier merging:
+/// hardcoded default < global `default_layout` < per-repo `layout`.
+///
+/// If `claude_args` in the per-repo config is non-empty, they are injected into
+/// any pane whose command is `"claude"`.
+pub fn effective_layout(global: &GlobalConfig, per_repo: &PerRepoConfig) -> Layout {
+    let mut layout = if let Some(ref l) = per_repo.layout {
+        l.clone()
+    } else if let Some(ref l) = global.default_layout {
+        l.clone()
+    } else {
+        default_layout()
+    };
+
+    if !per_repo.claude_args.is_empty() {
+        apply_claude_args(&mut layout, &per_repo.claude_args);
+    }
+
+    layout
+}
+
+/// Inject `args` into every pane whose command is `"claude"`.
+pub fn apply_claude_args(layout: &mut Layout, args: &[String]) {
+    for tab in &mut layout.tabs {
+        for pane in &mut tab.panes {
+            if pane.command.as_deref() == Some("claude") {
+                pane.args = args.to_vec();
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -700,5 +854,314 @@ config {
         let cfg = parse_global_config_kdl(kdl).unwrap();
         let layout = cfg.default_layout.unwrap();
         assert!(layout.tabs.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_per_repo_config_kdl
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_per_repo_empty_file() {
+        let cfg = parse_per_repo_config_kdl("").unwrap();
+        assert!(cfg.layout.is_none());
+        assert!(cfg.claude_args.is_empty());
+        assert!(cfg.deploy_command.is_none());
+        assert_eq!(cfg.autopilot, AutopilotConfig::default());
+    }
+
+    #[test]
+    fn parse_per_repo_full_config() {
+        let kdl = r#"
+layout {
+    tab name="claude" {
+        pane command="claude"
+    }
+    tab name="shell" {
+        pane
+    }
+    tab name="server" {
+        pane command="npm" {
+            args "run" "dev"
+        }
+    }
+}
+
+claude {
+    args "--resume"
+}
+
+deploy {
+    command "./deploy.sh"
+}
+
+autopilot {
+    auto-push true
+    review false
+}
+"#;
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+
+        let layout = cfg.layout.unwrap();
+        assert_eq!(layout.tabs.len(), 3);
+        assert_eq!(layout.tabs[0].name, "claude");
+        assert_eq!(layout.tabs[1].name, "shell");
+        assert_eq!(layout.tabs[2].name, "server");
+        assert_eq!(layout.tabs[2].panes[0].command.as_deref(), Some("npm"));
+        assert_eq!(layout.tabs[2].panes[0].args, vec!["run", "dev"]);
+
+        assert_eq!(cfg.claude_args, vec!["--resume"]);
+        assert_eq!(cfg.deploy_command.as_deref(), Some("./deploy.sh"));
+        assert!(cfg.autopilot.auto_push);
+        assert!(!cfg.autopilot.review);
+    }
+
+    #[test]
+    fn parse_per_repo_claude_multiple_args() {
+        let kdl = r#"
+claude {
+    args "--resume" "--model" "opus"
+}
+"#;
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+        assert_eq!(cfg.claude_args, vec!["--resume", "--model", "opus"]);
+    }
+
+    #[test]
+    fn parse_per_repo_autopilot_review_true() {
+        let kdl = r#"
+autopilot {
+    auto-push false
+    review true
+}
+"#;
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+        assert!(!cfg.autopilot.auto_push);
+        assert!(cfg.autopilot.review);
+    }
+
+    #[test]
+    fn parse_per_repo_malformed_is_error() {
+        let kdl = "layout { this is not valid kdl !!!";
+        assert!(matches!(
+            parse_per_repo_config_kdl(kdl).unwrap_err(),
+            ZError::ConfigParse(_)
+        ));
+    }
+
+    #[test]
+    fn parse_per_repo_ignores_unknown_nodes() {
+        let kdl = r#"
+unknown-node "foo"
+claude {
+    args "--resume"
+}
+"#;
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+        assert_eq!(cfg.claude_args, vec!["--resume"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // effective_layout / apply_claude_args
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn effective_layout_uses_hardcoded_default_when_no_overrides() {
+        let global = GlobalConfig::default();
+        let per_repo = PerRepoConfig::default();
+        let layout = effective_layout(&global, &per_repo);
+        // hardcoded default has claude + shell
+        assert_eq!(layout.tabs.len(), 2);
+        assert_eq!(layout.tabs[0].name, "claude");
+        assert_eq!(layout.tabs[1].name, "shell");
+    }
+
+    #[test]
+    fn effective_layout_global_overrides_hardcoded_default() {
+        let global = GlobalConfig {
+            default_layout: Some(crate::domain::Layout {
+                tabs: vec![crate::domain::Tab {
+                    name: "custom".to_string(),
+                    panes: vec![],
+                }],
+            }),
+            ..Default::default()
+        };
+        let per_repo = PerRepoConfig::default();
+        let layout = effective_layout(&global, &per_repo);
+        assert_eq!(layout.tabs.len(), 1);
+        assert_eq!(layout.tabs[0].name, "custom");
+    }
+
+    #[test]
+    fn effective_layout_per_repo_overrides_global() {
+        let global = GlobalConfig {
+            default_layout: Some(crate::domain::Layout {
+                tabs: vec![crate::domain::Tab {
+                    name: "global-tab".to_string(),
+                    panes: vec![],
+                }],
+            }),
+            ..Default::default()
+        };
+        let per_repo = PerRepoConfig {
+            layout: Some(crate::domain::Layout {
+                tabs: vec![
+                    crate::domain::Tab {
+                        name: "claude".to_string(),
+                        panes: vec![crate::domain::Pane {
+                            command: Some("claude".to_string()),
+                            args: vec![],
+                        }],
+                    },
+                    crate::domain::Tab {
+                        name: "server".to_string(),
+                        panes: vec![],
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        let layout = effective_layout(&global, &per_repo);
+        assert_eq!(layout.tabs.len(), 2);
+        assert_eq!(layout.tabs[0].name, "claude");
+        assert_eq!(layout.tabs[1].name, "server");
+    }
+
+    #[test]
+    fn effective_layout_injects_claude_args_into_claude_pane() {
+        let global = GlobalConfig::default();
+        let per_repo = PerRepoConfig {
+            claude_args: vec!["--resume".to_string()],
+            ..Default::default()
+        };
+        let layout = effective_layout(&global, &per_repo);
+        let claude_tab = layout.tabs.iter().find(|t| t.name == "claude").unwrap();
+        assert_eq!(claude_tab.panes[0].args, vec!["--resume"]);
+    }
+
+    #[test]
+    fn effective_layout_claude_args_only_applied_to_claude_pane() {
+        let global = GlobalConfig::default();
+        let per_repo = PerRepoConfig {
+            claude_args: vec!["--resume".to_string()],
+            ..Default::default()
+        };
+        let layout = effective_layout(&global, &per_repo);
+        let shell_tab = layout.tabs.iter().find(|t| t.name == "shell").unwrap();
+        assert!(shell_tab.panes[0].args.is_empty());
+    }
+
+    #[test]
+    fn apply_claude_args_modifies_claude_pane() {
+        let mut layout = default_layout();
+        apply_claude_args(&mut layout, &["--resume".to_string()]);
+        assert_eq!(layout.tabs[0].panes[0].args, vec!["--resume"]);
+        // shell pane unaffected
+        assert!(layout.tabs[1].panes[0].args.is_empty());
+    }
+
+    #[test]
+    fn effective_layout_claude_args_applied_to_global_layout() {
+        // When per-repo has no layout but has claude_args, they should still
+        // be injected into the global layout's claude pane.
+        let global = GlobalConfig {
+            default_layout: Some(crate::domain::Layout {
+                tabs: vec![crate::domain::Tab {
+                    name: "claude".to_string(),
+                    panes: vec![crate::domain::Pane {
+                        command: Some("claude".to_string()),
+                        args: vec![],
+                    }],
+                }],
+            }),
+            ..Default::default()
+        };
+        let per_repo = PerRepoConfig {
+            claude_args: vec!["--resume".to_string(), "--model".to_string(), "opus".to_string()],
+            ..Default::default()
+        };
+        let layout = effective_layout(&global, &per_repo);
+        assert_eq!(layout.tabs[0].panes[0].args, vec!["--resume", "--model", "opus"]);
+    }
+
+    #[test]
+    fn effective_layout_claude_args_overwrite_layout_pane_args() {
+        // If a per-repo layout already has args on the claude pane AND separate
+        // claude_args are set, the claude_args overwrite the layout pane args.
+        let global = GlobalConfig::default();
+        let per_repo = PerRepoConfig {
+            layout: Some(crate::domain::Layout {
+                tabs: vec![crate::domain::Tab {
+                    name: "claude".to_string(),
+                    panes: vec![crate::domain::Pane {
+                        command: Some("claude".to_string()),
+                        args: vec!["--verbose".to_string()],
+                    }],
+                }],
+            }),
+            claude_args: vec!["--resume".to_string()],
+            ..Default::default()
+        };
+        let layout = effective_layout(&global, &per_repo);
+        // claude_args replaces, does not merge
+        assert_eq!(layout.tabs[0].panes[0].args, vec!["--resume"]);
+    }
+
+    #[test]
+    fn parse_per_repo_claude_no_children() {
+        // A claude node with no children block produces empty args.
+        let kdl = "claude\n";
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+        assert!(cfg.claude_args.is_empty());
+    }
+
+    #[test]
+    fn parse_per_repo_deploy_no_command_child() {
+        // A deploy node with children but no "command" child.
+        let kdl = r#"
+deploy {
+    description "something"
+}
+"#;
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+        assert!(cfg.deploy_command.is_none());
+    }
+
+    #[test]
+    fn parse_per_repo_duplicate_nodes_last_wins() {
+        // When the same top-level node appears twice, the last one wins.
+        let kdl = r#"
+claude {
+    args "--first"
+}
+claude {
+    args "--second"
+}
+deploy {
+    command "deploy-v1.sh"
+}
+deploy {
+    command "deploy-v2.sh"
+}
+"#;
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+        assert_eq!(cfg.claude_args, vec!["--second"]);
+        assert_eq!(cfg.deploy_command.as_deref(), Some("deploy-v2.sh"));
+    }
+
+    #[test]
+    fn apply_claude_args_no_claude_pane_no_panic() {
+        let mut layout = crate::domain::Layout {
+            tabs: vec![crate::domain::Tab {
+                name: "shell".to_string(),
+                panes: vec![crate::domain::Pane {
+                    command: None,
+                    args: vec![],
+                }],
+            }],
+        };
+        // Should not panic even when there's no claude pane
+        apply_claude_args(&mut layout, &["--resume".to_string()]);
+        assert!(layout.tabs[0].panes[0].args.is_empty());
     }
 }
