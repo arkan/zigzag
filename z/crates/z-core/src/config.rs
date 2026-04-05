@@ -1061,6 +1061,95 @@ claude {
     }
 
     #[test]
+    fn effective_layout_claude_args_applied_to_global_layout() {
+        // When per-repo has no layout but has claude_args, they should still
+        // be injected into the global layout's claude pane.
+        let global = GlobalConfig {
+            default_layout: Some(crate::domain::Layout {
+                tabs: vec![crate::domain::Tab {
+                    name: "claude".to_string(),
+                    panes: vec![crate::domain::Pane {
+                        command: Some("claude".to_string()),
+                        args: vec![],
+                    }],
+                }],
+            }),
+            ..Default::default()
+        };
+        let per_repo = PerRepoConfig {
+            claude_args: vec!["--resume".to_string(), "--model".to_string(), "opus".to_string()],
+            ..Default::default()
+        };
+        let layout = effective_layout(&global, &per_repo);
+        assert_eq!(layout.tabs[0].panes[0].args, vec!["--resume", "--model", "opus"]);
+    }
+
+    #[test]
+    fn effective_layout_claude_args_overwrite_layout_pane_args() {
+        // If a per-repo layout already has args on the claude pane AND separate
+        // claude_args are set, the claude_args overwrite the layout pane args.
+        let global = GlobalConfig::default();
+        let per_repo = PerRepoConfig {
+            layout: Some(crate::domain::Layout {
+                tabs: vec![crate::domain::Tab {
+                    name: "claude".to_string(),
+                    panes: vec![crate::domain::Pane {
+                        command: Some("claude".to_string()),
+                        args: vec!["--verbose".to_string()],
+                    }],
+                }],
+            }),
+            claude_args: vec!["--resume".to_string()],
+            ..Default::default()
+        };
+        let layout = effective_layout(&global, &per_repo);
+        // claude_args replaces, does not merge
+        assert_eq!(layout.tabs[0].panes[0].args, vec!["--resume"]);
+    }
+
+    #[test]
+    fn parse_per_repo_claude_no_children() {
+        // A claude node with no children block produces empty args.
+        let kdl = "claude\n";
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+        assert!(cfg.claude_args.is_empty());
+    }
+
+    #[test]
+    fn parse_per_repo_deploy_no_command_child() {
+        // A deploy node with children but no "command" child.
+        let kdl = r#"
+deploy {
+    description "something"
+}
+"#;
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+        assert!(cfg.deploy_command.is_none());
+    }
+
+    #[test]
+    fn parse_per_repo_duplicate_nodes_last_wins() {
+        // When the same top-level node appears twice, the last one wins.
+        let kdl = r#"
+claude {
+    args "--first"
+}
+claude {
+    args "--second"
+}
+deploy {
+    command "deploy-v1.sh"
+}
+deploy {
+    command "deploy-v2.sh"
+}
+"#;
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+        assert_eq!(cfg.claude_args, vec!["--second"]);
+        assert_eq!(cfg.deploy_command.as_deref(), Some("deploy-v2.sh"));
+    }
+
+    #[test]
     fn apply_claude_args_no_claude_pane_no_panic() {
         let mut layout = crate::domain::Layout {
             tabs: vec![crate::domain::Tab {
