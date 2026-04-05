@@ -1,2 +1,6 @@
 // z-autopilot: state machine, workflows, triggers, notifications (phase 6)
-// Stub — implementation in a later phase.
+
+pub mod dsl;
+pub mod persist;
+pub mod state;
+pub mod trigger;
