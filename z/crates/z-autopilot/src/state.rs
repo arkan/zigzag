@@ -123,6 +123,10 @@ pub fn advance(
                     return Ok(None);
                 }
             }
+        // on_reject is the confirm-step equivalent of on_failure.
+        } else if let Some(target) = &step.on_reject {
+            run.retry_count = 0;
+            target.clone()
         } else if let Some(target) = &step.on_failure {
             run.retry_count = 0;
             target.clone()
@@ -137,7 +141,10 @@ pub fn advance(
         }
     } else {
         run.retry_count = 0;
-        if let Some(target) = &step.on_success {
+        // on_accept is the confirm-step equivalent of on_success.
+        if let Some(target) = &step.on_accept {
+            target.clone()
+        } else if let Some(target) = &step.on_success {
             target.clone()
         } else if let Some(target) = &step.on_complete {
             target.clone()
@@ -454,6 +461,107 @@ autopilot "test" {
         let next = advance(&wf, &mut run, StepResult::Success { output: None }).unwrap();
         assert_eq!(next.as_deref(), Some("done"));
         assert_eq!(run.retry_count, 0);
+    }
+
+    #[test]
+    fn test_confirm_step_accept_uses_on_accept() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "ask" {
+        confirm "Proceed?"
+        on-accept "yes-path"
+        on-reject "no-path"
+    }
+    step "yes-path" {
+        notify "Accepted"
+    }
+    step "no-path" {
+        notify "Rejected"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "ask");
+        let next = advance(&wf, &mut run, StepResult::Success { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("yes-path"));
+    }
+
+    #[test]
+    fn test_confirm_step_reject_uses_on_reject() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "ask" {
+        confirm "Proceed?"
+        on-accept "yes-path"
+        on-reject "no-path"
+    }
+    step "yes-path" {
+        notify "Accepted"
+    }
+    step "no-path" {
+        notify "Rejected"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "ask");
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("no-path"));
+    }
+
+    #[test]
+    fn test_confirm_step_reject_falls_back_to_on_failure() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "ask" {
+        confirm "Proceed?"
+        on-accept "done"
+        on-failure "fallback"
+    }
+    step "done" {
+        notify "ok"
+    }
+    step "fallback" {
+        notify "fell back"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "ask");
+        // No on-reject set, should fall through to on-failure
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("fallback"));
+    }
+
+    #[test]
+    fn test_confirm_step_reject_prefers_on_reject_over_on_failure() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "ask" {
+        confirm "Proceed?"
+        on-accept "done"
+        on-reject "rejected"
+        on-failure "failed"
+    }
+    step "done" {
+        notify "ok"
+    }
+    step "rejected" {
+        notify "rejected"
+    }
+    step "failed" {
+        notify "failed"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "ask");
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("rejected"), "on_reject should take priority over on_failure");
     }
 
     #[test]
