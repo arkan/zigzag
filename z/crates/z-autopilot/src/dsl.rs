@@ -296,6 +296,17 @@ pub fn validate_workflow(workflow: &AutopilotWorkflow) -> Result<()> {
         check(&step.on_reject)?;
     }
 
+    // Check on_accept/on_reject only on confirm steps, and on_success/on_failure not on confirm steps.
+    for step in &workflow.steps {
+        let is_confirm = matches!(step.action, StepAction::Confirm { .. });
+        if !is_confirm && (step.on_accept.is_some() || step.on_reject.is_some()) {
+            return Err(ZError::ConfigParse(format!(
+                "workflow '{}': step '{}' has on-accept/on-reject but is not a confirm step",
+                workflow.name, step.name
+            )));
+        }
+    }
+
     // Check no orphan steps (every step except the first must be reachable).
     if workflow.steps.is_empty() {
         return Err(ZError::ConfigParse(format!(
@@ -711,6 +722,58 @@ autopilot "test" {
         for t in &triggers {
             assert_eq!(Trigger::from_str(t.as_str()).as_ref(), Some(t));
         }
+    }
+
+    #[test]
+    fn test_validate_on_accept_on_non_confirm_step_error() {
+        let kdl = r#"
+autopilot "bad" {
+    trigger "manual"
+    step "s" {
+        run "cmd"
+        on-accept "s"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(err.to_string().contains("on-accept/on-reject"));
+        assert!(err.to_string().contains("not a confirm step"));
+    }
+
+    #[test]
+    fn test_validate_on_reject_on_non_confirm_step_error() {
+        let kdl = r#"
+autopilot "bad" {
+    trigger "manual"
+    step "start" {
+        notify "hi"
+        on-reject "start"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let err = validate_workflow(&wf).unwrap_err();
+        assert!(err.to_string().contains("on-accept/on-reject"));
+    }
+
+    #[test]
+    fn test_validate_on_accept_on_confirm_step_ok() {
+        let kdl = r#"
+autopilot "good" {
+    trigger "manual"
+    step "ask" {
+        confirm "Do it?"
+        on-accept "done"
+        on-reject "done"
+    }
+    step "done" {
+        notify "ok"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        assert!(validate_workflow(&wf).is_ok());
     }
 
     #[test]
