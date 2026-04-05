@@ -94,8 +94,8 @@ impl SessionManager for ZellijSessionManager {
 /// Returns `None` if the string does not contain a `:` separator or either part is empty.
 pub fn parse_session_name(s: &str) -> Option<(String, String)> {
     let mut parts = s.splitn(2, ':');
-    let project = parts.next()?.to_string();
-    let branch = parts.next()?.to_string();
+    let project = parts.next()?.trim().to_string();
+    let branch = parts.next()?.trim().to_string();
     if project.is_empty() || branch.is_empty() {
         return None;
     }
@@ -295,5 +295,31 @@ mod tests {
     #[test]
     fn parse_session_name_empty_string_returns_none() {
         assert!(parse_session_name("").is_none());
+    }
+
+    #[test]
+    fn parse_session_name_whitespace_project_returns_none() {
+        assert!(parse_session_name("  :main").is_none());
+    }
+
+    #[test]
+    fn parse_session_name_whitespace_branch_returns_none() {
+        assert!(parse_session_name("myapp:  ").is_none());
+    }
+
+    #[test]
+    fn parse_session_name_both_whitespace_returns_none() {
+        assert!(parse_session_name(" : ").is_none());
+    }
+
+    #[test]
+    fn parse_session_name_only_colon_returns_none() {
+        assert!(parse_session_name(":").is_none());
+    }
+
+    #[test]
+    fn parse_session_name_trims_surrounding_whitespace() {
+        let result = parse_session_name(" myapp : main ");
+        assert_eq!(result, Some(("myapp".to_string(), "main".to_string())));
     }
 }

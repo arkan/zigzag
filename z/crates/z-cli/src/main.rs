@@ -237,6 +237,26 @@ mod tests {
     fn confirm_response_whitespace_only_returns_false() {
         assert!(!parse_confirm_response("   "));
     }
+
+    #[test]
+    fn confirm_response_y_with_surrounding_whitespace_returns_true() {
+        assert!(parse_confirm_response("  y  "));
+    }
+
+    #[test]
+    fn confirm_response_y_with_crlf_returns_true() {
+        assert!(parse_confirm_response("y\r\n"));
+    }
+
+    #[test]
+    fn confirm_response_n_uppercase_returns_false() {
+        assert!(!parse_confirm_response("N"));
+    }
+
+    #[test]
+    fn confirm_response_random_text_returns_false() {
+        assert!(!parse_confirm_response("maybe"));
+    }
 }
 
 fn cmd_list() -> z_core::error::Result<()> {
