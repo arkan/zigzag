@@ -22,8 +22,13 @@ pub fn generate_layout_kdl(layout: &Layout) -> String {
     out
 }
 
+/// Escape a string for use inside a KDL double-quoted value.
+fn escape_kdl_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn generate_tab_kdl(tab: &Tab) -> String {
-    let mut out = format!("    tab name=\"{}\" {{\n", tab.name);
+    let mut out = format!("    tab name=\"{}\" {{\n", escape_kdl_string(&tab.name));
     for pane in &tab.panes {
         out.push_str(&generate_pane_kdl(pane));
     }
@@ -34,15 +39,19 @@ fn generate_tab_kdl(tab: &Tab) -> String {
 fn generate_pane_kdl(pane: &Pane) -> String {
     if let Some(ref cmd) = pane.command {
         if pane.args.is_empty() {
-            format!("        pane command=\"{}\"\n", cmd)
+            format!("        pane command=\"{}\"\n", escape_kdl_string(cmd))
         } else {
             let args_str = pane
                 .args
                 .iter()
-                .map(|a| format!("\"{}\"", a))
+                .map(|a| format!("\"{}\"", escape_kdl_string(a)))
                 .collect::<Vec<_>>()
                 .join(" ");
-            format!("        pane command=\"{}\" args={}\n", cmd, args_str)
+            format!(
+                "        pane command=\"{}\" args={}\n",
+                escape_kdl_string(cmd),
+                args_str
+            )
         }
     } else {
         "        pane\n".to_string()
@@ -176,5 +185,97 @@ mod tests {
         };
         let kdl = generate_layout_kdl(&layout);
         assert_eq!(kdl, "layout {\n    tab name=\"empty\" {\n    }\n}\n");
+    }
+
+    #[test]
+    fn generate_kdl_tab_name_with_quotes_is_escaped() {
+        let layout = Layout {
+            tabs: vec![Tab {
+                name: "my \"tab\"".to_string(),
+                panes: vec![Pane {
+                    command: None,
+                    args: vec![],
+                }],
+            }],
+        };
+        let kdl = generate_layout_kdl(&layout);
+        assert!(kdl.contains(r#"tab name="my \"tab\"""#));
+    }
+
+    #[test]
+    fn generate_kdl_command_with_backslash_is_escaped() {
+        let layout = Layout {
+            tabs: vec![Tab {
+                name: "test".to_string(),
+                panes: vec![Pane {
+                    command: Some(r"C:\bin\tool".to_string()),
+                    args: vec![],
+                }],
+            }],
+        };
+        let kdl = generate_layout_kdl(&layout);
+        assert!(kdl.contains(r#"pane command="C:\\bin\\tool""#));
+    }
+
+    #[test]
+    fn generate_kdl_args_with_quotes_are_escaped() {
+        let layout = Layout {
+            tabs: vec![Tab {
+                name: "editor".to_string(),
+                panes: vec![Pane {
+                    command: Some("echo".to_string()),
+                    args: vec!["hello \"world\"".to_string()],
+                }],
+            }],
+        };
+        let kdl = generate_layout_kdl(&layout);
+        assert!(kdl.contains(r#"args="hello \"world\"""#));
+    }
+
+    #[test]
+    fn generate_kdl_multiple_panes_in_tab() {
+        let layout = Layout {
+            tabs: vec![Tab {
+                name: "split".to_string(),
+                panes: vec![
+                    Pane {
+                        command: Some("htop".to_string()),
+                        args: vec![],
+                    },
+                    Pane {
+                        command: None,
+                        args: vec![],
+                    },
+                ],
+            }],
+        };
+        let kdl = generate_layout_kdl(&layout);
+        assert!(kdl.contains("pane command=\"htop\""));
+        assert!(kdl.contains("        pane\n"));
+    }
+
+    #[test]
+    fn generate_kdl_pane_with_multiple_args() {
+        let layout = Layout {
+            tabs: vec![Tab {
+                name: "editor".to_string(),
+                panes: vec![Pane {
+                    command: Some("nvim".to_string()),
+                    args: vec!["-u".to_string(), "NONE".to_string(), "file.txt".to_string()],
+                }],
+            }],
+        };
+        let kdl = generate_layout_kdl(&layout);
+        assert!(kdl.contains(r#"pane command="nvim" args="-u" "NONE" "file.txt""#));
+    }
+
+    #[test]
+    fn escape_kdl_string_no_special_chars() {
+        assert_eq!(escape_kdl_string("hello"), "hello");
+    }
+
+    #[test]
+    fn escape_kdl_string_with_both_quote_and_backslash() {
+        assert_eq!(escape_kdl_string(r#"a\"b"#), r#"a\\\"b"#);
     }
 }
