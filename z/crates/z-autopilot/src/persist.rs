@@ -61,7 +61,7 @@ fn collect_runs(dir: &Path, runs: &mut Vec<WorkflowRun>) -> Result<()> {
                         runs.push(run);
                     }
                 }
-                Err(_) => {} // skip unreadable files
+                Err(_) => {}
             }
         }
     }

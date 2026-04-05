@@ -110,8 +110,14 @@ pub fn advance(
                 if let Some(target) = &step.on_max_retries {
                     run.retry_count = 0;
                     target.clone()
+                } else if let Some(target) = &step.on_failure {
+                    run.retry_count = 0;
+                    target.clone()
+                } else if let Some(target) = &step.on_complete {
+                    run.retry_count = 0;
+                    target.clone()
                 } else {
-                    // No on-max-retries target: workflow is stuck/failed.
+                    // No transition target at all: workflow is stuck.
                     run.status = WorkflowStatus::Stuck;
                     run.current_step = None;
                     return Ok(None);
@@ -295,6 +301,159 @@ autopilot "test" {
         let run = make_run("pr-ci-fix", "monitor-ci");
         let step = current_step(&wf, &run).unwrap();
         assert_eq!(step.name, "monitor-ci");
+    }
+
+    #[test]
+    fn test_max_retries_exhausted_falls_back_to_on_failure() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "flaky" {
+        run "cmd"
+        max-retries 1
+        on-failure "recover"
+    }
+    step "recover" {
+        notify "Recovered"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "flaky");
+        run.retry_count = 1; // at max
+
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("recover"));
+        assert_eq!(run.retry_count, 0);
+    }
+
+    #[test]
+    fn test_max_retries_exhausted_falls_back_to_on_complete() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "flaky" {
+        run "cmd"
+        max-retries 1
+        on-complete "next"
+    }
+    step "next" {
+        notify "Done"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "flaky");
+        run.retry_count = 1;
+
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("next"));
+    }
+
+    #[test]
+    fn test_max_retries_prefers_on_max_retries_over_on_failure() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "flaky" {
+        run "cmd"
+        max-retries 1
+        on-failure "fallback"
+        on-max-retries "exhausted"
+    }
+    step "fallback" {
+        notify "fallback"
+    }
+    step "exhausted" {
+        notify "exhausted"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "flaky");
+        run.retry_count = 1;
+
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("exhausted"));
+    }
+
+    #[test]
+    fn test_advance_on_already_completed_workflow() {
+        let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
+        let mut run = make_run("pr-ci-fix", "monitor-ci");
+        run.status = WorkflowStatus::Completed;
+        run.current_step = None;
+
+        let next = advance(&wf, &mut run, StepResult::Success { output: None }).unwrap();
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn test_advance_unknown_step_is_error() {
+        let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
+        let mut run = make_run("pr-ci-fix", "nonexistent-step");
+
+        let result = advance(&wf, &mut run, StepResult::Success { output: None });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_retry_increments_then_transitions() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "flaky" {
+        run "cmd"
+        max-retries 2
+        on-max-retries "done"
+    }
+    step "done" {
+        notify "done"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "flaky");
+
+        // First failure: retry (count 0 -> 1)
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("flaky"));
+        assert_eq!(run.retry_count, 1);
+
+        // Second failure: retry (count 1 -> 2)
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("flaky"));
+        assert_eq!(run.retry_count, 2);
+
+        // Third failure: exhausted (count == max), transition to on-max-retries
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("done"));
+        assert_eq!(run.retry_count, 0);
+        assert_eq!(run.history.last().unwrap().status, StepStatus::MaxRetriesExhausted);
+    }
+
+    #[test]
+    fn test_success_resets_retry_count() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "flaky" {
+        run "cmd"
+        max-retries 3
+        on-success "done"
+    }
+    step "done" {
+        notify "done"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "flaky");
+        run.retry_count = 2; // had some retries
+
+        let next = advance(&wf, &mut run, StepResult::Success { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("done"));
+        assert_eq!(run.retry_count, 0);
     }
 
     #[test]
