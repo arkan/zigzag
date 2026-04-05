@@ -179,8 +179,8 @@ fn cmd_open_remote(
     // SSH: set up (or reuse) the worktree on the remote machine.
     let ssh_cmd = format!(
         "cd {} && wt switch -c {}",
-        project.path.display(),
-        branch
+        remote::shell_quote(&project.path.display().to_string()),
+        remote::shell_quote(branch)
     );
     remote::ssh_run_remote(&ssh_host, &ssh_cmd)?;
 

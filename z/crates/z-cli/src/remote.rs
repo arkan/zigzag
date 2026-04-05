@@ -11,10 +11,11 @@ use crate::session_manager::parse_zellij_sessions;
 
 /// Extract the SSH hostname from a Zellij host URL.
 ///
-/// Strips the scheme (`https://` / `http://`) and the port:
+/// Strips the scheme (`https://` / `http://`), port, and path:
 /// - `"https://vps.example.com:8082"` → `"vps.example.com"`
 /// - `"https://example.com"` → `"example.com"`
 /// - `"http://dev.example.com:8080"` → `"dev.example.com"`
+/// - `"https://host/path"` → `"host"`
 ///
 /// Returns an error if the resulting hostname is empty (e.g. `"https://"`).
 pub fn extract_ssh_host(host_url: &str) -> Result<String> {
@@ -22,9 +23,9 @@ pub fn extract_ssh_host(host_url: &str) -> Result<String> {
         .strip_prefix("https://")
         .or_else(|| host_url.strip_prefix("http://"))
         .unwrap_or(host_url);
-    // Strip port suffix (everything after the first `:`)
+    // Strip port (`:…`) or path (`/…`) — take only the hostname portion.
     let hostname = without_scheme
-        .split(':')
+        .split(&[':', '/'][..])
         .next()
         .unwrap_or(without_scheme);
     if hostname.is_empty() {
@@ -43,6 +44,18 @@ pub fn extract_ssh_host(host_url: &str) -> Result<String> {
 ///   `"https://vps.example.com:8082/prod-api:feat-x"`
 pub fn build_remote_attach_url(host: &str, session_name: &str) -> String {
     format!("{}/{}", host.trim_end_matches('/'), session_name)
+}
+
+// ---------------------------------------------------------------------------
+// Shell quoting
+// ---------------------------------------------------------------------------
+
+/// POSIX shell-quote a value so it is safe to embed in a command string.
+///
+/// Wraps the value in single quotes, escaping any embedded single quotes
+/// with the `'\''` idiom (end quote, escaped quote, restart quote).
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +99,7 @@ pub fn list_remote_sessions(ssh_host: &str, project: &str) -> Result<Vec<Session
 
 /// Kill a Zellij session on a remote host via SSH.
 pub fn delete_remote_session(ssh_host: &str, session_name: &str) -> Result<()> {
-    let cmd = format!("zellij delete-session {}", session_name);
+    let cmd = format!("zellij delete-session {}", shell_quote(session_name));
     ssh_run_remote(ssh_host, &cmd)
 }
 
@@ -94,7 +107,11 @@ pub fn delete_remote_session(ssh_host: &str, session_name: &str) -> Result<()> {
 ///
 /// Runs `cd {project_path} && wt remove {branch}` on the remote.
 pub fn remove_remote_worktree(ssh_host: &str, project_path: &str, branch: &str) -> Result<()> {
-    let cmd = format!("cd {} && wt remove {}", project_path, branch);
+    let cmd = format!(
+        "cd {} && wt remove {}",
+        shell_quote(project_path),
+        shell_quote(branch)
+    );
     ssh_run_remote(ssh_host, &cmd)
 }
 
@@ -199,5 +216,90 @@ mod tests {
     fn build_remote_attach_url_http_host() {
         let url = build_remote_attach_url("http://localhost:8082", "dev:test-branch");
         assert_eq!(url, "http://localhost:8082/dev:test-branch");
+    }
+
+    // --- extract_ssh_host: path stripping ---
+
+    #[test]
+    fn extract_ssh_host_url_with_path_no_port() {
+        // Path component must be stripped even without a port.
+        let result = extract_ssh_host("https://host.example.com/some/path").unwrap();
+        assert_eq!(result, "host.example.com");
+    }
+
+    #[test]
+    fn extract_ssh_host_url_with_path_and_port() {
+        let result = extract_ssh_host("https://host.example.com:8082/some/path").unwrap();
+        assert_eq!(result, "host.example.com");
+    }
+
+    #[test]
+    fn extract_ssh_host_bare_host_with_path() {
+        let result = extract_ssh_host("myhost/path").unwrap();
+        assert_eq!(result, "myhost");
+    }
+
+    #[test]
+    fn extract_ssh_host_port_only_after_scheme() {
+        // "https://:8082" → empty hostname → error
+        assert!(extract_ssh_host("https://:8082").is_err());
+    }
+
+    // --- shell_quote ---
+
+    #[test]
+    fn shell_quote_simple_string() {
+        assert_eq!(shell_quote("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_quote_empty_string() {
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn shell_quote_with_spaces() {
+        assert_eq!(shell_quote("hello world"), "'hello world'");
+    }
+
+    #[test]
+    fn shell_quote_with_semicolon() {
+        // Prevents shell injection via `;`
+        assert_eq!(shell_quote("feat; rm -rf /"), "'feat; rm -rf /'");
+    }
+
+    #[test]
+    fn shell_quote_with_single_quotes() {
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn shell_quote_with_backticks() {
+        assert_eq!(shell_quote("$(whoami)"), "'$(whoami)'");
+    }
+
+    #[test]
+    fn shell_quote_with_dollar_and_braces() {
+        assert_eq!(shell_quote("${HOME}"), "'${HOME}'");
+    }
+
+    #[test]
+    fn shell_quote_with_newline() {
+        assert_eq!(shell_quote("a\nb"), "'a\nb'");
+    }
+
+    // --- build_remote_attach_url: edge cases ---
+
+    #[test]
+    fn build_remote_attach_url_multiple_trailing_slashes() {
+        let url = build_remote_attach_url("https://host:8082///", "proj:main");
+        // trim_end_matches('/') removes all trailing slashes
+        assert_eq!(url, "https://host:8082/proj:main");
+    }
+
+    #[test]
+    fn build_remote_attach_url_empty_session_name() {
+        let url = build_remote_attach_url("https://host:8082", "");
+        assert_eq!(url, "https://host:8082/");
     }
 }
