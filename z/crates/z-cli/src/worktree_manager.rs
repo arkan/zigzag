@@ -236,4 +236,43 @@ mod tests {
             PathBuf::from("/home/user/my projects/myapp")
         );
     }
+
+    #[test]
+    fn parse_skips_bare_worktree() {
+        // Bare repos produce a "bare" line instead of "branch refs/heads/..."
+        let output = concat!(
+            "worktree /home/user/myapp.git\n",
+            "HEAD abc123\n",
+            "bare\n",
+            "\n",
+            "worktree /home/user/myapp-main\n",
+            "HEAD def456\n",
+            "branch refs/heads/main\n",
+        );
+        let worktrees = parse_git_worktree_porcelain(output, "myapp");
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].branch, "main");
+    }
+
+    #[test]
+    fn parse_worktree_only_header_no_branch() {
+        // A worktree entry with only the path line and HEAD, no branch
+        let output = "worktree /path/to/wt\nHEAD abc123\n";
+        let worktrees = parse_git_worktree_porcelain(output, "proj");
+        assert!(worktrees.is_empty());
+    }
+
+    #[test]
+    fn parse_ignores_unknown_lines() {
+        // Future git versions might add extra fields
+        let output = concat!(
+            "worktree /path/a\n",
+            "HEAD abc\n",
+            "branch refs/heads/main\n",
+            "prunable gitdir file points to non-existent location\n",
+        );
+        let worktrees = parse_git_worktree_porcelain(output, "proj");
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].branch, "main");
+    }
 }
