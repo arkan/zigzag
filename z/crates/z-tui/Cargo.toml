@@ -1,0 +1,8 @@
+[package]
+name = "z-tui"
+version.workspace = true
+edition.workspace = true
+description = "z-tui: ratatui-based TUI frontend for z"
+
+[dependencies]
+z-core.workspace = true

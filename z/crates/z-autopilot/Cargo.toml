@@ -1,0 +1,8 @@
+[package]
+name = "z-autopilot"
+version.workspace = true
+edition.workspace = true
+description = "z-autopilot: state machine and workflow engine for z"
+
+[dependencies]
+z-core.workspace = true
