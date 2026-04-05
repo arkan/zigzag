@@ -10,6 +10,7 @@ pub trait SessionManager {
     fn list_sessions(&self, project: &str) -> Result<Vec<Session>>;
     fn create_session(&self, project: &str, branch: &str, layout: Layout) -> Result<Session>;
     fn attach_session(&self, session: &Session) -> Result<()>;
+    fn detach_session(&self, session: &Session) -> Result<()>;
     fn kill_session(&self, session: &Session) -> Result<()>;
 }
 
