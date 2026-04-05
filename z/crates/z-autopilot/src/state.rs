@@ -123,6 +123,10 @@ pub fn advance(
                     return Ok(None);
                 }
             }
+        // on_reject is the confirm-step equivalent of on_failure.
+        } else if let Some(target) = &step.on_reject {
+            run.retry_count = 0;
+            target.clone()
         } else if let Some(target) = &step.on_failure {
             run.retry_count = 0;
             target.clone()
@@ -137,7 +141,10 @@ pub fn advance(
         }
     } else {
         run.retry_count = 0;
-        if let Some(target) = &step.on_success {
+        // on_accept is the confirm-step equivalent of on_success.
+        if let Some(target) = &step.on_accept {
+            target.clone()
+        } else if let Some(target) = &step.on_success {
             target.clone()
         } else if let Some(target) = &step.on_complete {
             target.clone()
