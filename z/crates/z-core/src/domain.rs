@@ -7,6 +7,8 @@ pub struct Project {
     pub path: PathBuf,
     /// Remote host URL for remote projects (e.g. `https://vps.example.com:8082`).
     pub host: Option<String>,
+    /// Authentication token for remote hosts, resolved from `env:VAR` at parse time.
+    pub token: Option<String>,
 }
 
 /// A Zellij session, named `{project}:{branch}` (slashes in branch replaced by `-`).

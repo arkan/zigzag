@@ -17,3 +17,4 @@ edition = "2021"
 z-core = { path = "crates/z-core" }
 thiserror = "2"
 semver = "1"
+kdl = "4"
