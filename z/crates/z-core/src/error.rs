@@ -19,6 +19,12 @@ pub enum ZError {
 
     #[error("forge error: {0}")]
     Forge(String),
+
+    #[error("config parse error: {0}")]
+    ConfigParse(String),
+
+    #[error("environment variable not set: {0}")]
+    EnvVarNotFound(String),
 }
 
 pub type Result<T> = std::result::Result<T, ZError>;

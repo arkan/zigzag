@@ -7,3 +7,4 @@ description = "z-core: I/O-agnostic business logic and traits for z"
 [dependencies]
 thiserror.workspace = true
 semver.workspace = true
+kdl.workspace = true
