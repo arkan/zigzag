@@ -50,7 +50,8 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
-use z_core::domain::{Project, Session};
+use z_core::domain::{CiStatus, PrState, PullRequest, Project, Session};
+use z_core::traits::ForgeClient as _;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -110,7 +111,16 @@ pub struct CommitInfo {
     pub message: String,
 }
 
+/// Zellij session info shown in the preview pane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ZellijInfo {
+    pub tab_count: usize,
+    pub pane_count: usize,
+    pub uptime: String,
+}
+
 /// Git information fetched asynchronously for the selected project/session.
+/// PR/CI/Zellij fields start as `None` and are filled in by the forge thread.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GitInfo {
     pub branch: String,
@@ -118,6 +128,19 @@ pub struct GitInfo {
     pub behind: usize,
     pub is_dirty: bool,
     pub commits: Vec<CommitInfo>,
+    /// Pull request for this branch (filled asynchronously after git info).
+    pub pr: Option<PullRequest>,
+    /// CI status for this branch (filled asynchronously after git info).
+    pub ci: Option<CiStatus>,
+    /// Zellij session info for this branch (filled asynchronously after git info).
+    pub zellij: Option<ZellijInfo>,
+}
+
+/// Combined PR/CI/Zellij data from the forge/session background thread.
+struct ForgeData {
+    pr: Option<PullRequest>,
+    ci: CiStatus,
+    zellij: Option<ZellijInfo>,
 }
 
 /// State of the preview pane data.
@@ -149,6 +172,8 @@ pub struct TuiState {
     pub preview_key: String,
     /// Receiver for the in-flight async git fetch, if any.
     pub preview_rx: Option<mpsc::Receiver<Result<GitInfo, String>>>,
+    /// Receiver for the in-flight async forge/Zellij fetch (PR, CI, session info).
+    pub forge_rx: Option<mpsc::Receiver<Result<ForgeData, String>>>,
     /// Session names (e.g. `"myapp:feat-login"`) that have pending notifications.
     /// Sessions in this set render with a 🔔 badge in the SESSIONS panel.
     pub notifications: HashSet<String>,
@@ -167,6 +192,7 @@ impl TuiState {
             preview_data: PreviewData::Loading,
             preview_key: String::new(),
             preview_rx: None,
+            forge_rx: None,
             notifications: HashSet::new(),
         }
     }
@@ -279,6 +305,9 @@ impl TuiState {
     /// Kick off an async git fetch for the currently selected project/session.
     ///
     /// Does nothing if the selection hasn't changed since the last fetch.
+    /// Spawns two background threads:
+    ///   1. Fast: git info (branch, status, commits) → preview_rx
+    ///   2. Slow: PR/CI/Zellij info → forge_rx
     pub fn trigger_preview_load(&mut self) {
         let Some(key) = self.current_preview_key() else {
             return;
@@ -287,21 +316,91 @@ impl TuiState {
             return; // already loading or loaded for this key
         }
 
-        let path: PathBuf = self
-            .selected_entry()
-            .map(|e| e.project.path.clone())
-            .unwrap_or_default();
+        let entry = match self.selected_entry() {
+            Some(e) => e,
+            None => return,
+        };
+        let path = entry.project.path.clone();
+        let project_name = entry.project.name.clone();
+
+        // Determine current branch for this selection.
+        let branch = if self.focused_panel == Panel::Sessions {
+            entry
+                .sessions
+                .get(self.selected_session)
+                .map(|s| s.branch.clone())
+                .unwrap_or_default()
+        } else {
+            entry
+                .sessions
+                .first()
+                .map(|s| s.branch.clone())
+                .unwrap_or_default()
+        };
+
+        // Session name for Zellij lookup (e.g. "myapp:feat-login").
+        let session_name = if branch.is_empty() {
+            project_name.clone()
+        } else {
+            format!(
+                "{}:{}",
+                project_name,
+                z_core::domain::sanitize_branch_name(&branch)
+            )
+        };
 
         self.preview_key = key;
         self.preview_data = PreviewData::Loading;
 
-        let (tx, rx) = mpsc::channel();
-        self.preview_rx = Some(rx);
-
+        // Phase 1 — git info (fast, local)
+        let (tx1, rx1) = mpsc::channel();
+        self.preview_rx = Some(rx1);
+        let path1 = path.clone();
         std::thread::spawn(move || {
-            let result = fetch_git_info(&path.to_string_lossy());
-            let _ = tx.send(result);
+            let result = fetch_git_info(&path1.to_string_lossy());
+            let _ = tx1.send(result);
         });
+
+        // Phase 2 — PR/CI/Zellij (slow, network)
+        let (tx2, rx2) = mpsc::channel();
+        self.forge_rx = Some(rx2);
+        std::thread::spawn(move || {
+            let client = GhForgeClient;
+            let forge = ForgeData {
+                pr: client.get_pr(&project_name, &branch).ok().flatten(),
+                ci: client
+                    .get_ci_status(&project_name, &branch)
+                    .unwrap_or(CiStatus::Unknown),
+                zellij: fetch_zellij_info(&session_name),
+            };
+            let _ = tx2.send(Ok(forge));
+        });
+    }
+
+    /// Poll the forge channel; merge PR/CI/Zellij data into `preview_data` if arrived.
+    pub fn poll_forge(&mut self) {
+        let outcome = match &self.forge_rx {
+            Some(rx) => match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // thread panicked or finished without sending
+                    Some(Err("forge fetch failed (worker dropped)".to_string()))
+                }
+            },
+            None => return,
+        };
+        if let Some(result) = outcome {
+            if let Ok(forge) = result {
+                if let PreviewData::Ready(ref mut info) = self.preview_data {
+                    info.pr = forge.pr;
+                    info.ci = Some(forge.ci);
+                    info.zellij = forge.zellij;
+                }
+            }
+            // Always clear forge_rx once we get a result (success or failure)
+            self.forge_rx = None;
+        }
     }
 
     /// Poll the in-flight preview channel; update `preview_data` if data arrived.
@@ -384,6 +483,9 @@ fn fetch_git_info(path: &str) -> Result<GitInfo, String> {
         behind,
         is_dirty,
         commits,
+        pr: None,
+        ci: None,
+        zellij: None,
     })
 }
 
@@ -412,6 +514,233 @@ fn fetch_ahead_behind(path: &str) -> (usize, usize) {
         }
         _ => (0, 0),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Forge client — gh CLI implementation
+// ---------------------------------------------------------------------------
+
+/// Real `ForgeClient` that delegates to the `gh` CLI.
+struct GhForgeClient;
+
+impl z_core::traits::ForgeClient for GhForgeClient {
+    fn get_pr(
+        &self,
+        _project: &str,
+        branch: &str,
+    ) -> z_core::error::Result<Option<PullRequest>> {
+        use std::process::Command;
+        if branch.is_empty() {
+            return Ok(None);
+        }
+        let out = Command::new("gh")
+            .args(["pr", "view", branch, "--json", "number,state,title,url"])
+            .output()
+            .map_err(|e| z_core::error::ZError::Forge(e.to_string()))?;
+        if !out.status.success() {
+            // No PR found for this branch — treat as absent, not an error.
+            return Ok(None);
+        }
+        let json = String::from_utf8_lossy(&out.stdout);
+        Ok(parse_pr_json(&json))
+    }
+
+    fn get_ci_status(
+        &self,
+        _project: &str,
+        branch: &str,
+    ) -> z_core::error::Result<CiStatus> {
+        use std::process::Command;
+        if branch.is_empty() {
+            return Ok(CiStatus::Unknown);
+        }
+        let out = Command::new("gh")
+            .args([
+                "run",
+                "list",
+                "--branch",
+                branch,
+                "--limit",
+                "1",
+                "--json",
+                "conclusion,status",
+            ])
+            .output()
+            .map_err(|e| z_core::error::ZError::Forge(e.to_string()))?;
+        if !out.status.success() {
+            return Ok(CiStatus::Unknown);
+        }
+        let json = String::from_utf8_lossy(&out.stdout);
+        Ok(parse_ci_status_json(&json))
+    }
+}
+
+/// Parse `gh pr view --json number,state,title,url` output.
+///
+/// Returns `None` if the JSON cannot be parsed or the number is missing.
+fn parse_pr_json(json: &str) -> Option<PullRequest> {
+    let number = extract_json_u64(json, "number")?;
+    let state_raw = extract_json_string(json, "state").unwrap_or_default();
+    let state = match state_raw.to_uppercase().as_str() {
+        "OPEN" => PrState::Open,
+        "MERGED" => PrState::Merged,
+        _ => PrState::Closed,
+    };
+    let title = extract_json_string(json, "title").unwrap_or_default();
+    let url = extract_json_string(json, "url").unwrap_or_default();
+    Some(PullRequest { number, title, state, url })
+}
+
+/// Parse `gh run list --json conclusion,status` output (an array).
+///
+/// Looks at the first element's `conclusion` field.
+fn parse_ci_status_json(json: &str) -> CiStatus {
+    // json is an array; look for the first "conclusion" field
+    match extract_json_string(json, "conclusion")
+        .as_deref()
+        .unwrap_or("")
+    {
+        "success" => CiStatus::Passing,
+        "failure" | "timed_out" => CiStatus::Failing,
+        "" => {
+            // No conclusion yet — check status field
+            match extract_json_string(json, "status")
+                .as_deref()
+                .unwrap_or("")
+            {
+                "in_progress" | "queued" | "waiting" => CiStatus::Pending,
+                _ => CiStatus::Unknown,
+            }
+        }
+        _ => CiStatus::Unknown,
+    }
+}
+
+/// Extract a u64 value from a simple JSON object: `"key": 42`.
+fn extract_json_u64(json: &str, key: &str) -> Option<u64> {
+    let needle = format!("\"{}\":", key);
+    let start = json.find(&needle)? + needle.len();
+    let rest = json[start..].trim_start();
+    rest.split(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|s| s.parse().ok())
+}
+
+/// Extract a string value from a simple JSON object: `"key": "value"`.
+fn extract_json_string(json: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{}\":\"", key);
+    let start = json.find(&needle)? + needle.len();
+    let rest = &json[start..];
+    // Find the closing quote, respecting simple escapes.
+    let mut result = String::new();
+    let mut chars = rest.chars().peekable();
+    loop {
+        match chars.next()? {
+            '"' => break,
+            '\\' => {
+                if let Some(c) = chars.next() {
+                    result.push(c);
+                }
+            }
+            c => result.push(c),
+        }
+    }
+    Some(result)
+}
+
+// ---------------------------------------------------------------------------
+// Zellij session info fetching
+// ---------------------------------------------------------------------------
+
+/// Fetch Zellij session info for `session_name` via `zellij list-sessions`.
+///
+/// Returns `None` if Zellij is not running or the session is not found.
+fn fetch_zellij_info(session_name: &str) -> Option<ZellijInfo> {
+    use std::process::Command;
+    if session_name.is_empty() {
+        return None;
+    }
+
+    // Try JSON output (Zellij 0.40+)
+    let out = Command::new("zellij")
+        .args(["list-sessions", "--json"])
+        .output()
+        .ok()?;
+
+    if out.status.success() {
+        let json = String::from_utf8_lossy(&out.stdout);
+        if let Some(info) = parse_zellij_json_for_session(&json, session_name) {
+            return Some(info);
+        }
+    }
+
+    // Fallback: plain `zellij list-sessions` for uptime only
+    let out2 = Command::new("zellij")
+        .args(["list-sessions"])
+        .output()
+        .ok()?;
+
+    if !out2.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&out2.stdout);
+    for line in text.lines() {
+        if line.contains(session_name) {
+            let uptime = extract_zellij_uptime(line)
+                .unwrap_or_else(|| "unknown".to_string());
+            return Some(ZellijInfo {
+                tab_count: 0,
+                pane_count: 0,
+                uptime,
+            });
+        }
+    }
+
+    None
+}
+
+/// Parse `zellij list-sessions --json` output looking for `session_name`.
+///
+/// Expected format (may vary by Zellij version):
+/// `[{"name":"myapp:feat-login","tabs":3,"panes":5,"created_at":"..."},...]`
+fn parse_zellij_json_for_session(json: &str, session_name: &str) -> Option<ZellijInfo> {
+    // Find the object that contains `"name":"<session_name>"`
+    let name_needle = format!("\"name\":\"{}\"", session_name);
+    let obj_start = json.find(&name_needle)?;
+
+    // Walk backwards to find the '{' that starts this object.
+    let before = &json[..obj_start];
+    let brace_pos = before.rfind('{')?;
+    let obj = &json[brace_pos..];
+
+    let tab_count = extract_json_u64(obj, "tabs")
+        .or_else(|| extract_json_u64(obj, "tab_count"))
+        .unwrap_or(0) as usize;
+    let pane_count = extract_json_u64(obj, "panes")
+        .or_else(|| extract_json_u64(obj, "pane_count"))
+        .unwrap_or(0) as usize;
+
+    // Uptime: use raw created_at value as a hint; proper parsing requires chrono (not in deps).
+    // The Zellij JSON may include "exited" or other status fields that give us uptime text.
+    let uptime = extract_json_string(obj, "uptime")
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Some(ZellijInfo { tab_count, pane_count, uptime })
+}
+
+/// Extract uptime string from a `zellij list-sessions` plain-text line.
+///
+/// Looks for patterns like `[Created 2h34m ago]` or `(2h34m)`.
+fn extract_zellij_uptime(line: &str) -> Option<String> {
+    // Pattern: "[Created Xm ago]", "[Created Xh Ym ago]", etc.
+    if let Some(start) = line.find("Created ") {
+        let rest = &line[start + "Created ".len()..];
+        if let Some(end) = rest.find(" ago") {
+            return Some(rest[..end].to_string());
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -461,8 +790,10 @@ fn event_loop<B: Backend>(
     state: &mut TuiState,
 ) -> io::Result<TuiAction> {
     loop {
-        // Check if async preview data has arrived.
+        // Check if async git preview data has arrived.
         state.poll_preview();
+        // Check if async forge/Zellij data has arrived.
+        state.poll_forge();
 
         terminal.draw(|f| render(f, state))?;
 
@@ -724,6 +1055,44 @@ fn render_preview(f: &mut Frame, area: Rect, state: &TuiState) {
             let mut lines = vec![
                 format!(" branch: {}{} {}", info.branch, tracking, dirt),
             ];
+
+            // PR and CI status line
+            let pr_str = match &info.pr {
+                Some(pr) => {
+                    let state_label = match pr.state {
+                        PrState::Open => "open",
+                        PrState::Merged => "merged",
+                        PrState::Closed => "closed",
+                    };
+                    format!("PR: #{} ({})", pr.number, state_label)
+                }
+                None => String::new(),
+            };
+            let ci_str = match &info.ci {
+                Some(CiStatus::Passing) => " | CI: \u{2705} passing".to_string(),
+                Some(CiStatus::Failing) => " | CI: \u{274c} failing".to_string(),
+                Some(CiStatus::Pending) => " | CI: \u{23f3} pending".to_string(),
+                Some(CiStatus::Unknown) | None => String::new(),
+            };
+            if !pr_str.is_empty() || !ci_str.is_empty() {
+                lines.push(format!(" {}{}", pr_str, ci_str));
+            }
+
+            // Zellij session info line
+            if let Some(zellij) = &info.zellij {
+                let tab_str = if zellij.tab_count > 0 {
+                    format!("{} tabs, ", zellij.tab_count)
+                } else {
+                    String::new()
+                };
+                let pane_str = if zellij.pane_count > 0 {
+                    format!("{} panes, ", zellij.pane_count)
+                } else {
+                    String::new()
+                };
+                lines.push(format!(" session: {}{}up {}", tab_str, pane_str, zellij.uptime));
+            }
+
             if !info.commits.is_empty() {
                 lines.push(String::new());
                 lines.push(" recent commits:".to_string());
@@ -821,6 +1190,26 @@ mod tests {
                     message: "feat: login form validation".to_string(),
                 },
             ],
+            pr: None,
+            ci: None,
+            zellij: None,
+        }
+    }
+
+    fn make_pull_request(number: u64, state: PrState) -> PullRequest {
+        PullRequest {
+            number,
+            title: "feat: some feature".to_string(),
+            state,
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+        }
+    }
+
+    fn make_zellij_info() -> ZellijInfo {
+        ZellijInfo {
+            tab_count: 3,
+            pane_count: 5,
+            uptime: "2h34m".to_string(),
         }
     }
 
@@ -974,6 +1363,9 @@ mod tests {
             behind: 0,
             is_dirty: false,
             commits: vec![],
+            pr: None,
+            ci: None,
+            zellij: None,
         });
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("clean"), "should show clean working tree status");
@@ -1019,6 +1411,9 @@ mod tests {
             behind: 0,
             is_dirty: false,
             commits: vec![],
+            pr: None,
+            ci: None,
+            zellij: None,
         });
         let out = render_to_string(&state, 80, 30);
         // When 0 ahead/0 behind, tracking info should not appear
@@ -1756,5 +2151,297 @@ mod tests {
     fn notifications_field_default_is_empty() {
         let state = TuiState::new(make_entries(), Navigation::Arrows);
         assert!(state.notifications.is_empty());
+    }
+
+    // ── PR / CI / Zellij rendering tests (issue #11) ─────────────────────
+
+    #[test]
+    fn renders_pr_number_and_open_state() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.pr = Some(make_pull_request(42, PrState::Open));
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("PR:"), "should show 'PR:' label");
+        assert!(out.contains("42"), "should show PR number");
+        assert!(out.contains("open"), "should show PR state 'open'");
+    }
+
+    #[test]
+    fn renders_pr_merged_state() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.pr = Some(make_pull_request(7, PrState::Merged));
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("merged"), "should show PR state 'merged'");
+    }
+
+    #[test]
+    fn renders_pr_closed_state() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.pr = Some(make_pull_request(3, PrState::Closed));
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("closed"), "should show PR state 'closed'");
+    }
+
+    #[test]
+    fn renders_no_pr_line_when_pr_absent() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let info = make_git_info(); // pr: None
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(!out.contains("PR:"), "should not show PR line when no PR");
+    }
+
+    #[test]
+    fn renders_ci_passing_indicator() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.pr = Some(make_pull_request(42, PrState::Open));
+        info.ci = Some(CiStatus::Passing);
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("passing"), "should show 'passing' for CI passing");
+        // ✅ U+2705
+        assert!(out.contains('\u{2705}'), "should show ✅ for passing CI");
+    }
+
+    #[test]
+    fn renders_ci_failing_indicator() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.pr = Some(make_pull_request(1, PrState::Open));
+        info.ci = Some(CiStatus::Failing);
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("failing"), "should show 'failing' for CI failing");
+        // ❌ U+274C
+        assert!(out.contains('\u{274c}'), "should show ❌ for failing CI");
+    }
+
+    #[test]
+    fn renders_ci_pending_indicator() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.ci = Some(CiStatus::Pending);
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("pending"), "should show 'pending' for CI pending");
+    }
+
+    #[test]
+    fn renders_no_ci_line_when_ci_unknown_and_no_pr() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.ci = Some(CiStatus::Unknown);
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        // Unknown CI with no PR — no PR/CI line should appear
+        assert!(!out.contains("CI:"), "should not show CI line when unknown and no PR");
+    }
+
+    #[test]
+    fn renders_zellij_session_info() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.zellij = Some(make_zellij_info());
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("session:"), "should show 'session:' label");
+        assert!(out.contains("3 tabs"), "should show tab count");
+        assert!(out.contains("5 panes"), "should show pane count");
+        assert!(out.contains("2h34m"), "should show uptime");
+    }
+
+    #[test]
+    fn renders_zellij_uptime_only_when_tab_pane_zero() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.zellij = Some(ZellijInfo {
+            tab_count: 0,
+            pane_count: 0,
+            uptime: "1h05m".to_string(),
+        });
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("session:"), "should show session line");
+        assert!(out.contains("1h05m"), "should show uptime");
+        // No tab/pane counts when zero
+        assert!(!out.contains("0 tabs"), "should not show '0 tabs'");
+        assert!(!out.contains("0 panes"), "should not show '0 panes'");
+    }
+
+    #[test]
+    fn renders_no_zellij_line_when_absent() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let info = make_git_info(); // zellij: None
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(!out.contains("session:"), "should not show session line when no Zellij info");
+    }
+
+    #[test]
+    fn renders_full_preview_with_all_info() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.pr = Some(make_pull_request(42, PrState::Open));
+        info.ci = Some(CiStatus::Passing);
+        info.zellij = Some(make_zellij_info());
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        // All three sections should appear
+        assert!(out.contains("PR: #42 (open)"), "should show PR info");
+        assert!(out.contains("passing"), "should show CI passing");
+        assert!(out.contains("session:"), "should show session label");
+        assert!(out.contains("2h34m"), "should show uptime");
+        assert!(out.contains("recent commits"), "should still show commits");
+    }
+
+    // ── PR/CI parsing unit tests ────────────────────────────────────────────
+
+    #[test]
+    fn parse_pr_json_open() {
+        let json = r#"{"number":42,"state":"OPEN","title":"feat: login","url":"https://github.com/owner/repo/pull/42"}"#;
+        let pr = parse_pr_json(json).unwrap();
+        assert_eq!(pr.number, 42);
+        assert_eq!(pr.state, PrState::Open);
+    }
+
+    #[test]
+    fn parse_pr_json_merged() {
+        let json = r#"{"number":7,"state":"MERGED","title":"fix: bug","url":"https://github.com/o/r/pull/7"}"#;
+        let pr = parse_pr_json(json).unwrap();
+        assert_eq!(pr.number, 7);
+        assert_eq!(pr.state, PrState::Merged);
+    }
+
+    #[test]
+    fn parse_pr_json_closed() {
+        let json = r#"{"number":3,"state":"CLOSED","title":"old","url":"https://github.com/o/r/pull/3"}"#;
+        let pr = parse_pr_json(json).unwrap();
+        assert_eq!(pr.state, PrState::Closed);
+    }
+
+    #[test]
+    fn parse_pr_json_missing_number_returns_none() {
+        let json = r#"{"state":"OPEN","title":"test"}"#;
+        assert!(parse_pr_json(json).is_none());
+    }
+
+    #[test]
+    fn parse_ci_status_json_success() {
+        let json = r#"[{"conclusion":"success","status":"completed"}]"#;
+        assert_eq!(parse_ci_status_json(json), CiStatus::Passing);
+    }
+
+    #[test]
+    fn parse_ci_status_json_failure() {
+        let json = r#"[{"conclusion":"failure","status":"completed"}]"#;
+        assert_eq!(parse_ci_status_json(json), CiStatus::Failing);
+    }
+
+    #[test]
+    fn parse_ci_status_json_pending() {
+        let json = r#"[{"conclusion":"","status":"in_progress"}]"#;
+        assert_eq!(parse_ci_status_json(json), CiStatus::Pending);
+    }
+
+    #[test]
+    fn parse_ci_status_json_empty_array() {
+        let json = r#"[]"#;
+        assert_eq!(parse_ci_status_json(json), CiStatus::Unknown);
+    }
+
+    #[test]
+    fn parse_ci_status_json_timed_out() {
+        let json = r#"[{"conclusion":"timed_out","status":"completed"}]"#;
+        assert_eq!(parse_ci_status_json(json), CiStatus::Failing);
+    }
+
+    // ── poll_forge tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn poll_forge_merges_pr_into_ready_state() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.preview_data = PreviewData::Ready(make_git_info());
+
+        let (tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
+        state.forge_rx = Some(rx);
+
+        tx.send(Ok(ForgeData {
+            pr: Some(make_pull_request(42, PrState::Open)),
+            ci: CiStatus::Passing,
+            zellij: Some(make_zellij_info()),
+        }))
+        .unwrap();
+
+        state.poll_forge();
+
+        match &state.preview_data {
+            PreviewData::Ready(info) => {
+                assert!(info.pr.is_some(), "PR should be merged into git info");
+                assert_eq!(info.pr.as_ref().unwrap().number, 42);
+                assert_eq!(info.ci, Some(CiStatus::Passing));
+                assert!(info.zellij.is_some());
+            }
+            _ => panic!("expected Ready state"),
+        }
+        assert!(state.forge_rx.is_none(), "forge_rx should be cleared after receive");
+    }
+
+    #[test]
+    fn poll_forge_noop_when_no_channel() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.forge_rx = None;
+        state.poll_forge(); // should not panic
+    }
+
+    #[test]
+    fn poll_forge_noop_when_channel_empty() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.preview_data = PreviewData::Ready(make_git_info());
+        let (_tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
+        state.forge_rx = Some(rx);
+        state.poll_forge(); // nothing sent yet
+        // preview_data unchanged, forge_rx still set
+        assert!(state.forge_rx.is_some());
+    }
+
+    #[test]
+    fn poll_forge_discards_data_if_not_ready() {
+        // If git info hasn't arrived yet (still Loading), forge data is discarded
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // preview_data stays Loading (git not yet received)
+        let (tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
+        state.forge_rx = Some(rx);
+        tx.send(Ok(ForgeData {
+            pr: Some(make_pull_request(1, PrState::Open)),
+            ci: CiStatus::Passing,
+            zellij: None,
+        }))
+        .unwrap();
+        state.poll_forge();
+        // preview_data should still be Loading (nothing to merge into)
+        assert!(matches!(state.preview_data, PreviewData::Loading));
+        assert!(state.forge_rx.is_none(), "forge_rx cleared even when data discarded");
+    }
+
+    #[test]
+    fn poll_forge_handles_disconnected_channel() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let (tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
+        state.forge_rx = Some(rx);
+        drop(tx); // simulate thread panic
+        state.poll_forge();
+        assert!(state.forge_rx.is_none(), "forge_rx should be cleared on disconnect");
+    }
+
+    #[test]
+    fn forge_rx_default_is_none() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        assert!(state.forge_rx.is_none());
     }
 }
