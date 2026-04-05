@@ -464,6 +464,107 @@ autopilot "test" {
     }
 
     #[test]
+    fn test_confirm_step_accept_uses_on_accept() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "ask" {
+        confirm "Proceed?"
+        on-accept "yes-path"
+        on-reject "no-path"
+    }
+    step "yes-path" {
+        notify "Accepted"
+    }
+    step "no-path" {
+        notify "Rejected"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "ask");
+        let next = advance(&wf, &mut run, StepResult::Success { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("yes-path"));
+    }
+
+    #[test]
+    fn test_confirm_step_reject_uses_on_reject() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "ask" {
+        confirm "Proceed?"
+        on-accept "yes-path"
+        on-reject "no-path"
+    }
+    step "yes-path" {
+        notify "Accepted"
+    }
+    step "no-path" {
+        notify "Rejected"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "ask");
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("no-path"));
+    }
+
+    #[test]
+    fn test_confirm_step_reject_falls_back_to_on_failure() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "ask" {
+        confirm "Proceed?"
+        on-accept "done"
+        on-failure "fallback"
+    }
+    step "done" {
+        notify "ok"
+    }
+    step "fallback" {
+        notify "fell back"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "ask");
+        // No on-reject set, should fall through to on-failure
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("fallback"));
+    }
+
+    #[test]
+    fn test_confirm_step_reject_prefers_on_reject_over_on_failure() {
+        let kdl = r#"
+autopilot "test" {
+    trigger "manual"
+    step "ask" {
+        confirm "Proceed?"
+        on-accept "done"
+        on-reject "rejected"
+        on-failure "failed"
+    }
+    step "done" {
+        notify "ok"
+    }
+    step "rejected" {
+        notify "rejected"
+    }
+    step "failed" {
+        notify "failed"
+    }
+}
+"#;
+        let wf = parse_autopilot_workflow(kdl).unwrap();
+        let mut run = make_run("test", "ask");
+        let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("rejected"), "on_reject should take priority over on_failure");
+    }
+
+    #[test]
     fn test_workflow_run_new() {
         let run = WorkflowRun::new("my-wf", "my-project", "first-step");
         assert_eq!(run.workflow_name, "my-wf");
