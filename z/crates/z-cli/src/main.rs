@@ -5,6 +5,10 @@ mod worktree_manager;
 
 use std::io::Write as _;
 
+use std::fs;
+
+use z_core::config::{effective_layout, parse_global_config_kdl, parse_per_repo_config_kdl,
+    GlobalConfig, PerRepoConfig};
 use z_core::depcheck::{check_deps, format_dep_error, DepCheckStatus};
 use z_core::domain::Session;
 use z_core::traits::{ProjectStore, SessionManager, WorktreeManager};
@@ -87,6 +91,26 @@ fn run() {
     }
 }
 
+fn load_global_config() -> GlobalConfig {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let path = std::path::PathBuf::from(home)
+        .join(".config")
+        .join("z")
+        .join("config.kdl");
+    match fs::read_to_string(&path) {
+        Ok(content) => parse_global_config_kdl(&content).unwrap_or_default(),
+        Err(_) => GlobalConfig::default(),
+    }
+}
+
+fn load_per_repo_config(project_path: &std::path::Path) -> PerRepoConfig {
+    let path = project_path.join(".config").join("z.kdl");
+    match fs::read_to_string(&path) {
+        Ok(content) => parse_per_repo_config_kdl(&content).unwrap_or_default(),
+        Err(_) => PerRepoConfig::default(),
+    }
+}
+
 fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<()> {
     let store = KdlProjectStore::new();
     let session_mgr = ZellijSessionManager;
@@ -126,7 +150,10 @@ fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<(
         project.path.clone()
     };
 
-    let mut layout = z_core::layout::default_layout();
+    // Merge global + per-repo config and create with effective layout.
+    let global = load_global_config();
+    let per_repo = load_per_repo_config(&project.path);
+    let mut layout = effective_layout(&global, &per_repo);
     layout.cwd = Some(cwd);
     session_mgr.create_session(&project.name, effective_branch, layout)?;
 
