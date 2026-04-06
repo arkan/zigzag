@@ -23,7 +23,7 @@ pub trait SessionManager {
 pub trait WorktreeManager {
     fn list_worktrees(&self, project: &str) -> Result<Vec<Worktree>>;
     fn create_worktree(&self, project: &str, branch: &str) -> Result<Worktree>;
-    fn remove_worktree(&self, worktree: &Worktree) -> Result<()>;
+    fn remove_worktree(&self, worktree: &Worktree, force: bool) -> Result<()>;
 }
 
 pub trait ForgeClient {

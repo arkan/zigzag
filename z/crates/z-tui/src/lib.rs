@@ -216,10 +216,14 @@ pub enum Modal {
         workflows: Vec<WorkflowInfo>,
         selected: usize,
     },
+    /// Confirmation dialog shown before deleting a session.
+    DeleteSessionConfirm { session: String },
     /// Full-screen help overlay showing all keybindings (opened with '?').
     Help,
     /// Branch name input shown when the user presses 'n' (new session).
     BranchInput { project: String, input: String },
+    /// Scrollable log viewer opened with 'L'.
+    LogViewer { lines: Vec<String>, scroll_offset: usize },
 }
 
 /// Outcome of processing one keypress inside a modal.
@@ -240,6 +244,7 @@ enum ModalOutcome {
         token: Option<String>,
     },
     DeleteConfirmed { project: String },
+    SessionDeleteConfirmed { session: String },
     WorkflowSelected { project: String, workflow: String },
     NewBranch { project: String, branch: String },
 }
@@ -1234,6 +1239,14 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             _ => ModalOutcome::Continue,
         },
 
+        Modal::DeleteSessionConfirm { session } => match code {
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => ModalOutcome::Close,
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                ModalOutcome::SessionDeleteConfirmed { session: session.clone() }
+            }
+            _ => ModalOutcome::Continue,
+        },
+
         Modal::WorkflowSelector { project, workflows, selected } => match code {
             KeyCode::Esc => ModalOutcome::Close,
             KeyCode::Up | KeyCode::Char('k') => {
@@ -1286,6 +1299,29 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             }
             _ => ModalOutcome::Continue,
         },
+
+        Modal::LogViewer { lines, scroll_offset } => match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('L') => ModalOutcome::Close,
+            KeyCode::Up | KeyCode::Char('k') => {
+                *scroll_offset = scroll_offset.saturating_sub(1);
+                ModalOutcome::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if *scroll_offset + 1 < lines.len() {
+                    *scroll_offset += 1;
+                }
+                ModalOutcome::Continue
+            }
+            KeyCode::Char('G') => {
+                *scroll_offset = lines.len().saturating_sub(1);
+                ModalOutcome::Continue
+            }
+            KeyCode::Char('g') => {
+                *scroll_offset = 0;
+                ModalOutcome::Continue
+            }
+            _ => ModalOutcome::Continue,
+        },
     }
 }
 
@@ -1314,7 +1350,9 @@ pub fn run_tui(
     navigation: Navigation,
     notifications: HashSet<String>,
     initial_project: Option<usize>,
-    prune_fn: impl Fn() -> io::Result<String>,
+    status_message: Option<String>,
+    prune_fn: impl Fn(bool) -> io::Result<String>,
+    log_fn: impl Fn(usize) -> io::Result<Vec<String>>,
 ) -> io::Result<TuiAction> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1324,13 +1362,14 @@ pub fn run_tui(
 
     let mut state = TuiState::new(entries, navigation);
     state.notifications = notifications;
+    state.status_message = status_message;
     if let Some(idx) = initial_project {
         state.selected_project = idx;
     }
     // Kick off the first preview fetch immediately.
     state.trigger_preview_load();
 
-    let result = event_loop(&mut terminal, &mut state, &prune_fn);
+    let result = event_loop(&mut terminal, &mut state, &prune_fn, &log_fn);
 
     // Always restore the terminal, even if the event loop returned an error.
     let _ = disable_raw_mode();
@@ -1347,7 +1386,8 @@ pub fn run_tui(
 fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     state: &mut TuiState,
-    prune_fn: &dyn Fn() -> io::Result<String>,
+    prune_fn: &dyn Fn(bool) -> io::Result<String>,
+    log_fn: &dyn Fn(usize) -> io::Result<Vec<String>>,
 ) -> io::Result<TuiAction> {
     loop {
         // Check if async git preview data has arrived.
@@ -1390,6 +1430,10 @@ fn event_loop<B: Backend>(
                     ModalOutcome::DeleteConfirmed { project } => {
                         state.modal = None;
                         return Ok(TuiAction::DeleteProject { project });
+                    }
+                    ModalOutcome::SessionDeleteConfirmed { session } => {
+                        state.modal = None;
+                        return Ok(TuiAction::Delete { session });
                     }
                     ModalOutcome::WorkflowSelected { project, workflow } => {
                         state.modal = None;
@@ -1497,22 +1541,24 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('d') => {
+                    KeyCode::Char('x') => {
                         let session_name = state
                             .filtered_sessions()
                             .get(state.selected_session)
                             .map(|s| s.name.clone());
                         if let Some(session) = session_name {
-                            return Ok(TuiAction::Delete { session });
+                            state.modal = Some(Modal::DeleteSessionConfirm { session });
                         }
                     }
 
                     KeyCode::Char('p') => {
-                        // Run prune in-place: no LeaveAlternateScreen/EnterAlternateScreen
-                        // transition, so the result appears without screen flicker.
-                        // status_message was cleared above (keypress dismiss), so we
-                        // re-set it with the fresh prune result.
-                        apply_prune(state, prune_fn);
+                        // Prune: skip worktrees with uncommitted changes.
+                        apply_prune(state, prune_fn, false);
+                    }
+
+                    KeyCode::Char('P') => {
+                        // Force prune: remove worktrees even with uncommitted changes.
+                        apply_prune(state, prune_fn, true);
                     }
 
                     KeyCode::Char('a') => {
@@ -1533,7 +1579,7 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('D') => {
+                    KeyCode::Char('d') | KeyCode::Char('D') => {
                         if state.focused_panel == Panel::Projects {
                             if let Some(entry) = state.selected_entry() {
                                 let project_name = entry.project.name.clone();
@@ -1545,6 +1591,16 @@ fn event_loop<B: Backend>(
                                     worktree_count,
                                 });
                             }
+                        }
+                    }
+
+                    KeyCode::Char('X') => {
+                        let session_name = state
+                            .filtered_sessions()
+                            .get(state.selected_session)
+                            .map(|s| s.name.clone());
+                        if let Some(session) = session_name {
+                            return Ok(TuiAction::Delete { session });
                         }
                     }
 
@@ -1586,6 +1642,18 @@ fn event_loop<B: Backend>(
                         state.modal = Some(Modal::Help);
                     }
 
+                    KeyCode::Char('L') => {
+                        match log_fn(200) {
+                            Ok(lines) => {
+                                let scroll_offset = lines.len().saturating_sub(1);
+                                state.modal = Some(Modal::LogViewer { lines, scroll_offset });
+                            }
+                            Err(e) => {
+                                state.status_message = Some(format!("Failed to read logs: {e}"));
+                            }
+                        }
+                    }
+
                     _ => {}
                 }
             }
@@ -1604,8 +1672,8 @@ fn event_loop<B: Backend>(
 ///
 /// Called directly from the event loop when the user presses `p`, so the TUI
 /// never leaves the alternate screen — no flicker, no re-entry.
-fn apply_prune(state: &mut TuiState, prune_fn: &dyn Fn() -> io::Result<String>) {
-    match prune_fn() {
+fn apply_prune(state: &mut TuiState, prune_fn: &dyn Fn(bool) -> io::Result<String>, force: bool) {
+    match prune_fn(force) {
         Ok(msg) => state.status_message = Some(msg),
         Err(e) => state.status_message = Some(format!("Prune failed: {e}")),
     }
@@ -1871,6 +1939,37 @@ fn render_delete_confirm_modal(
     f.render_widget(paragraph, inner);
 }
 
+fn render_delete_session_confirm_modal(f: &mut Frame, session: &str) {
+    let area = f.area();
+    let modal_width = 56u16;
+    let modal_height = 7u16;
+    let rect = modal_rect(modal_width, modal_height, area);
+
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Delete Session ")
+        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let sep_width = inner.width.saturating_sub(1) as usize;
+    let lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            format!(" Kill session: {}", session),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled("\u{2500}".repeat(sep_width), dim)),
+        Line::from(Span::styled(" Enter/y: confirm  Esc/n: cancel", dim)),
+    ];
+
+    let paragraph = Paragraph::new(Text::from(lines));
+    f.render_widget(paragraph, inner);
+}
+
 fn render_workflow_selector_modal(
     f: &mut Frame,
     project: &str,
@@ -1968,7 +2067,7 @@ fn render_help_modal(f: &mut Frame) {
         Line::from("   Ctrl+O \u{2192} D      Detach (return to z)"),
         Line::from("   Ctrl+Q           Quit session (return to z)"),
         Line::from(Span::styled(" \u{2500}".repeat((inner.width.saturating_sub(1) / 2) as usize), dim)),
-        Line::from(Span::styled("   ?  this help   q  quit z", dim)),
+        Line::from(Span::styled("   L  view logs   ?  this help   q  quit z", dim)),
     ];
 
     let paragraph = Paragraph::new(Text::from(lines));
@@ -1982,6 +2081,10 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
             render_delete_confirm_modal(f, project_name, *session_count, *worktree_count);
             return;
         }
+        Some(Modal::DeleteSessionConfirm { session }) => {
+            render_delete_session_confirm_modal(f, session);
+            return;
+        }
         Some(Modal::WorkflowSelector { project, workflows, selected }) => {
             render_workflow_selector_modal(f, project, workflows, *selected);
             return;
@@ -1992,6 +2095,10 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
         }
         Some(Modal::BranchInput { project, input }) => {
             render_branch_input_modal(f, project, input);
+            return;
+        }
+        Some(Modal::LogViewer { lines, scroll_offset }) => {
+            render_log_viewer_modal(f, lines, *scroll_offset);
             return;
         }
         Some(Modal::AddProject(form)) => (form, " Add Project "),
@@ -2104,6 +2211,56 @@ fn render_branch_input_modal(f: &mut Frame, project: &str, input: &str) {
     ];
 
     let paragraph = Paragraph::new(Text::from(lines));
+    f.render_widget(paragraph, inner);
+}
+
+fn render_log_viewer_modal(f: &mut Frame, lines: &[String], scroll_offset: usize) {
+    let area = f.area();
+    let modal_width = area.width.saturating_sub(4).min(120);
+    let modal_height = area.height.saturating_sub(4).min(40);
+    let rect = modal_rect(modal_width, modal_height, area);
+
+    f.render_widget(Clear, rect);
+
+    let title = format!(
+        " Logs ({}/{}) — j/k scroll, G end, g top, Esc close ",
+        scroll_offset + 1,
+        lines.len().max(1)
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().add_modifier(Modifier::BOLD));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    if lines.is_empty() {
+        let paragraph = Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(" No logs yet.", Style::default().add_modifier(Modifier::DIM))),
+        ]));
+        f.render_widget(paragraph, inner);
+        return;
+    }
+
+    let visible_height = inner.height as usize;
+    let start = scroll_offset;
+    let end = (start + visible_height).min(lines.len());
+
+    let display_lines: Vec<Line> = lines[start..end]
+        .iter()
+        .map(|line| {
+            let style = if line.contains("[ERROR]") {
+                Style::default().fg(Color::Red)
+            } else if line.contains("[WARNING]") {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            Line::styled(line.as_str(), style)
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(Text::from(display_lines));
     f.render_widget(paragraph, inner);
 }
 
@@ -4711,7 +4868,7 @@ mod tests {
     fn apply_prune_sets_status_message_nothing_to_prune() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
         assert!(state.status_message.is_none());
-        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string()));
+        apply_prune(&mut state, &|_| Ok("Nothing to prune.".to_string()), false);
         assert_eq!(
             state.status_message.as_deref(),
             Some("Nothing to prune."),
@@ -4724,7 +4881,8 @@ mod tests {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
         apply_prune(
             &mut state,
-            &|| Ok("Pruned: 2 session(s) killed, 1 worktree(s) removed.".to_string()),
+            &|_| Ok("Pruned: 2 session(s) killed, 1 worktree(s) removed.".to_string()),
+            false,
         );
         assert_eq!(
             state.status_message.as_deref(),
@@ -4735,7 +4893,7 @@ mod tests {
     #[test]
     fn apply_prune_result_visible_in_render() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
-        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string()));
+        apply_prune(&mut state, &|_| Ok("Nothing to prune.".to_string()), false);
         let out = render_to_string(&state, 120, 24);
         assert!(
             out.contains("Nothing to prune"),
@@ -4747,16 +4905,16 @@ mod tests {
     fn apply_prune_overwrites_previous_status_message() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
         state.status_message = Some("old message".to_string());
-        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string()));
+        apply_prune(&mut state, &|_| Ok("Nothing to prune.".to_string()), false);
         assert_eq!(state.status_message.as_deref(), Some("Nothing to prune."));
     }
 
     #[test]
     fn apply_prune_shows_error_as_status_message() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
-        apply_prune(&mut state, &|| {
+        apply_prune(&mut state, &|_| {
             Err(io::Error::new(io::ErrorKind::Other, "session kill failed"))
-        });
+        }, false);
         assert_eq!(
             state.status_message.as_deref(),
             Some("Prune failed: session kill failed"),
@@ -4769,7 +4927,7 @@ mod tests {
         // The message set by apply_prune should survive move_down (navigation
         // doesn't clear it — only an explicit keypress-clear mechanism does).
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
-        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string()));
+        apply_prune(&mut state, &|_| Ok("Nothing to prune.".to_string()), false);
         state.move_down();
         assert!(
             state.status_message.is_some(),
