@@ -157,7 +157,11 @@ fn cmd_tui() -> z_core::error::Result<()> {
         let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
         for project in &projects {
             let sessions = session_mgr.list_sessions(&project.name)?;
-            entries.push(ProjectEntry { project: project.clone(), sessions });
+            let worktree_count = WtWorktreeManager::new(project.path.clone())
+                .list_worktrees(&project.name)
+                .map(|wts| wts.len())
+                .unwrap_or(0);
+            entries.push(ProjectEntry { project: project.clone(), sessions, worktree_count });
         }
 
         // Load pending notifications so the TUI can display 🔔 badges.
@@ -242,6 +246,25 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 store.add_project(&project)?;
                 initial_project = Some(name);
                 // Loop back to re-enter TUI with the edited project selected.
+            }
+
+            TuiAction::DeleteProject { project } => {
+                // Determine nearest-neighbor name before removal so the TUI
+                // can auto-select it after the project list reloads.
+                let neighbor = {
+                    let all = store.list_projects().unwrap_or_default();
+                    let idx = all.iter().position(|p| p.name == project).unwrap_or(0);
+                    let remaining: Vec<_> = all.iter().filter(|p| p.name != project).collect();
+                    if remaining.is_empty() {
+                        None
+                    } else {
+                        let neighbor_idx = idx.min(remaining.len() - 1);
+                        remaining.get(neighbor_idx).map(|p| p.name.clone())
+                    }
+                };
+                store.remove_project(&project)?;
+                initial_project = neighbor;
+                // Loop back to re-enter TUI with nearest neighbor selected.
             }
         }
     }
