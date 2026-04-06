@@ -444,6 +444,72 @@ project "alpha" {
         assert!(kdl.contains(r#"path "/code/my \"app\"""#), "quotes in path should be escaped");
     }
 
+    // ── update_project / rename tests ─────────────────────────────────────
+
+    #[test]
+    fn update_project_updates_path() {
+        let kdl = "project \"myapp\" {\n    path \"/code/old\"\n}\n";
+        let path = write_temp_kdl(kdl);
+        let mut store = KdlProjectStore::with_path(path.clone());
+        let updated = Project {
+            name: "myapp".to_string(),
+            path: std::path::PathBuf::from("/code/new"),
+            host: None,
+            token: None,
+        };
+        store.update_project(&updated).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("path \"/code/new\""), "path should be updated");
+        assert!(!content.contains("/code/old"), "old path should be gone");
+        let projects = store.list_projects().unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].path, std::path::PathBuf::from("/code/new"));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn update_project_rename_changes_name() {
+        // Rename simulated via remove + add (same as cmd_tui does it).
+        let kdl = "project \"old-name\" {\n    path \"/code/app\"\n}\n";
+        let path = write_temp_kdl(kdl);
+        let mut store = KdlProjectStore::with_path(path.clone());
+        store.remove_project("old-name").unwrap();
+        let renamed = Project {
+            name: "new-name".to_string(),
+            path: std::path::PathBuf::from("/code/app"),
+            host: None,
+            token: None,
+        };
+        store.add_project(&renamed).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("project \"new-name\""), "new name should be present");
+        assert!(!content.contains("project \"old-name\""), "old name should be gone");
+        let projects = store.list_projects().unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "new-name");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn update_project_preserves_comments() {
+        let kdl =
+            "// header comment\nproject \"myapp\" {\n    path \"/code/old\"\n}\n// footer comment\n";
+        let path = write_temp_kdl(kdl);
+        let mut store = KdlProjectStore::with_path(path.clone());
+        let updated = Project {
+            name: "myapp".to_string(),
+            path: std::path::PathBuf::from("/code/new"),
+            host: None,
+            token: None,
+        };
+        store.update_project(&updated).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("// header comment"), "header comment preserved");
+        assert!(content.contains("// footer comment"), "footer comment preserved");
+        assert!(content.contains("path \"/code/new\""), "path updated");
+        std::fs::remove_file(path).ok();
+    }
+
     #[test]
     fn format_project_kdl_escapes_backslash_in_name() {
         let project = Project {
