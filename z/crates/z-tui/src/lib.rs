@@ -109,8 +109,6 @@ pub enum TuiAction {
     New { project: String },
     /// User pressed `d` — delete the selected session.
     Delete { session: String },
-    /// User pressed `p` — prune orphaned sessions.
-    Prune,
     /// User selected a workflow in the autopilot modal.
     Autopilot { project: String, workflow: String },
     /// User submitted the Add Project form.
@@ -1285,7 +1283,7 @@ pub fn run_tui(
     navigation: Navigation,
     notifications: HashSet<String>,
     initial_project: Option<usize>,
-    status_message: Option<String>,
+    prune_fn: impl Fn() -> io::Result<String>,
 ) -> io::Result<TuiAction> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1295,14 +1293,13 @@ pub fn run_tui(
 
     let mut state = TuiState::new(entries, navigation);
     state.notifications = notifications;
-    state.status_message = status_message;
     if let Some(idx) = initial_project {
         state.selected_project = idx;
     }
     // Kick off the first preview fetch immediately.
     state.trigger_preview_load();
 
-    let result = event_loop(&mut terminal, &mut state);
+    let result = event_loop(&mut terminal, &mut state, &prune_fn);
 
     // Always restore the terminal, even if the event loop returned an error.
     let _ = disable_raw_mode();
@@ -1319,6 +1316,7 @@ pub fn run_tui(
 fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     state: &mut TuiState,
+    prune_fn: &dyn Fn() -> io::Result<String>,
 ) -> io::Result<TuiAction> {
     loop {
         // Check if async git preview data has arrived.
@@ -1335,6 +1333,8 @@ fn event_loop<B: Backend>(
         }
 
         if let Event::Key(key) = event::read()? {
+            // Any keypress dismisses a one-shot status message (e.g. prune result).
+            state.status_message = None;
             // ── Modal mode ─────────────────────────────────────────────────
             if state.modal.is_some() {
                 let outcome = advance_modal(state.modal.as_mut().unwrap(), key.code);
@@ -1471,7 +1471,13 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('p') => return Ok(TuiAction::Prune),
+                    KeyCode::Char('p') => {
+                        // Run prune in-place: no LeaveAlternateScreen/EnterAlternateScreen
+                        // transition, so the result appears without screen flicker.
+                        // status_message was cleared above (keypress dismiss), so we
+                        // re-set it with the fresh prune result.
+                        apply_prune(state, prune_fn)?;
+                    }
 
                     KeyCode::Char('a') => {
                         if let Some(entry) = state.selected_entry() {
@@ -1548,6 +1554,19 @@ fn event_loop<B: Backend>(
             state.trigger_preview_load();
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// In-place action helpers
+// ---------------------------------------------------------------------------
+
+/// Run the prune closure and store the result as a status message.
+///
+/// Called directly from the event loop when the user presses `p`, so the TUI
+/// never leaves the alternate screen — no flicker, no re-entry.
+fn apply_prune(state: &mut TuiState, prune_fn: &dyn Fn() -> io::Result<String>) -> io::Result<()> {
+    state.status_message = Some(prune_fn()?);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4549,6 +4568,68 @@ mod tests {
         advance_modal(&mut modal, KeyCode::Tab);
         let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
         assert_eq!(form.active_field, 3);
+    }
+
+    // ── apply_prune (in-place prune handler) tests ───────────────────────────
+
+    #[test]
+    fn apply_prune_sets_status_message_nothing_to_prune() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        assert!(state.status_message.is_none());
+        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string())).unwrap();
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("Nothing to prune."),
+            "apply_prune should set status_message from the closure result"
+        );
+    }
+
+    #[test]
+    fn apply_prune_sets_status_message_with_counts() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        apply_prune(
+            &mut state,
+            &|| Ok("Pruned: 2 session(s) killed, 1 worktree(s) removed.".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("Pruned: 2 session(s) killed, 1 worktree(s) removed.")
+        );
+    }
+
+    #[test]
+    fn apply_prune_result_visible_in_render() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string())).unwrap();
+        let out = render_to_string(&state, 120, 24);
+        assert!(
+            out.contains("Nothing to prune"),
+            "prune result from apply_prune should be visible in the status bar"
+        );
+    }
+
+    #[test]
+    fn apply_prune_overwrites_previous_status_message() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.status_message = Some("old message".to_string());
+        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string())).unwrap();
+        assert_eq!(state.status_message.as_deref(), Some("Nothing to prune."));
+    }
+
+    #[test]
+    fn status_message_persists_after_navigation() {
+        // The message set by apply_prune should survive move_down (navigation
+        // doesn't clear it — only an explicit keypress-clear mechanism does).
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string())).unwrap();
+        state.move_down();
+        assert!(
+            state.status_message.is_some(),
+            "navigation should not clear the status_message; it persists until the next keypress"
+        );
+        let out = render_to_string(&state, 120, 24);
+        assert!(out.contains("Nothing to prune"));
     }
 
     // ── Prune inline status message tests ────────────────────────────────────

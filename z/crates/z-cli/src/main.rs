@@ -7,7 +7,7 @@ mod session_manager;
 mod worktree_manager;
 
 use std::collections::HashSet;
-use std::io::Write as _;
+use std::io::{self, Write as _};
 
 use std::fs;
 
@@ -150,8 +150,6 @@ fn cmd_tui() -> z_core::error::Result<()> {
 
     // Track the name of the most recently added project for auto-selection.
     let mut initial_project: Option<String> = None;
-    // One-shot status message shown in the TUI status bar on the next iteration.
-    let mut status_message: Option<String> = None;
 
     // Load built-in workflows once; they are the same for every project.
     let builtin: Vec<AutopilotWorkflow> = builtin_workflows().unwrap_or_default();
@@ -197,8 +195,10 @@ fn cmd_tui() -> z_core::error::Result<()> {
             .as_deref()
             .and_then(|name| entries.iter().position(|e| e.project.name == name));
 
-        let action = z_tui::run_tui(entries, navigation.clone(), notifications, initial_idx, status_message.take())
-            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+        let action = z_tui::run_tui(entries, navigation.clone(), notifications, initial_idx, || {
+            prune_summary().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+        })
+        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
         match action {
             TuiAction::Quit => return Ok(()),
@@ -237,11 +237,6 @@ fn cmd_tui() -> z_core::error::Result<()> {
             TuiAction::Delete { session } => {
                 cmd_delete(&session)?;
                 return Ok(());
-            }
-
-            TuiAction::Prune => {
-                status_message = Some(prune_summary()?);
-                // Loop back to re-enter TUI with the prune result shown inline.
             }
 
             TuiAction::Autopilot { project, workflow: _ } => {
