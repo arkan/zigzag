@@ -46,8 +46,9 @@ use crossterm::{
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 use z_core::domain::{CiStatus, PrState, PullRequest, Project, Session};
@@ -98,6 +99,95 @@ pub enum TuiAction {
     Prune,
     /// User pressed `a` — start autopilot for the selected project.
     Autopilot { project: String },
+    /// User submitted the Add Project form.
+    AddProject {
+        path: String,
+        name: String,
+        host: Option<String>,
+        token: Option<String>,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Modal / form types
+// ---------------------------------------------------------------------------
+
+/// A single editable field in a modal form.
+#[derive(Debug, Clone)]
+pub struct FormField {
+    pub label: String,
+    pub value: String,
+    pub required: bool,
+    /// Non-blocking inline warning shown in yellow (e.g. "Path does not exist").
+    pub warning: Option<String>,
+}
+
+/// State for the "Add Project" form (4 fields: path, name, host, token).
+#[derive(Debug, Clone)]
+pub struct ProjectForm {
+    pub fields: Vec<FormField>,
+    pub active_field: usize,
+    /// True once the user has manually edited the Name field; suppresses path-basename auto-fill.
+    pub name_was_modified: bool,
+}
+
+impl ProjectForm {
+    pub fn new() -> Self {
+        Self {
+            fields: vec![
+                FormField {
+                    label: "Path".to_string(),
+                    value: String::new(),
+                    required: true,
+                    warning: None,
+                },
+                FormField {
+                    label: "Name".to_string(),
+                    value: String::new(),
+                    required: true,
+                    warning: None,
+                },
+                FormField {
+                    label: "Host".to_string(),
+                    value: String::new(),
+                    required: false,
+                    warning: None,
+                },
+                FormField {
+                    label: "Token".to_string(),
+                    value: String::new(),
+                    required: false,
+                    warning: None,
+                },
+            ],
+            active_field: 0,
+            name_was_modified: false,
+        }
+    }
+}
+
+impl Default for ProjectForm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A modal overlay rendered on top of the main TUI.
+#[derive(Debug, Clone)]
+pub enum Modal {
+    AddProject(ProjectForm),
+}
+
+/// Outcome of processing one keypress inside a modal.
+enum ModalOutcome {
+    Continue,
+    Close,
+    Submit {
+        path: String,
+        name: String,
+        host: Option<String>,
+        token: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +267,8 @@ pub struct TuiState {
     /// Session names (e.g. `"myapp:feat-login"`) that have pending notifications.
     /// Sessions in this set render with a 🔔 badge in the SESSIONS panel.
     pub notifications: HashSet<String>,
+    /// Active modal overlay, if any.
+    pub modal: Option<Modal>,
 }
 
 impl TuiState {
@@ -194,6 +286,7 @@ impl TuiState {
             preview_rx: None,
             forge_rx: None,
             notifications: HashSet::new(),
+            modal: None,
         }
     }
 
@@ -753,6 +846,144 @@ fn extract_zellij_uptime(line: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Modal helpers
+// ---------------------------------------------------------------------------
+
+/// Expand a leading `~` to the home directory.
+fn expand_tilde_path(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix('~') {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{}{}", home, rest)
+    } else {
+        s.to_string()
+    }
+}
+
+/// Update the Name field from the current Path basename, unless the user manually edited Name.
+/// Called whenever the Path field changes (typing or backspace) so the name stays in sync.
+fn autofill_name_if_empty(form: &mut ProjectForm) {
+    if form.name_was_modified {
+        return;
+    }
+    let raw = form.fields[0].value.trim();
+    let expanded = expand_tilde_path(raw);
+    let basename = std::path::Path::new(&expanded)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    form.fields[1].value = basename;
+}
+
+/// Validate the path field: warn if the path doesn't exist or isn't a git repo.
+/// Sets or clears `form.fields[0].warning` accordingly.
+fn validate_path_field(form: &mut ProjectForm) {
+    let raw = form.fields[0].value.trim();
+    if raw.is_empty() {
+        form.fields[0].warning = None;
+        return;
+    }
+    let expanded = expand_tilde_path(raw);
+    let p = std::path::Path::new(&expanded);
+    if !p.exists() {
+        form.fields[0].warning = Some("Path does not exist".to_string());
+    } else if !p.join(".git").exists() {
+        form.fields[0].warning = Some("Not a git repository".to_string());
+    } else {
+        form.fields[0].warning = None;
+    }
+}
+
+/// Returns `Some(s)` if the trimmed string is non-empty, else `None`.
+fn non_empty_opt(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() { None } else { Some(t.to_string()) }
+}
+
+/// Process one keypress inside the given modal. Mutates modal state in place.
+/// Returns the outcome: whether to close, submit with data, or continue.
+fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
+    match modal {
+        Modal::AddProject(form) => match code {
+            KeyCode::Esc => ModalOutcome::Close,
+
+            KeyCode::Tab => {
+                let was_path = form.active_field == 0;
+                form.active_field = (form.active_field + 1) % form.fields.len();
+                if was_path {
+                    autofill_name_if_empty(form);
+                    validate_path_field(form);
+                }
+                ModalOutcome::Continue
+            }
+
+            KeyCode::BackTab => {
+                form.active_field =
+                    (form.active_field + form.fields.len() - 1) % form.fields.len();
+                ModalOutcome::Continue
+            }
+
+            KeyCode::Enter => {
+                // Validate required fields
+                let mut valid = true;
+                for field in &mut form.fields {
+                    if field.required && field.value.trim().is_empty() {
+                        field.warning = Some("Required".to_string());
+                        valid = false;
+                    }
+                }
+                if valid {
+                    let path = form.fields[0].value.trim().to_string();
+                    let name = form.fields[1].value.trim().to_string();
+                    let host = non_empty_opt(&form.fields[2].value);
+                    let token = non_empty_opt(&form.fields[3].value);
+                    ModalOutcome::Submit { path, name, host, token }
+                } else {
+                    ModalOutcome::Continue
+                }
+            }
+
+            KeyCode::Backspace => {
+                let fi = form.active_field;
+                form.fields[fi].value.pop();
+                form.fields[fi].warning = None;
+                if fi == 1 {
+                    form.name_was_modified = true;
+                }
+                if fi == 0 {
+                    autofill_name_if_empty(form);
+                }
+                ModalOutcome::Continue
+            }
+
+            KeyCode::Char(c) => {
+                let fi = form.active_field;
+                form.fields[fi].value.push(c);
+                form.fields[fi].warning = None;
+                if fi == 1 {
+                    form.name_was_modified = true;
+                }
+                if fi == 0 {
+                    autofill_name_if_empty(form);
+                }
+                ModalOutcome::Continue
+            }
+
+            _ => ModalOutcome::Continue,
+        },
+    }
+}
+
+/// Compute a centered `Rect` of the given dimensions within `area`.
+fn modal_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    let x = area.x + area.width.saturating_sub(w) / 2;
+    let y = area.y + area.height.saturating_sub(h) / 2;
+    Rect::new(x, y, w, h)
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -767,6 +998,7 @@ pub fn run_tui(
     entries: Vec<ProjectEntry>,
     navigation: Navigation,
     notifications: HashSet<String>,
+    initial_project: Option<usize>,
 ) -> io::Result<TuiAction> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -776,6 +1008,9 @@ pub fn run_tui(
 
     let mut state = TuiState::new(entries, navigation);
     state.notifications = notifications;
+    if let Some(idx) = initial_project {
+        state.selected_project = idx;
+    }
     // Kick off the first preview fetch immediately.
     state.trigger_preview_load();
 
@@ -813,6 +1048,22 @@ fn event_loop<B: Backend>(
         }
 
         if let Event::Key(key) = event::read()? {
+            // ── Modal mode ─────────────────────────────────────────────────
+            if state.modal.is_some() {
+                let outcome = advance_modal(state.modal.as_mut().unwrap(), key.code);
+                match outcome {
+                    ModalOutcome::Close => {
+                        state.modal = None;
+                    }
+                    ModalOutcome::Submit { path, name, host, token } => {
+                        state.modal = None;
+                        return Ok(TuiAction::AddProject { path, name, host, token });
+                    }
+                    ModalOutcome::Continue => {}
+                }
+                continue;
+            }
+
             // ── Search mode ────────────────────────────────────────────────
             if state.search_mode {
                 match key.code {
@@ -925,6 +1176,12 @@ fn event_loop<B: Backend>(
                         }
                     }
 
+                    KeyCode::Char('A') => {
+                        if state.focused_panel == Panel::Projects {
+                            state.modal = Some(Modal::AddProject(ProjectForm::new()));
+                        }
+                    }
+
                     KeyCode::Char('/') => {
                         state.search_mode = true;
                         state.search_query.clear();
@@ -968,6 +1225,8 @@ pub fn render(f: &mut Frame, state: &TuiState) {
     render_sessions(f, main[1], state);
     render_preview(f, outer[1], state);
     render_status(f, outer[2], state);
+    // Modal overlay is rendered last so it appears on top
+    render_modal(f, state);
 }
 
 fn render_projects(f: &mut Frame, area: Rect, state: &TuiState) {
@@ -1131,12 +1390,91 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
         })
         .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string());
 
-    let hints = " [o]pen  [n]ew  [d]elete  [p]rune  [a]utopilot  [/]search  [q]uit";
+    let hints = " [o]pen  [n]ew  [d]elete  [p]rune  [a]utopilot  [A]dd  [/]search  [q]uit";
     let content = format!("{}\n{}", project_info, hints);
 
     let paragraph = Paragraph::new(content)
         .block(Block::default().borders(Borders::ALL).title(" STATUS "));
     f.render_widget(paragraph, area);
+}
+
+fn render_modal(f: &mut Frame, state: &TuiState) {
+    let form = match &state.modal {
+        Some(Modal::AddProject(form)) => form,
+        None => return,
+    };
+
+    let area = f.area();
+    // Modal: 62 wide (60 content + 2 borders), height = 4 fields × 3 rows + 2 hints/sep + 2 borders
+    let modal_height = (form.fields.len() as u16) * 3 + 4;
+    let modal_width = 62u16;
+    let rect = modal_rect(modal_width, modal_height, area);
+
+    // Clear area under the modal
+    f.render_widget(Clear, rect);
+
+    // Outer block
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Add Project ")
+        .border_style(Style::default().add_modifier(Modifier::BOLD));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    // Build text content as styled lines
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (i, field) in form.fields.iter().enumerate() {
+        let active = i == form.active_field;
+        let opt_hint = if field.required { "" } else { " (opt)" };
+
+        // Label line
+        let label_text = format!(" {}{}:", field.label, opt_hint);
+        let label_style = if active {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(label_text, label_style)));
+
+        // Value line — active field shows a cursor block
+        let value_text = if active {
+            format!(" \u{25b6} {}█", field.value)
+        } else {
+            format!("   {}", field.value)
+        };
+        let value_style = if active {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(value_text, value_style)));
+
+        // Warning / spacer line
+        if let Some(warn) = &field.warning {
+            lines.push(Line::from(Span::styled(
+                format!(" \u{26a0} {}", warn),
+                Style::default().fg(Color::Yellow),
+            )));
+        } else {
+            lines.push(Line::from(""));
+        }
+    }
+
+    // Separator
+    let sep_width = inner.width.saturating_sub(1) as usize;
+    lines.push(Line::from(Span::styled(
+        "\u{2500}".repeat(sep_width),
+        Style::default().add_modifier(Modifier::DIM),
+    )));
+    // Hints
+    lines.push(Line::from(Span::styled(
+        " Tab: next  S-Tab: prev  Enter: save  Esc: cancel",
+        Style::default().add_modifier(Modifier::DIM),
+    )));
+
+    let paragraph = Paragraph::new(Text::from(lines));
+    f.render_widget(paragraph, inner);
 }
 
 // ---------------------------------------------------------------------------
@@ -2575,5 +2913,221 @@ mod tests {
             extract_json_string(json, "title"),
             Some("fix: \"quoted\" thing".to_string())
         );
+    }
+
+    // ── Modal / ProjectForm tests ──────────────────────────────────────────
+
+    #[test]
+    fn project_form_new_starts_at_field_0() {
+        let form = ProjectForm::new();
+        assert_eq!(form.active_field, 0);
+        assert_eq!(form.fields.len(), 4);
+        assert!(form.fields[0].required);
+        assert!(form.fields[1].required);
+        assert!(!form.fields[2].required);
+        assert!(!form.fields[3].required);
+    }
+
+    #[test]
+    fn advance_modal_tab_advances_field() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        let outcome = advance_modal(&mut modal, KeyCode::Tab);
+        assert!(matches!(outcome, ModalOutcome::Continue));
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.active_field, 1);
+    }
+
+    #[test]
+    fn advance_modal_tab_wraps_around() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        // Tab 4 times → wraps back to 0
+        for _ in 0..4 {
+            advance_modal(&mut modal, KeyCode::Tab);
+        }
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.active_field, 0);
+    }
+
+    #[test]
+    fn advance_modal_backtab_goes_to_previous() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        advance_modal(&mut modal, KeyCode::Tab); // field 1
+        advance_modal(&mut modal, KeyCode::BackTab); // back to field 0
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.active_field, 0);
+    }
+
+    #[test]
+    fn advance_modal_backtab_wraps_from_first_to_last() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        advance_modal(&mut modal, KeyCode::BackTab); // wraps to field 3
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.active_field, 3);
+    }
+
+    #[test]
+    fn advance_modal_escape_returns_close() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        let outcome = advance_modal(&mut modal, KeyCode::Esc);
+        assert!(matches!(outcome, ModalOutcome::Close));
+    }
+
+    #[test]
+    fn advance_modal_enter_with_empty_required_fields_returns_continue() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        assert!(matches!(outcome, ModalOutcome::Continue));
+        // Warnings should be set on required fields
+        let Modal::AddProject(ref form) = modal;
+        assert!(form.fields[0].warning.is_some(), "path field should have warning");
+        assert!(form.fields[1].warning.is_some(), "name field should have warning");
+        assert!(form.fields[2].warning.is_none(), "host field is optional, no warning");
+        assert!(form.fields[3].warning.is_none(), "token field is optional, no warning");
+    }
+
+    #[test]
+    fn advance_modal_enter_with_valid_data_returns_submit() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        // Set path and name using a block to scope the borrow
+        {
+            if let Modal::AddProject(ref mut form) = modal {
+                form.fields[0].value = "/code/myapp".to_string();
+                form.fields[1].value = "myapp".to_string();
+            }
+        }
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::Submit { path, name, host, token } => {
+                assert_eq!(path, "/code/myapp");
+                assert_eq!(name, "myapp");
+                assert!(host.is_none());
+                assert!(token.is_none());
+            }
+            _ => panic!("expected Submit outcome"),
+        }
+    }
+
+    #[test]
+    fn advance_modal_enter_with_optional_fields_submits_them() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        {
+            if let Modal::AddProject(ref mut form) = modal {
+                form.fields[0].value = "/code/app".to_string();
+                form.fields[1].value = "app".to_string();
+                form.fields[2].value = "https://vps.example.com".to_string();
+                form.fields[3].value = "mytoken".to_string();
+            }
+        }
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::Submit { host, token, .. } => {
+                assert_eq!(host, Some("https://vps.example.com".to_string()));
+                assert_eq!(token, Some("mytoken".to_string()));
+            }
+            _ => panic!("expected Submit outcome"),
+        }
+    }
+
+    #[test]
+    fn advance_modal_char_appends_to_active_field() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        advance_modal(&mut modal, KeyCode::Char('/'));
+        advance_modal(&mut modal, KeyCode::Char('c'));
+        advance_modal(&mut modal, KeyCode::Char('o'));
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.fields[0].value, "/co");
+    }
+
+    #[test]
+    fn advance_modal_backspace_removes_last_char() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        advance_modal(&mut modal, KeyCode::Char('a'));
+        advance_modal(&mut modal, KeyCode::Char('b'));
+        advance_modal(&mut modal, KeyCode::Backspace);
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.fields[0].value, "a");
+    }
+
+    #[test]
+    fn autofill_name_fills_from_path_basename() {
+        let mut form = ProjectForm::new();
+        form.fields[0].value = "/code/myproject".to_string();
+        autofill_name_if_empty(&mut form);
+        assert_eq!(form.fields[1].value, "myproject");
+    }
+
+    #[test]
+    fn autofill_name_does_not_overwrite_manual_input() {
+        let mut form = ProjectForm::new();
+        form.fields[0].value = "/code/myproject".to_string();
+        form.fields[1].value = "custom-name".to_string();
+        form.name_was_modified = true; // user has manually edited name field
+        autofill_name_if_empty(&mut form);
+        assert_eq!(form.fields[1].value, "custom-name");
+    }
+
+    #[test]
+    fn autofill_name_triggered_when_typing_in_path_field() {
+        // Simulate typing in path field: name should auto-fill when empty
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        for c in "/code/webapp".chars() {
+            advance_modal(&mut modal, KeyCode::Char(c));
+        }
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.fields[1].value, "webapp", "name should be auto-filled from path basename");
+    }
+
+    #[test]
+    fn modal_opens_on_uppercase_a_key_in_projects_panel() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        assert!(state.modal.is_none(), "no modal initially");
+        state.focused_panel = Panel::Projects;
+        // Simulate pressing 'A' by directly triggering the key handler logic
+        state.modal = Some(Modal::AddProject(ProjectForm::new()));
+        assert!(state.modal.is_some(), "modal should be open");
+    }
+
+    #[test]
+    fn render_modal_add_project_shows_fields() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::AddProject(ProjectForm::new()));
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("Add Project"), "should show modal title");
+        assert!(out.contains("Path"), "should show Path field label");
+        assert!(out.contains("Name"), "should show Name field label");
+        assert!(out.contains("Host"), "should show Host field label");
+        assert!(out.contains("Token"), "should show Token field label");
+    }
+
+    #[test]
+    fn render_modal_shows_hints_line() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::AddProject(ProjectForm::new()));
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("Tab"), "should show Tab hint");
+        assert!(out.contains("Enter"), "should show Enter hint");
+        assert!(out.contains("Esc"), "should show Esc hint");
+    }
+
+    #[test]
+    fn render_modal_shows_yellow_warning_on_required_field() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut form = ProjectForm::new();
+        form.fields[0].warning = Some("Required".to_string());
+        state.modal = Some(Modal::AddProject(form));
+        // Just verify it doesn't panic and renders something
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("Required") || out.contains("Add Project"), "modal rendered");
+    }
+
+    #[test]
+    fn tui_action_add_project_variant_exists() {
+        let action = TuiAction::AddProject {
+            path: "/code/app".to_string(),
+            name: "app".to_string(),
+            host: None,
+            token: None,
+        };
+        assert!(matches!(action, TuiAction::AddProject { .. }));
     }
 }

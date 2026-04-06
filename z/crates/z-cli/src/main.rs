@@ -15,7 +15,7 @@ use z_core::config::{effective_layout, parse_global_config_kdl, parse_per_repo_c
     GlobalConfig, PerRepoConfig};
 use z_core::depcheck::{check_deps, format_dep_error, DepCheckStatus};
 use z_core::domain::{NotifyLevel, Session};
-use z_core::traits::{ProjectStore, SessionManager, WorktreeManager, Notifier};
+use z_core::traits::{ProjectStore, ProjectStoreWriter, SessionManager, WorktreeManager, Notifier};
 
 use z_autopilot::builtin::builtin_workflows;
 use z_autopilot::dsl::AutopilotWorkflow;
@@ -137,67 +137,92 @@ fn run() {
 }
 
 /// Launch the interactive TUI and execute whatever action the user chooses.
+/// Loops back into the TUI after adding a project so the user stays in context.
 fn cmd_tui() -> z_core::error::Result<()> {
-    let store = KdlProjectStore::new();
+    let mut store = KdlProjectStore::new();
     let session_mgr = ZellijSessionManager;
     let global = load_global_config();
-
-    let projects = store.list_projects()?;
-
-    let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
-    for project in &projects {
-        let sessions = session_mgr.list_sessions(&project.name)?;
-        entries.push(ProjectEntry { project: project.clone(), sessions });
-    }
 
     let navigation = match global.navigation.as_deref() {
         Some("vim") => Navigation::Vim,
         _ => Navigation::Arrows,
     };
 
-    // Load pending notifications so the TUI can display 🔔 badges.
-    let notifications: HashSet<String> =
-        z_core::notification::sessions_with_notifications().into_iter().collect();
+    // Track the name of the most recently added project for auto-selection.
+    let mut initial_project: Option<String> = None;
 
-    let action = z_tui::run_tui(entries, navigation, notifications)
-        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+    loop {
+        let projects = store.list_projects()?;
 
-    match action {
-        TuiAction::Quit => {}
+        let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
+        for project in &projects {
+            let sessions = session_mgr.list_sessions(&project.name)?;
+            entries.push(ProjectEntry { project: project.clone(), sessions });
+        }
 
-        TuiAction::Open { project, session } => {
-            // Clear notifications for the session being opened.
-            if let Some(ref s) = session {
-                let _ = z_core::notification::clear_notifications(s);
+        // Load pending notifications so the TUI can display 🔔 badges.
+        let notifications: HashSet<String> =
+            z_core::notification::sessions_with_notifications().into_iter().collect();
+
+        // Auto-select the newly added project if one was just added.
+        let initial_idx = initial_project
+            .as_deref()
+            .and_then(|name| entries.iter().position(|e| e.project.name == name));
+
+        let action = z_tui::run_tui(entries, navigation.clone(), notifications, initial_idx)
+            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+
+        match action {
+            TuiAction::Quit => return Ok(()),
+
+            TuiAction::AddProject { path, name, host, token } => {
+                let project = z_core::domain::Project {
+                    name: name.clone(),
+                    path: std::path::PathBuf::from(path),
+                    host,
+                    token,
+                };
+                store.add_project(&project)?;
+                initial_project = Some(name);
+                // Loop back to re-enter TUI with the new project selected.
             }
-            // Extract branch from "project:branch" session name, or open default.
-            let branch_owned: Option<String> = session
-                .as_deref()
-                .and_then(|s| parse_session_name(s))
-                .map(|(_, b)| b);
-            cmd_open(&project, branch_owned.as_deref())?;
-        }
 
-        TuiAction::New { project } => {
-            cmd_open(&project, None)?;
-        }
+            TuiAction::Open { project, session } => {
+                // Clear notifications for the session being opened.
+                if let Some(ref s) = session {
+                    let _ = z_core::notification::clear_notifications(s);
+                }
+                // Extract branch from "project:branch" session name, or open default.
+                let branch_owned: Option<String> = session
+                    .as_deref()
+                    .and_then(|s| parse_session_name(s))
+                    .map(|(_, b)| b);
+                cmd_open(&project, branch_owned.as_deref())?;
+                return Ok(());
+            }
 
-        TuiAction::Delete { session } => {
-            cmd_delete(&session)?;
-        }
+            TuiAction::New { project } => {
+                cmd_open(&project, None)?;
+                return Ok(());
+            }
 
-        TuiAction::Prune => {
-            cmd_prune(false)?;
-        }
+            TuiAction::Delete { session } => {
+                cmd_delete(&session)?;
+                return Ok(());
+            }
 
-        TuiAction::Autopilot { project } => {
-            let store = KdlProjectStore::new();
-            let project_path = store.get_project(&project).ok().map(|p| p.path);
-            cmd_autopilot_list(project_path.as_deref())?;
+            TuiAction::Prune => {
+                cmd_prune(false)?;
+                return Ok(());
+            }
+
+            TuiAction::Autopilot { project } => {
+                let project_path = store.get_project(&project).ok().map(|p| p.path);
+                cmd_autopilot_list(project_path.as_deref())?;
+                return Ok(());
+            }
         }
     }
-
-    Ok(())
 }
 
 fn load_global_config() -> GlobalConfig {
