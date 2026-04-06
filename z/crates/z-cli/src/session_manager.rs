@@ -496,6 +496,29 @@ mod tests {
     }
 
     #[test]
+    fn list_all_z_sessions_whitespace_only_lines() {
+        let output = "  \n\t\n  \n";
+        let sessions = list_all_z_sessions_from_output(output);
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn list_all_z_sessions_deduplicates_not_expected_but_handles_gracefully() {
+        // Zellij shouldn't output duplicates, but if it does they pass through
+        let output = "myapp:main [Created: 5h ago]\nmyapp:main [Created: 1h ago]\n";
+        let sessions = list_all_z_sessions_from_output(output);
+        assert_eq!(sessions.len(), 2, "duplicates are preserved (no dedup)");
+    }
+
+    #[test]
+    fn list_all_z_sessions_exited_anywhere_in_line() {
+        // EXITED can appear with extra metadata around it
+        let output = "myapp:main [Created: 5h ago] (EXITED - 2 hours ago)\n";
+        let sessions = list_all_z_sessions_from_output(output);
+        assert!(sessions.is_empty(), "EXITED anywhere in the line should exclude it");
+    }
+
+    #[test]
     fn strip_ansi_truncated_escape_dropped() {
         // Trailing incomplete escape sequence should be silently dropped
         assert_eq!(strip_ansi("hello\x1b"), "hello");
