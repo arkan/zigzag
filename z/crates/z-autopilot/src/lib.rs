@@ -3,6 +3,7 @@
 pub mod builtin;
 pub mod config;
 pub mod dsl;
+pub mod notify;
 pub mod persist;
 pub mod state;
 pub mod trigger;
