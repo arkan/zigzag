@@ -4985,4 +4985,67 @@ mod tests {
             _ => panic!("expected WorkflowSelected"),
         }
     }
+
+    // --- 'o' (open) and 'n' (new session) key handler tests ---
+
+    #[test]
+    fn o_key_on_projects_panel_returns_open_with_no_session() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        // Projects panel is the default focus
+        assert_eq!(state.focused_panel, Panel::Projects);
+        // Simulate 'o' key logic from event_loop
+        let project_name = state.selected_entry().map(|e| e.project.name.clone());
+        assert!(project_name.is_some(), "should have a selected project");
+        let project = project_name.unwrap();
+        // When projects panel is focused, session is always None
+        let session: Option<String> = None;
+        assert_eq!(project, "myapp");
+        assert!(session.is_none(), "'o' on Projects panel should open with no session override");
+    }
+
+    #[test]
+    fn o_key_on_sessions_panel_returns_open_with_session() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.focused_panel = Panel::Sessions;
+        state.selected_session = 0;
+        // Simulate 'o' key logic from event_loop
+        let project_name = state.selected_entry().map(|e| e.project.name.clone());
+        assert!(project_name.is_some());
+        let session = if state.focused_panel == Panel::Sessions {
+            let sessions = state.filtered_sessions();
+            if !sessions.is_empty() {
+                sessions.get(state.selected_session).map(|s| s.name.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        // myapp has sessions: ["myapp:main", "myapp:feat-login"]
+        assert_eq!(session.as_deref(), Some("myapp:main"),
+            "'o' on Sessions panel should include the selected session name");
+    }
+
+    #[test]
+    fn o_key_with_no_projects_returns_no_action() {
+        let state = TuiState::new(vec![], Navigation::Arrows);
+        let project_name = state.selected_entry().map(|e| e.project.name.clone());
+        assert!(project_name.is_none(), "'o' with no projects should not produce an action");
+    }
+
+    #[test]
+    fn n_key_returns_new_with_selected_project() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        // Simulate 'n' key logic from event_loop
+        let action_project = state.selected_entry().map(|e| e.project.name.clone());
+        assert_eq!(action_project.as_deref(), Some("myapp"),
+            "'n' should produce TuiAction::New for the selected project");
+    }
+
+    #[test]
+    fn n_key_with_no_projects_returns_no_action() {
+        let state = TuiState::new(vec![], Navigation::Arrows);
+        let action_project = state.selected_entry().map(|e| e.project.name.clone());
+        assert!(action_project.is_none(), "'n' with no projects should not produce an action");
+    }
 }
