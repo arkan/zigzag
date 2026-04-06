@@ -151,7 +151,7 @@ fn delete_dead_session(session_name: &str) {
     if is_dead {
         let _ = Command::new("zellij")
             .args(["delete-session", session_name])
-            .status();
+            .output();
     }
 }
 

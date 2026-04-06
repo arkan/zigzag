@@ -40,16 +40,18 @@ impl WorktreeManager for WtWorktreeManager {
 
     fn create_worktree(&self, project: &str, branch: &str) -> Result<Worktree> {
         // Use wt switch -c to create the worktree (worktrunk convention).
-        let status = Command::new("wt")
+        let output = Command::new("wt")
             .args(["switch", "-c", branch])
             .current_dir(&self.project_path)
-            .status()
+            .output()
             .map_err(|e| ZError::Worktree(format!("wt switch failed: {}", e)))?;
 
-        if !status.success() {
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ZError::Worktree(format!(
-                "wt switch -c {} exited with status {}",
-                branch, status
+                "wt switch -c {} failed: {}",
+                branch,
+                stderr.trim()
             )));
         }
 
