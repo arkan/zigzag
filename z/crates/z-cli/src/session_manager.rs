@@ -166,6 +166,40 @@ pub fn write_temp_layout(content: &str) -> Result<String> {
     Ok(path)
 }
 
+/// Parse `zellij list-sessions` output and return all z-managed sessions
+/// (those matching `project:branch` naming), sorted alphabetically.
+///
+/// This is the pure/testable core used by `list_all_z_sessions`.
+pub fn list_all_z_sessions_from_output(output: &str) -> Vec<String> {
+    let mut sessions: Vec<String> = output
+        .lines()
+        .filter_map(|line| {
+            let name = line.split_whitespace().next()?;
+            if line.contains("EXITED") {
+                return None;
+            }
+            if parse_session_name(name).is_some() {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    sessions.sort();
+    sessions
+}
+
+/// List all active z-managed Zellij sessions across all projects, sorted alphabetically.
+pub fn list_all_z_sessions() -> Vec<String> {
+    let output = match Command::new("zellij").arg("list-sessions").output() {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let stdout = strip_ansi(&raw);
+    list_all_z_sessions_from_output(&stdout)
+}
+
 /// Parse `zellij list-sessions` output and return sessions belonging to `project`.
 ///
 /// Zellij output format (one session per line):
@@ -419,6 +453,46 @@ mod tests {
         let stripped = strip_ansi(colored);
         let sessions = parse_zellij_sessions(&stripped, "myapp");
         assert!(sessions.is_empty(), "EXITED sessions must be filtered even after ANSI stripping");
+    }
+
+    // --- list_all_z_sessions_from_output tests ---
+
+    #[test]
+    fn list_all_z_sessions_returns_z_managed_sessions() {
+        let output = "myapp:main [Created: 5h ago]\nhermes:dev [Created: 1h ago]\nplain-session\n";
+        let sessions = list_all_z_sessions_from_output(output);
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.contains(&"hermes:dev".to_string()));
+        assert!(sessions.contains(&"myapp:main".to_string()));
+    }
+
+    #[test]
+    fn list_all_z_sessions_excludes_exited() {
+        let output = "myapp:main (EXITED)\nhermes:dev [Created: 1h ago]\n";
+        let sessions = list_all_z_sessions_from_output(output);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0], "hermes:dev");
+    }
+
+    #[test]
+    fn list_all_z_sessions_excludes_non_z_sessions() {
+        let output = "plain-session\nanother-session\nmyapp:main\n";
+        let sessions = list_all_z_sessions_from_output(output);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0], "myapp:main");
+    }
+
+    #[test]
+    fn list_all_z_sessions_sorted_alphabetically() {
+        let output = "zzz:main\naaa:dev\nmid:branch\n";
+        let sessions = list_all_z_sessions_from_output(output);
+        assert_eq!(sessions, vec!["aaa:dev", "mid:branch", "zzz:main"]);
+    }
+
+    #[test]
+    fn list_all_z_sessions_empty_output() {
+        let sessions = list_all_z_sessions_from_output("");
+        assert!(sessions.is_empty());
     }
 
     #[test]

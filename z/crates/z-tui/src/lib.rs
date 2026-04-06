@@ -2265,6 +2265,167 @@ fn render_log_viewer_modal(f: &mut Frame, lines: &[String], scroll_offset: usize
 }
 
 // ---------------------------------------------------------------------------
+// Session switch picker
+// ---------------------------------------------------------------------------
+
+/// State for the `z switch` session picker TUI.
+pub struct SwitchPickerState {
+    /// All z-managed session names, sorted alphabetically.
+    pub sessions: Vec<String>,
+    /// Currently highlighted item index.
+    pub selected: usize,
+    /// Name of the current Zellij session (from `$ZELLIJ_SESSION_NAME`).
+    pub current_session: String,
+}
+
+impl SwitchPickerState {
+    pub fn new(sessions: Vec<String>, current_session: String) -> Self {
+        let selected = sessions
+            .iter()
+            .position(|s| s == &current_session)
+            .unwrap_or(0);
+        Self { sessions, selected, current_session }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.selected + 1 < self.sessions.len() {
+            self.selected += 1;
+        }
+    }
+
+    pub fn selected_session(&self) -> Option<&str> {
+        self.sessions.get(self.selected).map(|s| s.as_str())
+    }
+}
+
+/// Render the session switch picker into the frame.
+fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
+    let area = f.area();
+    let modal_width = area.width.saturating_sub(4).min(60).max(40.min(area.width));
+    let content_rows = state.sessions.len().min(20) as u16;
+    // 2 borders + list rows + 1 footer
+    let modal_height = content_rows.saturating_add(3).min(area.height);
+    let rect = modal_rect(modal_width, modal_height, area);
+
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Switch Session ")
+        .border_style(Style::default().add_modifier(Modifier::BOLD));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    if inner.height < 2 {
+        return;
+    }
+
+    // Split inner area: list on top, footer on bottom
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    // Build list items
+    let items: Vec<ListItem> = state
+        .sessions
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let is_current = name == &state.current_session;
+            let marker = if is_current { "\u{25cf} " } else { "  " };
+            let label = format!("{}{}", marker, name);
+            let style = if i == state.selected {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else if is_current {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            };
+            ListItem::new(label).style(style)
+        })
+        .collect();
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected));
+
+    let list = List::new(items);
+    f.render_stateful_widget(list, chunks[0], &mut list_state);
+
+    // Footer hints
+    let footer = Paragraph::new(Line::from(Span::styled(
+        " j/k navigate  Enter switch  Esc close",
+        Style::default().add_modifier(Modifier::DIM),
+    )));
+    f.render_widget(footer, chunks[1]);
+}
+
+fn switch_picker_event_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
+    state: &mut SwitchPickerState,
+) -> io::Result<Option<String>> {
+    loop {
+        terminal.draw(|f| render_switch_picker(f, state))?;
+
+        if !event::poll(Duration::from_millis(100))? {
+            continue;
+        }
+
+        if let Event::Key(key) = event::read()? {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => state.move_down(),
+                KeyCode::Char('k') | KeyCode::Up => state.move_up(),
+                KeyCode::Enter => {
+                    return Ok(state.selected_session().map(|s| s.to_string()));
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    return Ok(None);
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(None);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Launch the interactive session switch picker TUI.
+///
+/// Returns `Some(session_name)` if the user pressed `Enter` to switch,
+/// or `None` if the user pressed `Esc`/`q` to close without switching.
+pub fn run_switch_picker(
+    sessions: Vec<String>,
+    current_session: String,
+) -> io::Result<Option<String>> {
+    if sessions.is_empty() {
+        return Ok(None);
+    }
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut state = SwitchPickerState::new(sessions, current_session);
+
+    let result = switch_picker_event_loop(&mut terminal, &mut state);
+
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = terminal.show_cursor();
+
+    result
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -5581,5 +5742,146 @@ mod tests {
         });
         // Should not panic even when terminal is smaller than the modal
         let _out = render_to_string(&state, 20, 5);
+    }
+
+    // ── SwitchPickerState tests ───────────────────────────────────────────
+
+    fn render_switch_picker_to_string(
+        state: &SwitchPickerState,
+        width: u16,
+        height: u16,
+    ) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_switch_picker(f, state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for row in 0..height {
+            for col in 0..width {
+                out.push_str(buf.cell((col, row)).map(|c| c.symbol()).unwrap_or(" "));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn switch_picker_renders_title() {
+        let state = SwitchPickerState::new(
+            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
+            "myapp:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        assert!(out.contains("Switch Session"), "should render title");
+    }
+
+    #[test]
+    fn switch_picker_renders_session_names() {
+        let state = SwitchPickerState::new(
+            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
+            "myapp:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        assert!(out.contains("myapp:main"), "should render myapp:main");
+        assert!(out.contains("hermes:dev"), "should render hermes:dev");
+    }
+
+    #[test]
+    fn switch_picker_renders_current_marker() {
+        let state = SwitchPickerState::new(
+            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
+            "myapp:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        assert!(out.contains('\u{25cf}'), "should render ● marker on current session");
+    }
+
+    #[test]
+    fn switch_picker_renders_footer_hints() {
+        let state = SwitchPickerState::new(
+            vec!["myapp:main".to_string()],
+            "myapp:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 80, 15);
+        assert!(out.contains("j/k"), "should render j/k hint");
+        assert!(out.contains("Enter"), "should render Enter hint");
+        assert!(out.contains("Esc"), "should render Esc hint");
+    }
+
+    #[test]
+    fn switch_picker_initial_selection_on_current_session() {
+        let state = SwitchPickerState::new(
+            vec!["alpha:main".to_string(), "beta:dev".to_string(), "myapp:main".to_string()],
+            "beta:dev".to_string(),
+        );
+        assert_eq!(state.selected, 1, "should start on the current session");
+    }
+
+    #[test]
+    fn switch_picker_initial_selection_defaults_to_zero_when_not_found() {
+        let state = SwitchPickerState::new(
+            vec!["alpha:main".to_string(), "beta:dev".to_string()],
+            "unknown:session".to_string(),
+        );
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn switch_picker_move_up_decrements() {
+        let mut state = SwitchPickerState::new(
+            vec!["alpha:main".to_string(), "beta:dev".to_string()],
+            "alpha:main".to_string(),
+        );
+        state.selected = 1;
+        state.move_up();
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn switch_picker_move_down_increments() {
+        let mut state = SwitchPickerState::new(
+            vec!["alpha:main".to_string(), "beta:dev".to_string()],
+            "alpha:main".to_string(),
+        );
+        state.move_down();
+        assert_eq!(state.selected, 1);
+    }
+
+    #[test]
+    fn switch_picker_move_up_clamps_at_zero() {
+        let mut state = SwitchPickerState::new(
+            vec!["alpha:main".to_string()],
+            "alpha:main".to_string(),
+        );
+        state.move_up();
+        assert_eq!(state.selected, 0, "should not go below 0");
+    }
+
+    #[test]
+    fn switch_picker_move_down_clamps_at_last() {
+        let mut state = SwitchPickerState::new(
+            vec!["alpha:main".to_string()],
+            "alpha:main".to_string(),
+        );
+        state.move_down();
+        assert_eq!(state.selected, 0, "should not go past last item");
+    }
+
+    #[test]
+    fn switch_picker_selected_session_returns_name() {
+        let state = SwitchPickerState::new(
+            vec!["alpha:main".to_string(), "beta:dev".to_string()],
+            "alpha:main".to_string(),
+        );
+        assert_eq!(state.selected_session(), Some("alpha:main"));
+    }
+
+    #[test]
+    fn switch_picker_small_terminal_no_panic() {
+        let state = SwitchPickerState::new(
+            vec!["myapp:main".to_string()],
+            "myapp:main".to_string(),
+        );
+        let _out = render_switch_picker_to_string(&state, 20, 5);
     }
 }
