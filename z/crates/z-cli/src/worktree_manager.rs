@@ -72,15 +72,17 @@ impl WorktreeManager for WtWorktreeManager {
         if force {
             cmd.arg("--force");
         }
-        let status = cmd
+        let output = cmd
             .current_dir(&self.project_path)
-            .status()
+            .output()
             .map_err(|e| ZError::Worktree(format!("wt remove failed: {}", e)))?;
 
-        if !status.success() {
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ZError::Worktree(format!(
-                "wt remove {} exited with status {}",
-                worktree.branch, status
+                "wt remove {} failed: {}",
+                worktree.branch,
+                stderr.trim()
             )));
         }
 
