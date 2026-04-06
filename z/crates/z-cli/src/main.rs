@@ -221,6 +221,12 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 cmd_autopilot_list(project_path.as_deref())?;
                 return Ok(());
             }
+
+            TuiAction::EditPerRepoConfig { project_path } => {
+                // Edit the config, then loop back to re-enter the TUI.
+                cmd_edit_per_repo_config(&project_path)?;
+                // continue the loop → re-enter the TUI
+            }
         }
     }
 }
@@ -243,6 +249,55 @@ fn load_per_repo_config(project_path: &std::path::Path) -> PerRepoConfig {
         Ok(content) => parse_per_repo_config_kdl(&content).unwrap_or_default(),
         Err(_) => PerRepoConfig::default(),
     }
+}
+
+fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> z_core::error::Result<()> {
+    let config_dir = project_path.join(".config");
+    let config_file = config_dir.join("z.kdl");
+
+    // Create .config/ directory if missing (create_dir_all is a no-op if it exists).
+    fs::create_dir_all(&config_dir)
+        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+
+    // Create the file with a commented template if it doesn't exist.
+    if !config_file.exists() {
+        let template = "\
+// Per-repo z configuration
+// Available options are shown below (all optional).
+
+// layout \"compact\"    // override the default layout: \"default\" | \"compact\" | \"minimal\"
+
+// claude {
+//   args \"--model\" \"claude-3-7-sonnet-20250219\"   // extra CLI args passed to claude
+// }
+
+// deploy {
+//   command \"npm run deploy\"   // command run by `z deploy`
+// }
+
+// autopilot {
+//   auto-push true     // automatically push commits
+//   review true        // open a PR after each autopilot session
+// }
+";
+        fs::write(&config_file, template)
+            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+    }
+
+    // Determine editor: $EDITOR, falling back to vi.
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+
+    // Spawn editor and wait for it to exit.
+    let status = std::process::Command::new(&editor)
+        .arg(&config_file)
+        .status()
+        .map_err(|e| z_core::error::ZError::Io(format!("failed to launch editor '{}': {}", editor, e)))?;
+
+    if !status.success() {
+        eprintln!("editor exited with status: {}", status);
+    }
+
+    Ok(())
 }
 
 fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<()> {
@@ -606,6 +661,11 @@ fn parse_notify_level<'a>(mut args: impl Iterator<Item = &'a String>) -> NotifyL
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize tests that mutate the EDITOR environment variable,
+    /// preventing race conditions when the test suite runs in parallel.
+    static EDITOR_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn confirm_response_y_returns_true() {
@@ -840,6 +900,86 @@ mod tests {
         assert!(output.contains("proj-b"));
         assert!(output.contains("wf1"));
         assert!(output.contains("wf2"));
+    }
+
+    // ── cmd_edit_per_repo_config tests ────────────────────────────────────────
+
+    fn unique_test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("z_test_{}", name));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn edit_per_repo_config_creates_config_dir_and_template() {
+        let _guard = EDITOR_MUTEX.lock().unwrap();
+        let project_path = unique_test_dir("create_template");
+        // Neither .config/ nor .config/z.kdl exist yet.
+        assert!(!project_path.join(".config").exists());
+
+        // Use "true" as editor so the test doesn't open an actual editor.
+        std::env::set_var("EDITOR", "true");
+        cmd_edit_per_repo_config(&project_path).expect("should succeed");
+
+        let config_file = project_path.join(".config").join("z.kdl");
+        assert!(config_file.exists(), ".config/z.kdl should be created");
+        let contents = fs::read_to_string(&config_file).unwrap();
+        assert!(contents.contains("layout"), "template should mention layout");
+        assert!(contents.contains("claude"), "template should mention claude");
+        assert!(contents.contains("deploy"), "template should mention deploy");
+        assert!(contents.contains("autopilot"), "template should mention autopilot");
+    }
+
+    #[test]
+    fn edit_per_repo_config_does_not_overwrite_existing_file() {
+        let _guard = EDITOR_MUTEX.lock().unwrap();
+        let project_path = unique_test_dir("no_overwrite");
+        let config_dir = project_path.join(".config");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_file = config_dir.join("z.kdl");
+        let original = "layout \"compact\"\n";
+        fs::write(&config_file, original).unwrap();
+
+        std::env::set_var("EDITOR", "true");
+        cmd_edit_per_repo_config(&project_path).expect("should succeed");
+
+        let contents = fs::read_to_string(&config_file).unwrap();
+        assert_eq!(contents, original, "existing file should not be overwritten");
+    }
+
+    #[test]
+    fn edit_per_repo_config_succeeds_with_editor_set() {
+        let _guard = EDITOR_MUTEX.lock().unwrap();
+        let project_path = unique_test_dir("editor_set");
+        std::env::set_var("EDITOR", "true");
+        cmd_edit_per_repo_config(&project_path).expect("should succeed with EDITOR=true");
+    }
+
+    #[test]
+    fn edit_per_repo_config_returns_error_for_missing_editor() {
+        let _guard = EDITOR_MUTEX.lock().unwrap();
+        let project_path = unique_test_dir("missing_editor");
+        std::env::set_var("EDITOR", "/nonexistent/editor/binary");
+        let result = cmd_edit_per_repo_config(&project_path);
+        assert!(result.is_err(), "should fail when editor binary doesn't exist");
+    }
+
+    #[test]
+    fn edit_per_repo_config_preserves_existing_config_dir() {
+        let _guard = EDITOR_MUTEX.lock().unwrap();
+        let project_path = unique_test_dir("existing_config_dir");
+        let config_dir = project_path.join(".config");
+        fs::create_dir_all(&config_dir).unwrap();
+        // Place an unrelated file to prove the directory isn't recreated/destroyed.
+        let marker = config_dir.join("other.txt");
+        fs::write(&marker, "keep me").unwrap();
+
+        std::env::set_var("EDITOR", "true");
+        cmd_edit_per_repo_config(&project_path).expect("should succeed");
+
+        assert!(marker.exists(), "unrelated files in .config/ should be preserved");
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "keep me");
     }
 }
 

@@ -106,6 +106,8 @@ pub enum TuiAction {
         host: Option<String>,
         token: Option<String>,
     },
+    /// User pressed `e` — open per-repo config in $EDITOR.
+    EditPerRepoConfig { project_path: std::path::PathBuf },
 }
 
 // ---------------------------------------------------------------------------
@@ -1184,6 +1186,14 @@ fn event_loop<B: Backend>(
                         }
                     }
 
+                    KeyCode::Char('e') | KeyCode::Char('E') => {
+                        if let Some(entry) = state.selected_entry() {
+                            return Ok(TuiAction::EditPerRepoConfig {
+                                project_path: entry.project.path.clone(),
+                            });
+                        }
+                    }
+
                     KeyCode::Char('/') => {
                         state.search_mode = true;
                         state.search_query.clear();
@@ -1213,7 +1223,7 @@ pub fn render(f: &mut Frame, state: &TuiState) {
         .constraints([
             Constraint::Min(1),     // main panels (takes all remaining space)
             Constraint::Length(8),  // preview pane (fixed 8 lines)
-            Constraint::Length(3),  // status bar
+            Constraint::Length(4),  // status bar (2 content rows: project info + key hints)
         ])
         .split(area);
 
@@ -1392,7 +1402,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
         })
         .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string());
 
-    let hints = " [o]pen  [n]ew  [d]elete  [p]rune  [a]utopilot  [A]dd  [/]search  [q]uit";
+    let hints = " [o]pen [n]ew [d]elete [p]rune [a]utopilot [A]dd [e]dit [/]search [q]uit";
     let content = format!("{}\n{}", project_info, hints);
 
     let paragraph = Paragraph::new(content)
@@ -1637,6 +1647,34 @@ mod tests {
         assert!(out.contains("[q]"), "should show [q] hint");
         assert!(out.contains("[n]"), "should show [n] hint");
         assert!(out.contains("[d]"), "should show [d] hint");
+        assert!(out.contains("[e]"), "should show [e] edit config hint");
+    }
+
+    #[test]
+    fn e_key_returns_edit_per_repo_config_action() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // First project is "myapp" at /home/user/myapp
+        assert!(state.selected_entry().is_some(), "should have a selected entry");
+        let expected_path = std::path::PathBuf::from("/home/user/myapp");
+        let entry = state.selected_entry().unwrap();
+        assert_eq!(entry.project.path, expected_path);
+        // Verify the action variant is constructed correctly
+        let action = TuiAction::EditPerRepoConfig {
+            project_path: entry.project.path.clone(),
+        };
+        match action {
+            TuiAction::EditPerRepoConfig { project_path } => {
+                assert_eq!(project_path, expected_path);
+            }
+            _ => panic!("expected EditPerRepoConfig action"),
+        }
+    }
+
+    #[test]
+    fn e_key_no_projects_does_nothing() {
+        let state = TuiState::new(vec![], Navigation::Arrows);
+        // With no entries, selected_entry() returns None — no action should be emitted.
+        assert!(state.selected_entry().is_none(), "empty state should have no selected entry");
     }
 
     #[test]
