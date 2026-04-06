@@ -5370,4 +5370,58 @@ mod tests {
             _ => panic!("wrong variant"),
         }
     }
+
+    #[test]
+    fn branch_input_modal_backspace_on_empty_is_noop() {
+        let mut modal = Modal::BranchInput {
+            project: "myapp".to_string(),
+            input: String::new(),
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Backspace);
+        assert!(matches!(outcome, ModalOutcome::Continue));
+        if let Modal::BranchInput { input, .. } = &modal {
+            assert_eq!(input, "");
+        } else {
+            panic!("expected BranchInput modal");
+        }
+    }
+
+    #[test]
+    fn branch_input_modal_enter_whitespace_only_continues() {
+        let mut modal = Modal::BranchInput {
+            project: "myapp".to_string(),
+            input: "   ".to_string(),
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        assert!(
+            matches!(outcome, ModalOutcome::Continue),
+            "Enter on whitespace-only input should not submit"
+        );
+    }
+
+    #[test]
+    fn branch_input_modal_enter_trims_whitespace() {
+        let mut modal = Modal::BranchInput {
+            project: "myapp".to_string(),
+            input: "  feat/bar  ".to_string(),
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::NewBranch { branch, .. } => {
+                assert_eq!(branch, "feat/bar", "branch name should be trimmed");
+            }
+            _ => panic!("expected NewBranch outcome"),
+        }
+    }
+
+    #[test]
+    fn branch_input_modal_small_terminal_no_panic() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::BranchInput {
+            project: "myapp".to_string(),
+            input: "feat".to_string(),
+        });
+        // Should not panic even when terminal is smaller than the modal
+        let _out = render_to_string(&state, 20, 5);
+    }
 }
