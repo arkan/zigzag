@@ -5,6 +5,27 @@ use z_core::domain::{Layout, Session};
 use z_core::error::{Result, ZError};
 use z_core::traits::SessionManager;
 
+/// Strip ANSI escape sequences from a string.
+///
+/// Zellij's `list-sessions` output contains color codes (e.g. `\x1b[32;1m`)
+/// that must be removed before parsing session names and status.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_escape = false;
+    for c in s.chars() {
+        if in_escape {
+            if c.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+        } else if c == '\x1b' {
+            in_escape = true;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 static LAYOUT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A `SessionManager` that shells out to `zellij` to manage sessions.
@@ -14,7 +35,8 @@ impl SessionManager for ZellijSessionManager {
     fn list_sessions(&self, project: &str) -> Result<Vec<Session>> {
         match Command::new("zellij").arg("list-sessions").output() {
             Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
+                let raw = String::from_utf8_lossy(&output.stdout);
+                let stdout = strip_ansi(&raw);
                 let sessions = parse_zellij_sessions(&stdout, project);
                 Ok(sessions)
             }
@@ -28,6 +50,11 @@ impl SessionManager for ZellijSessionManager {
 
     fn create_session(&self, project: &str, branch: &str, layout: Layout) -> Result<Session> {
         let session = Session::new(project, branch);
+
+        // Clean up any dead (EXITED) session with the same name first,
+        // otherwise Zellij rejects the create with "already exists, but is dead".
+        delete_dead_session(&session.name);
+
         let kdl = z_core::layout::generate_layout_kdl(&layout);
         let layout_path = write_temp_layout(&kdl)?;
         // Use `-n` (--new-session-with-layout) instead of `-l` (--layout):
@@ -105,6 +132,28 @@ pub fn parse_session_name(s: &str) -> Option<(String, String)> {
     Some((project, branch))
 }
 
+/// Delete a Zellij session if it exists and is dead (EXITED).
+///
+/// Checks `zellij list-sessions` for a matching dead session and runs
+/// `zellij delete-session` to clean it up. Failures are silently ignored
+/// since this is a best-effort cleanup before creating a fresh session.
+fn delete_dead_session(session_name: &str) {
+    let output = match Command::new("zellij").arg("list-sessions").output() {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let stdout = strip_ansi(&raw);
+    let is_dead = stdout.lines().any(|line| {
+        line.split_whitespace().next() == Some(session_name) && line.contains("EXITED")
+    });
+    if is_dead {
+        let _ = Command::new("zellij")
+            .args(["delete-session", session_name])
+            .status();
+    }
+}
+
 /// Write a Zellij KDL layout string to a temporary file and return its path.
 ///
 /// The caller is responsible for removing the file after use.
@@ -132,8 +181,9 @@ pub fn parse_zellij_sessions(output: &str, project: &str) -> Vec<Session> {
         .lines()
         .filter_map(|line| {
             let name = line.split_whitespace().next()?;
-            // Strip `(EXITED)` entries — only return live sessions.
-            if line.contains("(EXITED)") {
+            // Strip exited entries — only return live sessions.
+            // The raw text may be "(EXITED - attach to resurrect)" after ANSI stripping.
+            if line.contains("EXITED") {
                 return None;
             }
             if name.starts_with(&prefix) {
