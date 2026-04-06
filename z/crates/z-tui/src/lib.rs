@@ -65,6 +65,18 @@ pub struct ProjectEntry {
     pub sessions: Vec<Session>,
     /// Number of git worktrees for this project (used in the delete confirmation modal).
     pub worktree_count: usize,
+    /// Available autopilot workflows for this project (built-in + per-repo custom).
+    pub workflows: Vec<WorkflowInfo>,
+}
+
+/// Minimal workflow descriptor used by the TUI workflow selector modal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkflowInfo {
+    pub name: String,
+    /// Human-readable trigger label (e.g. "post-push").
+    pub trigger: String,
+    /// Optional short description.
+    pub description: String,
 }
 
 /// Navigation key style.
@@ -99,8 +111,8 @@ pub enum TuiAction {
     Delete { session: String },
     /// User pressed `p` — prune orphaned sessions.
     Prune,
-    /// User pressed `a` — start autopilot for the selected project.
-    Autopilot { project: String },
+    /// User selected a workflow in the autopilot modal.
+    Autopilot { project: String, workflow: String },
     /// User submitted the Add Project form.
     AddProject {
         path: String,
@@ -200,6 +212,12 @@ pub enum Modal {
         session_count: usize,
         worktree_count: usize,
     },
+    /// Workflow selector shown when the user presses 'a' (autopilot).
+    WorkflowSelector {
+        project: String,
+        workflows: Vec<WorkflowInfo>,
+        selected: usize,
+    },
 }
 
 /// Outcome of processing one keypress inside a modal.
@@ -220,6 +238,7 @@ enum ModalOutcome {
         token: Option<String>,
     },
     DeleteConfirmed { project: String },
+    WorkflowSelected { project: String, workflow: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -1197,6 +1216,33 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             }
             _ => ModalOutcome::Continue,
         },
+
+        Modal::WorkflowSelector { project, workflows, selected } => match code {
+            KeyCode::Esc => ModalOutcome::Close,
+            KeyCode::Up | KeyCode::Char('k') => {
+                if *selected > 0 {
+                    *selected -= 1;
+                }
+                ModalOutcome::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if *selected + 1 < workflows.len() {
+                    *selected += 1;
+                }
+                ModalOutcome::Continue
+            }
+            KeyCode::Enter => {
+                if let Some(wf) = workflows.get(*selected) {
+                    ModalOutcome::WorkflowSelected {
+                        project: project.clone(),
+                        workflow: wf.name.clone(),
+                    }
+                } else {
+                    ModalOutcome::Close
+                }
+            }
+            _ => ModalOutcome::Continue,
+        },
     }
 }
 
@@ -1297,6 +1343,10 @@ fn event_loop<B: Backend>(
                     ModalOutcome::DeleteConfirmed { project } => {
                         state.modal = None;
                         return Ok(TuiAction::DeleteProject { project });
+                    }
+                    ModalOutcome::WorkflowSelected { project, workflow } => {
+                        state.modal = None;
+                        return Ok(TuiAction::Autopilot { project, workflow });
                     }
                     ModalOutcome::Continue => {}
                 }
@@ -1409,9 +1459,13 @@ fn event_loop<B: Backend>(
 
                     KeyCode::Char('a') => {
                         if let Some(entry) = state.selected_entry() {
-                            return Ok(TuiAction::Autopilot {
-                                project: entry.project.name.clone(),
-                            });
+                            if !entry.workflows.is_empty() {
+                                state.modal = Some(Modal::WorkflowSelector {
+                                    project: entry.project.name.clone(),
+                                    workflows: entry.workflows.clone(),
+                                    selected: 0,
+                                });
+                            }
                         }
                     }
 
@@ -1673,7 +1727,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
         })
         .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string());
 
-    let hints = " [o]pen [n]ew [d]elete [p]rune [a]utopilot [A]dd [E]dit [D]el [e]config [/]search [q]uit";
+    let hints = " [o]pen [n]ew [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [q]uit";
     let content = format!("{}\n{}", project_info, hints);
 
     let paragraph = Paragraph::new(content)
@@ -1736,11 +1790,70 @@ fn render_delete_confirm_modal(
     f.render_widget(paragraph, inner);
 }
 
+fn render_workflow_selector_modal(
+    f: &mut Frame,
+    project: &str,
+    workflows: &[WorkflowInfo],
+    selected: usize,
+) {
+    let area = f.area();
+    // Height: 1 title line per workflow + 1 blank + 1 separator + 1 hint + 2 borders, min 7
+    let modal_height = (workflows.len() as u16 + 4).max(7).min(area.height);
+    let modal_width = 72u16;
+    let rect = modal_rect(modal_width, modal_height, area);
+
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Autopilot: {} ", project))
+        .border_style(Style::default().add_modifier(Modifier::BOLD));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (i, wf) in workflows.iter().enumerate() {
+        let is_selected = i == selected;
+        let cursor = if is_selected { "\u{25b8} " } else { "  " };
+        let desc = if wf.description.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", wf.description)
+        };
+        let text = format!("{}{:28}  {}{}", cursor, wf.name, wf.trigger, desc);
+        let style = if is_selected {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+
+    // Separator
+    let sep_width = inner.width.saturating_sub(1) as usize;
+    lines.push(Line::from(Span::styled(
+        "\u{2500}".repeat(sep_width),
+        Style::default().add_modifier(Modifier::DIM),
+    )));
+    lines.push(Line::from(Span::styled(
+        " \u{2191}/\u{2193}: select  Enter: run  Esc: cancel",
+        Style::default().add_modifier(Modifier::DIM),
+    )));
+
+    let paragraph = Paragraph::new(Text::from(lines));
+    f.render_widget(paragraph, inner);
+}
+
 fn render_modal(f: &mut Frame, state: &TuiState) {
     let (form, title) = match &state.modal {
         None => return,
         Some(Modal::DeleteConfirm { project_name, session_count, worktree_count }) => {
             render_delete_confirm_modal(f, project_name, *session_count, *worktree_count);
+            return;
+        }
+        Some(Modal::WorkflowSelector { project, workflows, selected }) => {
+            render_workflow_selector_modal(f, project, workflows, *selected);
             return;
         }
         Some(Modal::AddProject(form)) => (form, " Add Project "),
@@ -1856,16 +1969,19 @@ mod tests {
                     Session::new("myapp", "feat/login"),
                 ],
                 worktree_count: 0,
+                workflows: vec![],
             },
             ProjectEntry {
                 project: make_project("hermes", false),
                 sessions: vec![],
                 worktree_count: 0,
+                workflows: vec![],
             },
             ProjectEntry {
                 project: make_project("prod-api", true),
                 sessions: vec![],
                 worktree_count: 0,
+                workflows: vec![],
             },
         ]
     }
@@ -2536,6 +2652,7 @@ mod tests {
             project: make_project("solo", false),
             sessions: vec![Session::new("solo", "main")],
             worktree_count: 0,
+            workflows: vec![],
         }];
         let mut state = TuiState::new(entries, Navigation::Arrows);
         state.move_up();
@@ -3697,6 +3814,7 @@ mod tests {
             project: make_project("myapp", false),
             sessions: vec![],
             worktree_count: 0,
+            workflows: vec![],
         };
         // Simulate 'E' key: create EditProject modal pre-filled from entry
         let project = &entry.project;
@@ -4061,6 +4179,7 @@ mod tests {
             project: make_project("test", false),
             sessions: vec![],
             worktree_count: 5,
+            workflows: vec![],
         };
         assert_eq!(entry.worktree_count, 5);
     }
@@ -4390,5 +4509,205 @@ mod tests {
         let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
         assert_eq!(form.active_field, 3, "BackTab from field 0 wraps to last field");
         assert!(form.fields[0].warning.is_some(), "path validation should run when leaving field 0 via BackTab");
+    }
+
+    // ── WorkflowSelector modal ─────────────────────────────────────────────
+
+    fn make_workflows() -> Vec<WorkflowInfo> {
+        vec![
+            WorkflowInfo {
+                name: "pr-ci-fix".to_string(),
+                trigger: "post-push".to_string(),
+                description: "Fix CI failures".to_string(),
+            },
+            WorkflowInfo {
+                name: "pr-review-fix".to_string(),
+                trigger: "pr-review-received".to_string(),
+                description: "Resolve review comments".to_string(),
+            },
+            WorkflowInfo {
+                name: "pr-merge-when-ready".to_string(),
+                trigger: "pr-approved".to_string(),
+                description: "Auto-merge when ready".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn workflow_selector_esc_closes() {
+        let mut modal = Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: make_workflows(),
+            selected: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Esc);
+        assert!(matches!(outcome, ModalOutcome::Close));
+    }
+
+    #[test]
+    fn workflow_selector_enter_returns_workflow_selected() {
+        let mut modal = Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: make_workflows(),
+            selected: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::WorkflowSelected { project, workflow } => {
+                assert_eq!(project, "myapp");
+                assert_eq!(workflow, "pr-ci-fix");
+            }
+            _ => panic!("expected WorkflowSelected"),
+        }
+    }
+
+    #[test]
+    fn workflow_selector_down_moves_selection() {
+        let mut modal = Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: make_workflows(),
+            selected: 0,
+        };
+        advance_modal(&mut modal, KeyCode::Down);
+        if let Modal::WorkflowSelector { selected, .. } = modal {
+            assert_eq!(selected, 1);
+        } else {
+            panic!("expected WorkflowSelector");
+        }
+    }
+
+    #[test]
+    fn workflow_selector_j_moves_selection_down() {
+        let mut modal = Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: make_workflows(),
+            selected: 0,
+        };
+        advance_modal(&mut modal, KeyCode::Char('j'));
+        if let Modal::WorkflowSelector { selected, .. } = modal {
+            assert_eq!(selected, 1);
+        } else {
+            panic!("expected WorkflowSelector");
+        }
+    }
+
+    #[test]
+    fn workflow_selector_up_at_top_stays() {
+        let mut modal = Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: make_workflows(),
+            selected: 0,
+        };
+        advance_modal(&mut modal, KeyCode::Up);
+        if let Modal::WorkflowSelector { selected, .. } = modal {
+            assert_eq!(selected, 0, "Up at top should not underflow");
+        } else {
+            panic!("expected WorkflowSelector");
+        }
+    }
+
+    #[test]
+    fn workflow_selector_down_at_bottom_stays() {
+        let wfs = make_workflows();
+        let last = wfs.len() - 1;
+        let mut modal = Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: wfs,
+            selected: last,
+        };
+        advance_modal(&mut modal, KeyCode::Down);
+        if let Modal::WorkflowSelector { selected, .. } = modal {
+            assert_eq!(selected, last, "Down at bottom should not overflow");
+        } else {
+            panic!("expected WorkflowSelector");
+        }
+    }
+
+    #[test]
+    fn workflow_selector_enter_on_second_item_returns_correct_workflow() {
+        let mut modal = Modal::WorkflowSelector {
+            project: "hermes".to_string(),
+            workflows: make_workflows(),
+            selected: 1,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::WorkflowSelected { project, workflow } => {
+                assert_eq!(project, "hermes");
+                assert_eq!(workflow, "pr-review-fix");
+            }
+            _ => panic!("expected WorkflowSelected"),
+        }
+    }
+
+    #[test]
+    fn workflow_selector_other_key_continues() {
+        let mut modal = Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: make_workflows(),
+            selected: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('x'));
+        assert!(matches!(outcome, ModalOutcome::Continue));
+    }
+
+    #[test]
+    fn workflow_selector_renders_workflow_names() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: make_workflows(),
+            selected: 0,
+        });
+        let out = render_to_string(&state, 100, 30);
+        assert!(out.contains("pr-ci-fix"), "should render first workflow name");
+        assert!(out.contains("pr-review-fix"), "should render second workflow name");
+        assert!(out.contains("pr-merge-when-ready"), "should render third workflow name");
+    }
+
+    #[test]
+    fn workflow_selector_renders_project_name_in_title() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: make_workflows(),
+            selected: 0,
+        });
+        let out = render_to_string(&state, 100, 30);
+        assert!(out.contains("myapp"), "modal title should include project name");
+    }
+
+    #[test]
+    fn a_key_with_workflows_opens_workflow_selector() {
+        let mut entries = make_entries();
+        entries[0].workflows = make_workflows();
+        let mut state = TuiState::new(entries, Navigation::Arrows);
+        // Simulate the 'a' key handler from event_loop
+        if let Some(entry) = state.selected_entry() {
+            if !entry.workflows.is_empty() {
+                let project = entry.project.name.clone();
+                let workflows = entry.workflows.clone();
+                state.modal = Some(Modal::WorkflowSelector { project, workflows, selected: 0 });
+            }
+        }
+        assert!(
+            matches!(state.modal, Some(Modal::WorkflowSelector { .. })),
+            "'a' with workflows should open WorkflowSelector modal"
+        );
+    }
+
+    #[test]
+    fn a_key_without_workflows_does_not_open_modal() {
+        // entries have workflows: vec![] by default from make_entries()
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // Simulate the 'a' key handler from event_loop
+        if let Some(entry) = state.selected_entry() {
+            if !entry.workflows.is_empty() {
+                let project = entry.project.name.clone();
+                let workflows = entry.workflows.clone();
+                state.modal = Some(Modal::WorkflowSelector { project, workflows, selected: 0 });
+            }
+        }
+        assert!(state.modal.is_none(), "'a' with no workflows should not open any modal");
     }
 }
