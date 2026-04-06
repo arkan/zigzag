@@ -6,6 +6,12 @@ pub trait ProjectStore {
     fn get_project(&self, name: &str) -> Result<Project>;
 }
 
+pub trait ProjectStoreWriter {
+    fn add_project(&mut self, project: &Project) -> Result<()>;
+    fn update_project(&mut self, project: &Project) -> Result<()>;
+    fn remove_project(&mut self, name: &str) -> Result<()>;
+}
+
 pub trait SessionManager {
     fn list_sessions(&self, project: &str) -> Result<Vec<Session>>;
     fn create_session(&self, project: &str, branch: &str, layout: Layout) -> Result<Session>;
