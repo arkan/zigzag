@@ -13,6 +13,21 @@ const DEFAULT_TAB_TEMPLATE: &str = "\
         }\n\
     }\n";
 
+/// Keybind block injected into every generated layout.
+/// Binds `Ctrl+s` to run `z switch` in a floating pane that closes on exit,
+/// providing a session-switcher accessible from any z-managed session.
+const KEYBINDS_BLOCK: &str = "\
+    keybinds {\n\
+        shared {\n\
+            bind \"Ctrl s\" {\n\
+                Run \"z\" \"switch\" {\n\
+                    floating true\n\
+                    close_on_exit true\n\
+                }\n\
+            }\n\
+        }\n\
+    }\n";
+
 /// Generate a Zellij KDL layout string from a `Layout`.
 ///
 /// Always includes a `default_tab_template` with `tab-bar` and `status-bar`
@@ -46,6 +61,7 @@ pub fn generate_layout_kdl(layout: &Layout) -> String {
         String::from("layout {\n")
     };
     out.push_str(DEFAULT_TAB_TEMPLATE);
+    out.push_str(KEYBINDS_BLOCK);
     for tab in &layout.tabs {
         out.push_str(&generate_tab_kdl(tab));
     }
@@ -407,5 +423,52 @@ mod tests {
     #[test]
     fn escape_kdl_string_with_both_quote_and_backslash() {
         assert_eq!(escape_kdl_string(r#"a\"b"#), r#"a\\\"b"#);
+    }
+
+    #[test]
+    fn generate_kdl_includes_keybinds_block() {
+        let layout = default_layout();
+        let kdl = generate_layout_kdl(&layout);
+        assert!(kdl.contains("keybinds {"), "layout must include keybinds block");
+        assert!(kdl.contains("shared {"), "keybinds must include shared block");
+        assert!(kdl.contains("bind \"Ctrl s\""), "keybinds must bind Ctrl s");
+        assert!(kdl.contains("Run \"z\" \"switch\""), "binding must run z switch");
+        assert!(kdl.contains("floating true"), "binding must set floating true");
+        assert!(kdl.contains("close_on_exit true"), "binding must set close_on_exit true");
+    }
+
+    #[test]
+    fn generate_kdl_keybinds_present_in_empty_layout() {
+        let layout = Layout { tabs: vec![], cwd: None };
+        let kdl = generate_layout_kdl(&layout);
+        assert!(kdl.contains("keybinds {"));
+        assert!(kdl.contains("bind \"Ctrl s\""));
+    }
+
+    #[test]
+    fn generate_kdl_keybinds_present_with_custom_tabs() {
+        let layout = Layout {
+            tabs: vec![Tab {
+                name: "work".to_string(),
+                panes: vec![Pane { command: Some("vim".to_string()), args: vec![] }],
+            }],
+            cwd: Some(std::path::PathBuf::from("/some/path")),
+        };
+        let kdl = generate_layout_kdl(&layout);
+        assert!(kdl.contains("keybinds {"));
+        assert!(kdl.contains("bind \"Ctrl s\""));
+        assert!(kdl.contains("tab name=\"work\""));
+    }
+
+    #[test]
+    fn generate_kdl_keybinds_appears_before_tabs() {
+        let layout = default_layout();
+        let kdl = generate_layout_kdl(&layout);
+        let keybinds_pos = kdl.find("keybinds {").unwrap();
+        let first_tab_pos = kdl.find("tab name=").unwrap();
+        assert!(
+            keybinds_pos < first_tab_pos,
+            "keybinds block must appear before tab definitions"
+        );
     }
 }
