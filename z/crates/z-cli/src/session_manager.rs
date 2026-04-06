@@ -30,14 +30,11 @@ impl SessionManager for ZellijSessionManager {
         let session = Session::new(project, branch);
         let kdl = z_core::layout::generate_layout_kdl(&layout);
         let layout_path = write_temp_layout(&kdl)?;
-        // Clear Zellij's own env vars before spawning: when `z` is launched from
-        // inside an existing Zellij session these vars are set, and Zellij
-        // interprets `--session <name>` as "attach to <name>" rather than
-        // "create <name>", causing a "Session not found" crash for new sessions.
+        // Use `-n` (--new-session-with-layout) instead of `-l` (--layout):
+        // `-l` with `--session` tries to add tabs to an *existing* session,
+        // while `-n` always creates a new session with the given layout.
         let result = Command::new("zellij")
-            .args(["--session", &session.name, "--layout", &layout_path])
-            .env_remove("ZELLIJ")
-            .env_remove("ZELLIJ_SESSION_NAME")
+            .args(["--session", &session.name, "-n", &layout_path])
             .status()
             .map_err(|e| ZError::Session(e.to_string()));
         // Clean up temp file regardless of outcome.
