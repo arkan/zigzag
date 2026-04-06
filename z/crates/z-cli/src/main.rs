@@ -697,18 +697,16 @@ fn prune_summary() -> z_core::error::Result<String> {
         return Ok("Nothing to prune.".to_string());
     }
 
-    let mut killed = 0usize;
-    let mut removed = 0usize;
+    let killed = all_orphaned_sessions.len();
+    let removed = all_orphaned_worktrees.len();
 
     for session in &all_orphaned_sessions {
         session_mgr.kill_session(session)?;
-        killed += 1;
     }
 
     for (wt, project_path) in &all_orphaned_worktrees {
         let wt_mgr = WtWorktreeManager::new(project_path.clone());
         wt_mgr.remove_worktree(wt)?;
-        removed += 1;
     }
 
     Ok(format!("Pruned: {} session(s) killed, {} worktree(s) removed.", killed, removed))

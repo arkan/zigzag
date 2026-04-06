@@ -4426,6 +4426,22 @@ mod tests {
     }
 
     #[test]
+    fn status_message_shown_with_empty_entries() {
+        let mut state = TuiState::new(vec![], Navigation::Arrows);
+        state.status_message = Some("Nothing to prune.".to_string());
+        let out = render_to_string(&state, 120, 24);
+        assert!(
+            out.contains("Nothing to prune"),
+            "status bar should show status_message even when there are no projects"
+        );
+        // Should NOT fall through to "No projects" default text
+        assert!(
+            !out.contains("No projects"),
+            "status_message should take priority over the 'No projects' fallback"
+        );
+    }
+
+    #[test]
     fn backtab_from_path_field_validates_path() {
         let mut modal = Modal::AddProject(ProjectForm::new());
         if let Modal::AddProject(ref mut form) = modal {
