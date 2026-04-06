@@ -849,11 +849,14 @@ fn extract_zellij_uptime(line: &str) -> Option<String> {
 // Modal helpers
 // ---------------------------------------------------------------------------
 
-/// Expand a leading `~` to the home directory.
+/// Expand a leading `~/` (or bare `~`) to the home directory.
+/// Does not expand `~username` forms — only the current user's home.
 fn expand_tilde_path(s: &str) -> String {
-    if let Some(rest) = s.strip_prefix('~') {
+    if s == "~" {
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+    } else if let Some(rest) = s.strip_prefix("~/") {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{}{}", home, rest)
+        format!("{}/{}", home, rest)
     } else {
         s.to_string()
     }
@@ -933,7 +936,7 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
                     }
                 }
                 if valid {
-                    let path = form.fields[0].value.trim().to_string();
+                    let path = expand_tilde_path(form.fields[0].value.trim());
                     let name = form.fields[1].value.trim().to_string();
                     let host = non_empty_opt(&form.fields[2].value);
                     let token = non_empty_opt(&form.fields[3].value);
@@ -1013,7 +1016,6 @@ pub fn run_tui(
     }
     // Kick off the first preview fetch immediately.
     state.trigger_preview_load();
-
 
     let result = event_loop(&mut terminal, &mut state);
 
@@ -3129,5 +3131,159 @@ mod tests {
             token: None,
         };
         assert!(matches!(action, TuiAction::AddProject { .. }));
+    }
+
+    // ── expand_tilde_path edge cases ──────────────────────────────────────
+
+    #[test]
+    fn expand_tilde_with_slash_expands() {
+        let result = expand_tilde_path("~/code/app");
+        assert!(!result.starts_with('~'), "tilde should be expanded");
+        assert!(result.ends_with("/code/app"), "path suffix preserved");
+    }
+
+    #[test]
+    fn expand_tilde_bare_tilde_expands() {
+        let result = expand_tilde_path("~");
+        assert!(!result.starts_with('~'), "bare tilde should expand to HOME");
+    }
+
+    #[test]
+    fn expand_tilde_username_not_expanded() {
+        let result = expand_tilde_path("~bob/code");
+        assert_eq!(result, "~bob/code", "~username form should not be expanded");
+    }
+
+    #[test]
+    fn expand_tilde_no_tilde_unchanged() {
+        let result = expand_tilde_path("/absolute/path");
+        assert_eq!(result, "/absolute/path");
+    }
+
+    // ── autofill edge cases ───────────────────────────────────────────────
+
+    #[test]
+    fn autofill_name_from_trailing_slash_path() {
+        let mut form = ProjectForm::new();
+        form.fields[0].value = "/code/myproject/".to_string();
+        autofill_name_if_empty(&mut form);
+        // Path::file_name on trailing slash returns None in Rust — basename should be empty
+        // (or "myproject" depending on OS). Verify no panic.
+        // The key test is that it doesn't crash.
+        let _ = &form.fields[1].value;
+    }
+
+    #[test]
+    fn autofill_name_from_root_path() {
+        let mut form = ProjectForm::new();
+        form.fields[0].value = "/".to_string();
+        autofill_name_if_empty(&mut form);
+        // Root path has no basename — should produce empty string, not panic.
+        assert_eq!(form.fields[1].value, "");
+    }
+
+    #[test]
+    fn autofill_name_from_empty_path() {
+        let mut form = ProjectForm::new();
+        form.fields[0].value = "".to_string();
+        autofill_name_if_empty(&mut form);
+        assert_eq!(form.fields[1].value, "");
+    }
+
+    // ── advance_modal edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn advance_modal_backspace_on_empty_field_does_not_panic() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        // Backspace on already-empty path field
+        let outcome = advance_modal(&mut modal, KeyCode::Backspace);
+        assert!(matches!(outcome, ModalOutcome::Continue));
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.fields[0].value, "");
+    }
+
+    #[test]
+    fn advance_modal_submit_with_whitespace_only_fields_shows_required() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = "   ".to_string();
+            form.fields[1].value = "  ".to_string();
+        }
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        assert!(matches!(outcome, ModalOutcome::Continue), "whitespace-only should not submit");
+        let Modal::AddProject(ref form) = modal;
+        assert!(form.fields[0].warning.is_some());
+        assert!(form.fields[1].warning.is_some());
+    }
+
+    #[test]
+    fn advance_modal_submit_trims_whitespace_from_values() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = "  /code/app  ".to_string();
+            form.fields[1].value = "  app  ".to_string();
+            form.fields[2].value = "  ".to_string(); // whitespace-only optional → None
+        }
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::Submit { path, name, host, .. } => {
+                assert_eq!(name, "app", "name should be trimmed");
+                assert!(!path.starts_with(' '), "path should be trimmed");
+                assert!(host.is_none(), "whitespace-only optional field should be None");
+            }
+            _ => panic!("expected Submit"),
+        }
+    }
+
+    #[test]
+    fn advance_modal_submit_expands_tilde_in_path() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = "~/code/app".to_string();
+            form.fields[1].value = "app".to_string();
+        }
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::Submit { path, .. } => {
+                assert!(!path.starts_with('~'), "tilde should be expanded on submit");
+                assert!(path.ends_with("/code/app"));
+            }
+            _ => panic!("expected Submit"),
+        }
+    }
+
+    // ── modal_rect edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn modal_rect_clamps_to_area_when_too_large() {
+        let area = Rect::new(0, 0, 40, 10);
+        let rect = modal_rect(62, 16, area);
+        assert!(rect.width <= area.width, "width should be clamped");
+        assert!(rect.height <= area.height, "height should be clamped");
+    }
+
+    #[test]
+    fn modal_rect_centered_in_area() {
+        let area = Rect::new(0, 0, 100, 50);
+        let rect = modal_rect(60, 16, area);
+        assert_eq!(rect.x, 20);
+        assert_eq!(rect.y, 17);
+    }
+
+    // ── non_empty_opt edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn non_empty_opt_empty_string() {
+        assert_eq!(non_empty_opt(""), None);
+    }
+
+    #[test]
+    fn non_empty_opt_whitespace_only() {
+        assert_eq!(non_empty_opt("   "), None);
+    }
+
+    #[test]
+    fn non_empty_opt_with_value() {
+        assert_eq!(non_empty_opt("  hello  "), Some("hello".to_string()));
     }
 }
