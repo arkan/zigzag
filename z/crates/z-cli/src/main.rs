@@ -771,6 +771,41 @@ mod tests {
     }
 
     #[test]
+    fn format_run_status_shows_failed_status() {
+        let mut run = z_autopilot::state::WorkflowRun::new("wf1", "proj", "step1");
+        run.status = WorkflowStatus::Failed;
+        let runs = vec![&run];
+        let output = format_run_status(&runs);
+        assert!(output.contains("failed"), "must show failed status");
+    }
+
+    #[test]
+    fn format_run_status_shows_stuck_status() {
+        let mut run = z_autopilot::state::WorkflowRun::new("wf1", "proj", "step1");
+        run.status = WorkflowStatus::Stuck;
+        let runs = vec![&run];
+        let output = format_run_status(&runs);
+        assert!(output.contains("stuck"), "must show stuck status");
+    }
+
+    #[test]
+    fn format_workflow_list_single_with_no_description() {
+        use z_autopilot::dsl::{AutopilotWorkflow, Trigger};
+        let wf = AutopilotWorkflow {
+            name: "test-wf".to_string(),
+            description: None,
+            trigger: Trigger::Manual,
+            poll_interval: None,
+            steps: vec![],
+            auto_push: None,
+            review: None,
+        };
+        let output = format_workflow_list(&[wf]);
+        assert!(output.contains("test-wf"));
+        assert!(output.contains("manual"));
+    }
+
+    #[test]
     fn format_run_status_multiple_runs() {
         let run1 = z_autopilot::state::WorkflowRun::new("wf1", "proj-a", "step1");
         let run2 = z_autopilot::state::WorkflowRun::new("wf2", "proj-b", "step2");
@@ -813,9 +848,10 @@ fn cmd_autopilot_dispatch(sub: Option<&str>, args: &[String]) -> z_core::error::
             cmd_autopilot_status(project_filter)
         }
         Some(unknown) => {
-            eprintln!("unknown autopilot subcommand: {:?}", unknown);
-            eprintln!("usage: z autopilot [list|status]");
-            std::process::exit(1);
+            Err(z_core::error::ZError::Io(format!(
+                "unknown autopilot subcommand: {:?}\nusage: z autopilot [list|status]",
+                unknown
+            )))
         }
     }
 }
@@ -830,9 +866,10 @@ pub fn cmd_autopilot_list(project_path: Option<&std::path::Path>) -> z_core::err
     if let Some(path) = project_path {
         let repo_config_path = path.join(".config").join("z.kdl");
         if let Ok(content) = fs::read_to_string(&repo_config_path) {
-            let custom = z_autopilot::dsl::parse_autopilot_workflows(&content)
-                .unwrap_or_default();
-            all_workflows.extend(custom);
+            match z_autopilot::dsl::parse_autopilot_workflows(&content) {
+                Ok(custom) => all_workflows.extend(custom),
+                Err(e) => eprintln!("warning: failed to parse {}: {}", repo_config_path.display(), e),
+            }
         }
     }
 
