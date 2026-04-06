@@ -142,62 +142,73 @@ fn cmd_tui() -> z_core::error::Result<()> {
     let session_mgr = ZellijSessionManager;
     let global = load_global_config();
 
-    let projects = store.list_projects()?;
-
-    let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
-    for project in &projects {
-        let sessions = session_mgr.list_sessions(&project.name)?;
-        entries.push(ProjectEntry { project: project.clone(), sessions });
-    }
-
     let navigation = match global.navigation.as_deref() {
         Some("vim") => Navigation::Vim,
         _ => Navigation::Arrows,
     };
 
-    // Load pending notifications so the TUI can display 🔔 badges.
-    let notifications: HashSet<String> =
-        z_core::notification::sessions_with_notifications().into_iter().collect();
+    loop {
+        let projects = store.list_projects()?;
 
-    let action = z_tui::run_tui(entries, navigation, notifications)
-        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+        let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
+        for project in &projects {
+            let sessions = session_mgr.list_sessions(&project.name)?;
+            entries.push(ProjectEntry { project: project.clone(), sessions });
+        }
 
-    match action {
-        TuiAction::Quit => {}
+        // Load pending notifications so the TUI can display 🔔 badges.
+        let notifications: HashSet<String> =
+            z_core::notification::sessions_with_notifications().into_iter().collect();
 
-        TuiAction::Open { project, session } => {
-            // Clear notifications for the session being opened.
-            if let Some(ref s) = session {
-                let _ = z_core::notification::clear_notifications(s);
+        let action = z_tui::run_tui(entries, navigation, notifications)
+            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+
+        match action {
+            TuiAction::Quit => return Ok(()),
+
+            TuiAction::Open { project, session } => {
+                // Clear notifications for the session being opened.
+                if let Some(ref s) = session {
+                    let _ = z_core::notification::clear_notifications(s);
+                }
+                // Extract branch from "project:branch" session name, or open default.
+                let branch_owned: Option<String> = session
+                    .as_deref()
+                    .and_then(|s| parse_session_name(s))
+                    .map(|(_, b)| b);
+                cmd_open(&project, branch_owned.as_deref())?;
+                return Ok(());
             }
-            // Extract branch from "project:branch" session name, or open default.
-            let branch_owned: Option<String> = session
-                .as_deref()
-                .and_then(|s| parse_session_name(s))
-                .map(|(_, b)| b);
-            cmd_open(&project, branch_owned.as_deref())?;
-        }
 
-        TuiAction::New { project } => {
-            cmd_open(&project, None)?;
-        }
+            TuiAction::New { project } => {
+                cmd_open(&project, None)?;
+                return Ok(());
+            }
 
-        TuiAction::Delete { session } => {
-            cmd_delete(&session)?;
-        }
+            TuiAction::Delete { session } => {
+                cmd_delete(&session)?;
+                return Ok(());
+            }
 
-        TuiAction::Prune => {
-            cmd_prune(false)?;
-        }
+            TuiAction::Prune => {
+                cmd_prune(false)?;
+                return Ok(());
+            }
 
-        TuiAction::Autopilot { project } => {
-            let store = KdlProjectStore::new();
-            let project_path = store.get_project(&project).ok().map(|p| p.path);
-            cmd_autopilot_list(project_path.as_deref())?;
+            TuiAction::Autopilot { project } => {
+                let store = KdlProjectStore::new();
+                let project_path = store.get_project(&project).ok().map(|p| p.path);
+                cmd_autopilot_list(project_path.as_deref())?;
+                return Ok(());
+            }
+
+            TuiAction::EditPerRepoConfig { project_path } => {
+                // Edit the config, then loop back to re-enter the TUI.
+                cmd_edit_per_repo_config(&project_path)?;
+                // continue the loop → re-enter the TUI
+            }
         }
     }
-
-    Ok(())
 }
 
 fn load_global_config() -> GlobalConfig {
@@ -218,6 +229,57 @@ fn load_per_repo_config(project_path: &std::path::Path) -> PerRepoConfig {
         Ok(content) => parse_per_repo_config_kdl(&content).unwrap_or_default(),
         Err(_) => PerRepoConfig::default(),
     }
+}
+
+fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> z_core::error::Result<()> {
+    let config_dir = project_path.join(".config");
+    let config_file = config_dir.join("z.kdl");
+
+    // Create .config/ directory if missing.
+    if !config_dir.exists() {
+        fs::create_dir_all(&config_dir)
+            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+    }
+
+    // Create the file with a commented template if it doesn't exist.
+    if !config_file.exists() {
+        let template = "\
+// Per-repo z configuration
+// Available options are shown below (all optional).
+
+// layout \"compact\"    // override the default layout: \"default\" | \"compact\" | \"minimal\"
+
+// claude {
+//   args \"--model\" \"claude-3-7-sonnet-20250219\"   // extra CLI args passed to claude
+// }
+
+// deploy {
+//   command \"npm run deploy\"   // command run by `z deploy`
+// }
+
+// autopilot {
+//   auto-push true     // automatically push commits
+//   review true        // open a PR after each autopilot session
+// }
+";
+        fs::write(&config_file, template)
+            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+    }
+
+    // Determine editor: $EDITOR, falling back to vi.
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+
+    // Spawn editor and wait for it to exit.
+    let status = std::process::Command::new(&editor)
+        .arg(&config_file)
+        .status()
+        .map_err(|e| z_core::error::ZError::Io(format!("failed to launch editor '{}': {}", editor, e)))?;
+
+    if !status.success() {
+        eprintln!("editor exited with status: {}", status);
+    }
+
+    Ok(())
 }
 
 fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<()> {
@@ -815,6 +877,57 @@ mod tests {
         assert!(output.contains("proj-b"));
         assert!(output.contains("wf1"));
         assert!(output.contains("wf2"));
+    }
+
+    // ── cmd_edit_per_repo_config tests ────────────────────────────────────────
+
+    fn unique_test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("z_test_{}", name));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn edit_per_repo_config_creates_config_dir_and_template() {
+        let project_path = unique_test_dir("create_template");
+        // Neither .config/ nor .config/z.kdl exist yet.
+        assert!(!project_path.join(".config").exists());
+
+        // Use "true" as editor so the test doesn't open an actual editor.
+        std::env::set_var("EDITOR", "true");
+        cmd_edit_per_repo_config(&project_path).expect("should succeed");
+
+        let config_file = project_path.join(".config").join("z.kdl");
+        assert!(config_file.exists(), ".config/z.kdl should be created");
+        let contents = fs::read_to_string(&config_file).unwrap();
+        assert!(contents.contains("layout"), "template should mention layout");
+        assert!(contents.contains("claude"), "template should mention claude");
+        assert!(contents.contains("deploy"), "template should mention deploy");
+        assert!(contents.contains("autopilot"), "template should mention autopilot");
+    }
+
+    #[test]
+    fn edit_per_repo_config_does_not_overwrite_existing_file() {
+        let project_path = unique_test_dir("no_overwrite");
+        let config_dir = project_path.join(".config");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_file = config_dir.join("z.kdl");
+        let original = "layout \"compact\"\n";
+        fs::write(&config_file, original).unwrap();
+
+        std::env::set_var("EDITOR", "true");
+        cmd_edit_per_repo_config(&project_path).expect("should succeed");
+
+        let contents = fs::read_to_string(&config_file).unwrap();
+        assert_eq!(contents, original, "existing file should not be overwritten");
+    }
+
+    #[test]
+    fn edit_per_repo_config_succeeds_with_editor_set() {
+        let project_path = unique_test_dir("editor_set");
+        std::env::set_var("EDITOR", "true");
+        cmd_edit_per_repo_config(&project_path).expect("should succeed with EDITOR=true");
     }
 }
 
