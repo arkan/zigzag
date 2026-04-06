@@ -1127,8 +1127,12 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             }
 
             KeyCode::BackTab => {
+                let was_path = form.active_field == 0;
                 form.active_field =
                     (form.active_field + form.fields.len() - 1) % form.fields.len();
+                if was_path {
+                    validate_path_field(form);
+                }
                 ModalOutcome::Continue
             }
 
@@ -4428,5 +4432,14 @@ mod tests {
         let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
         assert_eq!(form.active_field, 3, "BackTab from field 0 wraps to last field");
         assert!(form.fields[0].warning.is_some(), "path validation should run when leaving field 0 via BackTab");
+    }
+
+    #[test]
+    fn edit_modal_backtab_from_path_field_validates_path() {
+        let mut modal = make_edit_modal("myapp", "/nonexistent/path/that/does/not/exist");
+        advance_modal(&mut modal, KeyCode::BackTab);
+        let Modal::EditProject(ref form, _) = modal else { panic!("expected EditProject modal") };
+        assert_eq!(form.active_field, 3, "BackTab from field 0 wraps to last field");
+        assert!(form.fields[0].warning.is_some(), "path validation should run when leaving field 0 via BackTab in EditProject");
     }
 }
