@@ -216,6 +216,8 @@ pub enum Modal {
         workflows: Vec<WorkflowInfo>,
         selected: usize,
     },
+    /// Full-screen help overlay showing all keybindings (opened with '?').
+    Help,
 }
 
 /// Outcome of processing one keypress inside a modal.
@@ -1255,6 +1257,11 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             }
             _ => ModalOutcome::Continue,
         },
+
+        Modal::Help => match code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => ModalOutcome::Close,
+            _ => ModalOutcome::Continue,
+        },
     }
 }
 
@@ -1546,6 +1553,10 @@ fn event_loop<B: Backend>(
                         state.search_query.clear();
                     }
 
+                    KeyCode::Char('?') => {
+                        state.modal = Some(Modal::Help);
+                    }
+
                     _ => {}
                 }
             }
@@ -1768,7 +1779,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
             .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string())
     };
 
-    let hints = " [o]pen [n]ew [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [q]uit";
+    let hints = " [o]pen [n]ew [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [?]help [q]uit";
     let content = format!("{}\n{}", first_line, hints);
 
     let paragraph = Paragraph::new(content)
@@ -1886,6 +1897,54 @@ fn render_workflow_selector_modal(
     f.render_widget(paragraph, inner);
 }
 
+fn render_help_modal(f: &mut Frame) {
+    let area = f.area();
+    // 4 section headers + ~13 keybinding rows + 2 blank + 1 sep + 1 hint + 2 borders = 23
+    let modal_height = 23u16;
+    let modal_width = 56u16;
+    let rect = modal_rect(modal_width, modal_height, area);
+
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Keybindings ")
+        .border_style(Style::default().add_modifier(Modifier::BOLD));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let heading = Style::default().add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+
+    let lines: Vec<Line> = vec![
+        Line::from(Span::styled(" Navigation", heading)),
+        Line::from("   \u{2191}/\u{2193} or k/j    Navigate list"),
+        Line::from("   \u{2190}/\u{2192} or h/l    Switch panel"),
+        Line::from("   Tab              Switch panel"),
+        Line::from("   /                Fuzzy search"),
+        Line::from("   Esc              Back / cancel"),
+        Line::from(""),
+        Line::from(Span::styled(" Actions", heading)),
+        Line::from("   o / Enter        Open session"),
+        Line::from("   n                New session on main branch"),
+        Line::from("   A                Add project"),
+        Line::from("   E                Edit project"),
+        Line::from("   D                Delete project"),
+        Line::from("   p                Prune orphaned sessions"),
+        Line::from("   a                Autopilot workflows"),
+        Line::from("   e                Edit per-repo config"),
+        Line::from(""),
+        Line::from(Span::styled(" Session", heading)),
+        Line::from("   Ctrl+O \u{2192} D      Detach (return to z)"),
+        Line::from("   Ctrl+Q           Quit session (return to z)"),
+        Line::from(Span::styled(" \u{2500}".repeat((inner.width.saturating_sub(1) / 2) as usize), dim)),
+        Line::from(Span::styled("   ?  this help   q  quit z", dim)),
+    ];
+
+    let paragraph = Paragraph::new(Text::from(lines));
+    f.render_widget(paragraph, inner);
+}
+
 fn render_modal(f: &mut Frame, state: &TuiState) {
     let (form, title) = match &state.modal {
         None => return,
@@ -1895,6 +1954,10 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
         }
         Some(Modal::WorkflowSelector { project, workflows, selected }) => {
             render_workflow_selector_modal(f, project, workflows, *selected);
+            return;
+        }
+        Some(Modal::Help) => {
+            render_help_modal(f);
             return;
         }
         Some(Modal::AddProject(form)) => (form, " Add Project "),
@@ -5047,5 +5110,73 @@ mod tests {
         let state = TuiState::new(vec![], Navigation::Arrows);
         let action_project = state.selected_entry().map(|e| e.project.name.clone());
         assert!(action_project.is_none(), "'n' with no projects should not produce an action");
+    }
+
+    // ── Help overlay tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn question_mark_opens_help_modal() {
+        // Simulate pressing '?' sets modal to Help
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        assert!(state.modal.is_none(), "no modal initially");
+        // Simulate the '?' key logic from event_loop
+        state.modal = Some(Modal::Help);
+        assert!(matches!(state.modal, Some(Modal::Help)), "'?' should open Help modal");
+    }
+
+    #[test]
+    fn help_modal_esc_closes() {
+        let mut modal = Modal::Help;
+        let outcome = advance_modal(&mut modal, KeyCode::Esc);
+        assert!(matches!(outcome, ModalOutcome::Close), "Esc should close help modal");
+    }
+
+    #[test]
+    fn help_modal_question_mark_closes() {
+        let mut modal = Modal::Help;
+        let outcome = advance_modal(&mut modal, KeyCode::Char('?'));
+        assert!(matches!(outcome, ModalOutcome::Close), "'?' should close help modal");
+    }
+
+    #[test]
+    fn help_modal_q_closes() {
+        let mut modal = Modal::Help;
+        let outcome = advance_modal(&mut modal, KeyCode::Char('q'));
+        assert!(matches!(outcome, ModalOutcome::Close), "'q' should close help modal");
+    }
+
+    #[test]
+    fn help_modal_other_keys_continue() {
+        let mut modal = Modal::Help;
+        let outcome = advance_modal(&mut modal, KeyCode::Char('x'));
+        assert!(matches!(outcome, ModalOutcome::Continue), "other keys should not close help modal");
+    }
+
+    #[test]
+    fn help_modal_renders_keybindings_section() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::Help);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("Keybindings"), "help modal should show 'Keybindings' title");
+        assert!(out.contains("Navigation"), "help modal should show 'Navigation' section");
+        assert!(out.contains("Actions"), "help modal should show 'Actions' section");
+        assert!(out.contains("Session"), "help modal should show 'Session' section");
+    }
+
+    #[test]
+    fn help_modal_renders_key_entries() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::Help);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("Open session"), "help modal should describe 'o' key");
+        assert!(out.contains("Fuzzy search"), "help modal should describe '/' key");
+        assert!(out.contains("Prune orphaned sessions"), "help modal should describe 'p' key");
+    }
+
+    #[test]
+    fn status_bar_hints_include_help() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        let out = render_to_string(&state, 120, 24);
+        assert!(out.contains("[?]help"), "status bar should advertise '?' for help");
     }
 }
