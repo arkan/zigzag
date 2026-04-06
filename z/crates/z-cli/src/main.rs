@@ -28,7 +28,7 @@ use crate::notify::DispatchNotifier;
 use crate::session_manager::{parse_session_name, ZellijSessionManager};
 use crate::worktree_manager::WtWorktreeManager;
 
-use z_tui::{Navigation, ProjectEntry, TuiAction};
+use z_tui::{Navigation, ProjectEntry, TuiAction, WorkflowInfo};
 
 fn main() {
     let checker = ProcessDepChecker;
@@ -154,6 +154,9 @@ fn cmd_tui() -> z_core::error::Result<()> {
     loop {
         let projects = store.list_projects()?;
 
+        // Load built-in workflows once; they are the same for every project.
+        let builtin: Vec<AutopilotWorkflow> = builtin_workflows().unwrap_or_default();
+
         let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
         for project in &projects {
             let sessions = session_mgr.list_sessions(&project.name)?;
@@ -161,7 +164,26 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 .list_worktrees(&project.name)
                 .map(|wts| wts.len())
                 .unwrap_or(0);
-            entries.push(ProjectEntry { project: project.clone(), sessions, worktree_count });
+
+            // Combine built-in workflows with any per-repo custom workflows.
+            let mut all_workflows: Vec<AutopilotWorkflow> = builtin.clone();
+            let repo_config_path = project.path.join(".config").join("z.kdl");
+            if let Ok(content) = fs::read_to_string(&repo_config_path) {
+                if let Ok(custom) = z_autopilot::dsl::parse_autopilot_workflows(&content) {
+                    all_workflows.extend(custom);
+                }
+            }
+
+            let workflows: Vec<WorkflowInfo> = all_workflows
+                .iter()
+                .map(|wf| WorkflowInfo {
+                    name: wf.name.clone(),
+                    trigger: wf.trigger.as_str().to_string(),
+                    description: wf.description.clone().unwrap_or_default(),
+                })
+                .collect();
+
+            entries.push(ProjectEntry { project: project.clone(), sessions, worktree_count, workflows });
         }
 
         // Load pending notifications so the TUI can display 🔔 badges.
@@ -220,10 +242,12 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 return Ok(());
             }
 
-            TuiAction::Autopilot { project } => {
-                let project_path = store.get_project(&project).ok().map(|p| p.path);
-                cmd_autopilot_list(project_path.as_deref())?;
-                return Ok(());
+            TuiAction::Autopilot { project, workflow: _ } => {
+                // Workflow selected — keep the selected project highlighted and
+                // loop back into the TUI. Actual workflow execution is handled
+                // by the `z autopilot run` subcommand (future work).
+                initial_project = Some(project);
+                // continue the loop
             }
 
             TuiAction::EditPerRepoConfig { project_path } => {
