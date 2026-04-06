@@ -46,6 +46,16 @@ const KEYBINDS_BLOCK: &str = "\
 ///             plugin location="status-bar"
 ///         }
 ///     }
+///     keybinds {
+///         shared {
+///             bind "Ctrl s" {
+///                 Run "z" "switch" {
+///                     floating true
+///                     close_on_exit true
+///                 }
+///             }
+///         }
+///     }
 ///     tab name="claude" {
 ///         pane command="claude"
 ///     }
@@ -458,6 +468,18 @@ mod tests {
         assert!(kdl.contains("keybinds {"));
         assert!(kdl.contains("bind \"Ctrl s\""));
         assert!(kdl.contains("tab name=\"work\""));
+    }
+
+    #[test]
+    fn generate_kdl_keybinds_appears_after_tab_template() {
+        let layout = default_layout();
+        let kdl = generate_layout_kdl(&layout);
+        let template_pos = kdl.find("default_tab_template").unwrap();
+        let keybinds_pos = kdl.find("keybinds {").unwrap();
+        assert!(
+            template_pos < keybinds_pos,
+            "keybinds block must appear after default_tab_template"
+        );
     }
 
     #[test]
