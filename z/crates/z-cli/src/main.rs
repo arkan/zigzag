@@ -235,11 +235,9 @@ fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> z_core::error::Re
     let config_dir = project_path.join(".config");
     let config_file = config_dir.join("z.kdl");
 
-    // Create .config/ directory if missing.
-    if !config_dir.exists() {
-        fs::create_dir_all(&config_dir)
-            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
-    }
+    // Create .config/ directory if missing (create_dir_all is a no-op if it exists).
+    fs::create_dir_all(&config_dir)
+        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
     // Create the file with a commented template if it doesn't exist.
     if !config_file.exists() {
@@ -928,6 +926,30 @@ mod tests {
         let project_path = unique_test_dir("editor_set");
         std::env::set_var("EDITOR", "true");
         cmd_edit_per_repo_config(&project_path).expect("should succeed with EDITOR=true");
+    }
+
+    #[test]
+    fn edit_per_repo_config_returns_error_for_missing_editor() {
+        let project_path = unique_test_dir("missing_editor");
+        std::env::set_var("EDITOR", "/nonexistent/editor/binary");
+        let result = cmd_edit_per_repo_config(&project_path);
+        assert!(result.is_err(), "should fail when editor binary doesn't exist");
+    }
+
+    #[test]
+    fn edit_per_repo_config_preserves_existing_config_dir() {
+        let project_path = unique_test_dir("existing_config_dir");
+        let config_dir = project_path.join(".config");
+        fs::create_dir_all(&config_dir).unwrap();
+        // Place an unrelated file to prove the directory isn't recreated/destroyed.
+        let marker = config_dir.join("other.txt");
+        fs::write(&marker, "keep me").unwrap();
+
+        std::env::set_var("EDITOR", "true");
+        cmd_edit_per_repo_config(&project_path).expect("should succeed");
+
+        assert!(marker.exists(), "unrelated files in .config/ should be preserved");
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "keep me");
     }
 }
 
