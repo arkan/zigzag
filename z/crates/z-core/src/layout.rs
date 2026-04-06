@@ -19,7 +19,7 @@ const DEFAULT_TAB_TEMPLATE: &str = "\
 const KEYBINDS_BLOCK: &str = "\
     keybinds {\n\
         shared {\n\
-            bind \"Ctrl s\" {\n\
+            bind \"Ctrl k\" {\n\
                 Run \"z\" \"switch\" {\n\
                     floating true\n\
                     close_on_exit true\n\
@@ -42,7 +42,7 @@ const KEYBINDS_BLOCK: &str = "\
 /// }
 /// keybinds {
 ///     shared {
-///         bind "Ctrl s" { ... }
+///         bind "Ctrl k" { ... }
 ///     }
 /// }
 /// ```
@@ -423,7 +423,7 @@ mod tests {
         let kdl = generate_layout_kdl(&layout);
         assert!(kdl.contains("keybinds {"), "layout must include keybinds block");
         assert!(kdl.contains("shared {"), "keybinds must include shared block");
-        assert!(kdl.contains("bind \"Ctrl s\""), "keybinds must bind Ctrl s");
+        assert!(kdl.contains("bind \"Ctrl k\""), "keybinds must bind Ctrl k");
         assert!(kdl.contains("Run \"z\" \"switch\""), "binding must run z switch");
         assert!(kdl.contains("floating true"), "binding must set floating true");
         assert!(kdl.contains("close_on_exit true"), "binding must set close_on_exit true");
@@ -434,7 +434,7 @@ mod tests {
         let layout = Layout { tabs: vec![], cwd: None };
         let kdl = generate_layout_kdl(&layout);
         assert!(kdl.contains("keybinds {"));
-        assert!(kdl.contains("bind \"Ctrl s\""));
+        assert!(kdl.contains("bind \"Ctrl k\""));
     }
 
     #[test]
@@ -448,7 +448,7 @@ mod tests {
         };
         let kdl = generate_layout_kdl(&layout);
         assert!(kdl.contains("keybinds {"));
-        assert!(kdl.contains("bind \"Ctrl s\""));
+        assert!(kdl.contains("bind \"Ctrl k\""));
         assert!(kdl.contains("tab name=\"work\""));
     }
 
