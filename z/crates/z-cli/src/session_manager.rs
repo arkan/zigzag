@@ -64,8 +64,8 @@ impl SessionManager for ZellijSessionManager {
             .args(["--session", &session.name, "-n", &layout_path])
             .status()
             .map_err(|e| ZError::Session(e.to_string()));
-        // Clean up temp file regardless of outcome.
-        let _ = std::fs::remove_file(&layout_path);
+        // Keep temp file for debugging — will be overwritten on next run.
+        // let _ = std::fs::remove_file(&layout_path);
         let status = result?;
         if !status.success() {
             return Err(ZError::Session(format!(
