@@ -905,6 +905,73 @@ fn non_empty_opt(s: &str) -> Option<String> {
     if t.is_empty() { None } else { Some(t.to_string()) }
 }
 
+/// List matching directory entries for tab-completion on a partial path.
+/// Expands `~` before processing. Returns only directories, sorted.
+/// Returns an empty vec for empty input or unreadable directories.
+fn complete_path(partial: &str) -> Vec<String> {
+    let trimmed = partial.trim();
+    if trimmed.is_empty() {
+        return vec![];
+    }
+    let expanded = expand_tilde_path(trimmed);
+
+    // Split into parent directory and the prefix to match.
+    let (dir, prefix): (&str, &str) = if expanded.ends_with('/') {
+        (expanded.as_str(), "")
+    } else {
+        let p = std::path::Path::new(&expanded);
+        let parent = p.parent().and_then(|p| p.to_str()).unwrap_or(".");
+        let file = p.file_name().and_then(|f| f.to_str()).unwrap_or("");
+        (parent, file)
+    };
+
+    let dir_path = if dir.is_empty() { "." } else { dir };
+
+    let Ok(entries) = std::fs::read_dir(dir_path) else {
+        return vec![];
+    };
+
+    let mut matches: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            if name.starts_with(prefix) {
+                let full = std::path::Path::new(dir_path).join(&name);
+                Some(full.to_str()?.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    matches.sort();
+    matches
+}
+
+/// Compute the longest common prefix of a non-empty slice of strings.
+/// Returns an empty string if the slice is empty.
+fn longest_common_prefix(strs: &[String]) -> String {
+    if strs.is_empty() {
+        return String::new();
+    }
+    let first = strs[0].as_str();
+    let mut prefix_len = first.len();
+    for s in &strs[1..] {
+        let new_len: usize = first
+            .char_indices()
+            .zip(s.chars())
+            .take_while(|((_, a), b)| a == b)
+            .last()
+            .map(|((i, c), _)| i + c.len_utf8())
+            .unwrap_or(0);
+        if new_len < prefix_len {
+            prefix_len = new_len;
+        }
+    }
+    first[..prefix_len].to_string()
+}
+
 /// Process one keypress inside the given modal. Mutates modal state in place.
 /// Returns the outcome: whether to close, submit with data, or continue.
 fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
@@ -913,13 +980,43 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             KeyCode::Esc => ModalOutcome::Close,
 
             KeyCode::Tab => {
-                let was_path = form.active_field == 0;
-                form.active_field = (form.active_field + 1) % form.fields.len();
-                if was_path {
-                    autofill_name_if_empty(form);
-                    validate_path_field(form);
+                if form.active_field == 0 {
+                    // Path field: attempt tab-completion instead of field navigation.
+                    let completions = complete_path(&form.fields[0].value);
+                    match completions.len() {
+                        0 => {} // no matches — do nothing
+                        1 => {
+                            // Single match: complete inline.
+                            // Autofill name before adding trailing slash (file_name() returns
+                            // None for paths ending with '/', so we need the clean path first).
+                            let completed = completions[0].clone();
+                            form.fields[0].value = completed.clone();
+                            form.fields[0].warning = None;
+                            autofill_name_if_empty(form);
+                            // Now append trailing slash so the user can keep tabbing deeper.
+                            let with_slash = if completed.ends_with('/') {
+                                completed
+                            } else {
+                                format!("{}/", completed)
+                            };
+                            form.fields[0].value = with_slash;
+                        }
+                        _ => {
+                            // Multiple matches: complete to longest common prefix.
+                            let prefix = longest_common_prefix(&completions);
+                            if prefix.len() > form.fields[0].value.trim_end_matches('/').len() {
+                                form.fields[0].value = prefix;
+                                form.fields[0].warning = None;
+                                autofill_name_if_empty(form);
+                            }
+                        }
+                    }
+                    ModalOutcome::Continue
+                } else {
+                    // Non-path fields: navigate to next field (existing behavior).
+                    form.active_field = (form.active_field + 1) % form.fields.len();
+                    ModalOutcome::Continue
                 }
-                ModalOutcome::Continue
             }
 
             KeyCode::BackTab => {
@@ -1481,7 +1578,7 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
     )));
     // Hints
     lines.push(Line::from(Span::styled(
-        " Tab: next  S-Tab: prev  Enter: save  Esc: cancel",
+        " Tab: complete path / next  S-Tab: prev  Enter: save  Esc: cancel",
         Style::default().add_modifier(Modifier::DIM),
     )));
 
@@ -2970,22 +3067,39 @@ mod tests {
 
     #[test]
     fn advance_modal_tab_advances_field() {
+        // Tab on non-path fields (field 1 onward) navigates forward.
         let mut modal = Modal::AddProject(ProjectForm::new());
+        // Move to field 1 first.
+        if let Modal::AddProject(ref mut form) = modal {
+            form.active_field = 1;
+        }
         let outcome = advance_modal(&mut modal, KeyCode::Tab);
         assert!(matches!(outcome, ModalOutcome::Continue));
         let Modal::AddProject(ref form) = modal;
-        assert_eq!(form.active_field, 1);
+        assert_eq!(form.active_field, 2);
     }
 
     #[test]
     fn advance_modal_tab_wraps_around() {
         let mut modal = Modal::AddProject(ProjectForm::new());
-        // Tab 4 times → wraps back to 0
-        for _ in 0..4 {
+        // Start at field 1; Tab 3 times → wraps back to 1.
+        if let Modal::AddProject(ref mut form) = modal {
+            form.active_field = 1;
+        }
+        for _ in 0..3 {
             advance_modal(&mut modal, KeyCode::Tab);
         }
         let Modal::AddProject(ref form) = modal;
-        assert_eq!(form.active_field, 0);
+        assert_eq!(form.active_field, 1);
+    }
+
+    #[test]
+    fn advance_modal_tab_on_path_field_does_completion_not_navigation() {
+        // Tab on empty path field does nothing (no completions), stays on field 0.
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        advance_modal(&mut modal, KeyCode::Tab);
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.active_field, 0, "Tab on path field should not navigate away");
     }
 
     #[test]
@@ -3323,5 +3437,199 @@ mod tests {
     #[test]
     fn non_empty_opt_with_value() {
         assert_eq!(non_empty_opt("  hello  "), Some("hello".to_string()));
+    }
+
+    // ── complete_path ─────────────────────────────────────────────────────
+
+    #[test]
+    fn complete_path_empty_input_returns_empty() {
+        let empty: Vec<String> = vec![];
+        assert_eq!(complete_path(""), empty);
+    }
+
+    #[test]
+    fn complete_path_returns_matching_dirs_only() {
+        let tmp = std::env::temp_dir();
+        let base = tmp.join("z_tui_test_complete_path");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("alpha")).unwrap();
+        std::fs::create_dir_all(base.join("beta")).unwrap();
+        // Create a file (should be excluded)
+        std::fs::write(base.join("afile.txt"), b"").unwrap();
+
+        let partial = format!("{}/", base.display());
+        let mut results = complete_path(&partial);
+        results.sort();
+
+        assert_eq!(results.len(), 2, "should return 2 dirs, not the file");
+        assert!(results[0].ends_with("alpha"), "first dir is alpha");
+        assert!(results[1].ends_with("beta"), "second dir is beta");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn complete_path_filters_by_prefix() {
+        let tmp = std::env::temp_dir();
+        let base = tmp.join("z_tui_test_prefix_filter");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("foo")).unwrap();
+        std::fs::create_dir_all(base.join("foobar")).unwrap();
+        std::fs::create_dir_all(base.join("baz")).unwrap();
+
+        let partial = format!("{}/foo", base.display());
+        let mut results = complete_path(&partial);
+        results.sort();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].ends_with("foo"));
+        assert!(results[1].ends_with("foobar"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn complete_path_nonexistent_dir_returns_empty() {
+        let result = complete_path("/nonexistent/path/that/does/not/exist/abc");
+        let empty: Vec<String> = vec![];
+        assert_eq!(result, empty);
+    }
+
+    #[test]
+    fn complete_path_expands_tilde() {
+        // Just verify ~/ expansion doesn't panic and returns something reasonable.
+        // We can't control $HOME contents, but we can verify no crash.
+        let _ = complete_path("~/");
+    }
+
+    // ── longest_common_prefix ─────────────────────────────────────────────
+
+    #[test]
+    fn longest_common_prefix_empty_slice() {
+        assert_eq!(longest_common_prefix(&[]), "");
+    }
+
+    #[test]
+    fn longest_common_prefix_single_element() {
+        assert_eq!(longest_common_prefix(&["/code/app".to_string()]), "/code/app");
+    }
+
+    #[test]
+    fn longest_common_prefix_common_prefix() {
+        let strs = vec![
+            "/code/foobar".to_string(),
+            "/code/fooble".to_string(),
+            "/code/food".to_string(),
+        ];
+        assert_eq!(longest_common_prefix(&strs), "/code/foo");
+    }
+
+    #[test]
+    fn longest_common_prefix_no_common_prefix() {
+        let strs = vec!["/alpha".to_string(), "/beta".to_string()];
+        assert_eq!(longest_common_prefix(&strs), "/");
+    }
+
+    #[test]
+    fn longest_common_prefix_identical_strings() {
+        let strs = vec!["/code/app".to_string(), "/code/app".to_string()];
+        assert_eq!(longest_common_prefix(&strs), "/code/app");
+    }
+
+    // ── Tab-completion in advance_modal ───────────────────────────────────
+
+    #[test]
+    fn tab_on_path_field_single_match_completes_inline() {
+        let tmp = std::env::temp_dir();
+        let base = tmp.join("z_tui_test_tab_single");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("myproject")).unwrap();
+
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        let partial = format!("{}/my", base.display());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = partial;
+        }
+
+        advance_modal(&mut modal, KeyCode::Tab);
+
+        let Modal::AddProject(ref form) = modal;
+        let expected = format!("{}/myproject/", base.display());
+        assert_eq!(form.fields[0].value, expected, "should complete to single match with trailing slash");
+        assert_eq!(form.active_field, 0, "should stay on path field");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn tab_on_path_field_multiple_matches_completes_to_prefix() {
+        let tmp = std::env::temp_dir();
+        let base = tmp.join("z_tui_test_tab_multi");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("foobar")).unwrap();
+        std::fs::create_dir_all(base.join("fooble")).unwrap();
+
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        let partial = format!("{}/foo", base.display());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = partial;
+        }
+
+        advance_modal(&mut modal, KeyCode::Tab);
+
+        let Modal::AddProject(ref form) = modal;
+        // Common prefix of foobar and fooble is foob
+        assert!(
+            form.fields[0].value.starts_with(&format!("{}/foob", base.display())),
+            "should complete to longest common prefix: got {}",
+            form.fields[0].value
+        );
+        assert_eq!(form.active_field, 0);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn tab_on_path_field_no_match_does_not_change_value() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = "/nonexistent/zzz_no_match_xyz".to_string();
+        }
+        advance_modal(&mut modal, KeyCode::Tab);
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.fields[0].value, "/nonexistent/zzz_no_match_xyz");
+        assert_eq!(form.active_field, 0);
+    }
+
+    #[test]
+    fn tab_on_path_field_single_match_autofills_name_if_empty() {
+        let tmp = std::env::temp_dir();
+        let base = tmp.join("z_tui_test_tab_autofill");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("webapp")).unwrap();
+
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        let partial = format!("{}/web", base.display());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = partial;
+        }
+
+        advance_modal(&mut modal, KeyCode::Tab);
+
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.fields[1].value, "webapp", "name should be auto-filled from completed basename");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn tab_on_non_path_field_navigates_forward() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.active_field = 2;
+        }
+        advance_modal(&mut modal, KeyCode::Tab);
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.active_field, 3);
     }
 }
