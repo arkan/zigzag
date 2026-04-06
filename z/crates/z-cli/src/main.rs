@@ -227,6 +227,22 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 cmd_edit_per_repo_config(&project_path)?;
                 // continue the loop → re-enter the TUI
             }
+
+            TuiAction::EditProject { original_name, path, name, host, token } => {
+                // Remove the old entry by original name, then add the (possibly
+                // renamed / updated) project. Using remove+add preserves all
+                // surrounding KDL comments while updating the block in-place.
+                store.remove_project(&original_name)?;
+                let project = z_core::domain::Project {
+                    name: name.clone(),
+                    path: std::path::PathBuf::from(path),
+                    host,
+                    token,
+                };
+                store.add_project(&project)?;
+                initial_project = Some(name);
+                // Loop back to re-enter TUI with the edited project selected.
+            }
         }
     }
 }

@@ -108,6 +108,14 @@ pub enum TuiAction {
     },
     /// User pressed `e` — open per-repo config in $EDITOR.
     EditPerRepoConfig { project_path: std::path::PathBuf },
+    /// User submitted the Edit Project form.
+    EditProject {
+        original_name: String,
+        path: String,
+        name: String,
+        host: Option<String>,
+        token: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +186,10 @@ impl Default for ProjectForm {
 #[derive(Debug, Clone)]
 pub enum Modal {
     AddProject(ProjectForm),
+    /// Pre-filled form for editing an existing project. The `String` is the
+    /// original project name, used to detect renames and to identify the entry
+    /// to remove from the KDL file on save.
+    EditProject(ProjectForm, String),
 }
 
 /// Outcome of processing one keypress inside a modal.
@@ -185,6 +197,13 @@ enum ModalOutcome {
     Continue,
     Close,
     Submit {
+        path: String,
+        name: String,
+        host: Option<String>,
+        token: Option<String>,
+    },
+    SubmitEdit {
+        original_name: String,
         path: String,
         name: String,
         host: Option<String>,
@@ -976,6 +995,88 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
 
             _ => ModalOutcome::Continue,
         },
+
+        Modal::EditProject(form, original_name) => match code {
+            KeyCode::Esc => ModalOutcome::Close,
+
+            KeyCode::Tab => {
+                let was_path = form.active_field == 0;
+                form.active_field = (form.active_field + 1) % form.fields.len();
+                if was_path {
+                    validate_path_field(form);
+                }
+                ModalOutcome::Continue
+            }
+
+            KeyCode::BackTab => {
+                form.active_field =
+                    (form.active_field + form.fields.len() - 1) % form.fields.len();
+                ModalOutcome::Continue
+            }
+
+            KeyCode::Enter => {
+                let mut valid = true;
+                for field in &mut form.fields {
+                    if field.required && field.value.trim().is_empty() {
+                        field.warning = Some("Required".to_string());
+                        valid = false;
+                    }
+                }
+                if valid {
+                    let path = expand_tilde_path(form.fields[0].value.trim());
+                    let name = form.fields[1].value.trim().to_string();
+                    let host = non_empty_opt(&form.fields[2].value);
+                    let token = non_empty_opt(&form.fields[3].value);
+                    ModalOutcome::SubmitEdit {
+                        original_name: original_name.clone(),
+                        path,
+                        name,
+                        host,
+                        token,
+                    }
+                } else {
+                    ModalOutcome::Continue
+                }
+            }
+
+            KeyCode::Backspace => {
+                let fi = form.active_field;
+                form.fields[fi].value.pop();
+                if fi == 1 {
+                    // Show rename warning when name differs from original.
+                    let trimmed = form.fields[1].value.trim().to_string();
+                    let is_renamed = trimmed != *original_name;
+                    form.fields[1].warning = if is_renamed && !trimmed.is_empty() {
+                        Some("Existing sessions will not be renamed".to_string())
+                    } else {
+                        None
+                    };
+                } else {
+                    form.fields[fi].warning = None;
+                }
+                ModalOutcome::Continue
+            }
+
+            KeyCode::Char(c) => {
+                let fi = form.active_field;
+                form.fields[fi].value.push(c);
+                if fi == 1 {
+                    // Show rename warning when name differs from original.
+                    let trimmed = form.fields[1].value.trim().to_string();
+                    let is_renamed = trimmed != *original_name;
+                    form.fields[1].warning = if is_renamed {
+                        Some("Existing sessions will not be renamed".to_string())
+                    } else {
+                        None
+                    };
+                } else {
+                    form.fields[fi].warning = None;
+                }
+                ModalOutcome::Continue
+            }
+
+            _ => ModalOutcome::Continue,
+        },
     }
 }
 
@@ -1062,6 +1163,16 @@ fn event_loop<B: Backend>(
                     ModalOutcome::Submit { path, name, host, token } => {
                         state.modal = None;
                         return Ok(TuiAction::AddProject { path, name, host, token });
+                    }
+                    ModalOutcome::SubmitEdit { original_name, path, name, host, token } => {
+                        state.modal = None;
+                        return Ok(TuiAction::EditProject {
+                            original_name,
+                            path,
+                            name,
+                            host,
+                            token,
+                        });
                     }
                     ModalOutcome::Continue => {}
                 }
@@ -1186,11 +1297,32 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('e') | KeyCode::Char('E') => {
+                    KeyCode::Char('e') => {
                         if let Some(entry) = state.selected_entry() {
                             return Ok(TuiAction::EditPerRepoConfig {
                                 project_path: entry.project.path.clone(),
                             });
+                        }
+                    }
+
+                    KeyCode::Char('E') => {
+                        if state.focused_panel == Panel::Projects {
+                            if let Some(entry) = state.selected_entry() {
+                                let project = &entry.project;
+                                let mut form = ProjectForm::new();
+                                form.fields[0].value =
+                                    project.path.to_string_lossy().to_string();
+                                form.fields[1].value = project.name.clone();
+                                form.fields[2].value =
+                                    project.host.clone().unwrap_or_default();
+                                form.fields[3].value =
+                                    project.token.clone().unwrap_or_default();
+                                // Suppress path-basename autofill: name is already set.
+                                form.name_was_modified = true;
+                                let original_name = project.name.clone();
+                                state.modal =
+                                    Some(Modal::EditProject(form, original_name));
+                            }
                         }
                     }
 
@@ -1402,7 +1534,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
         })
         .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string());
 
-    let hints = " [o]pen [n]ew [d]elete [p]rune [a]utopilot [A]dd [e]dit [/]search [q]uit";
+    let hints = " [o]pen [n]ew [d]elete [p]rune [a]utopilot [A]dd [E]dit [e]config [/]search [q]uit";
     let content = format!("{}\n{}", project_info, hints);
 
     let paragraph = Paragraph::new(content)
@@ -1411,8 +1543,9 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
 }
 
 fn render_modal(f: &mut Frame, state: &TuiState) {
-    let form = match &state.modal {
-        Some(Modal::AddProject(form)) => form,
+    let (form, title) = match &state.modal {
+        Some(Modal::AddProject(form)) => (form, " Add Project "),
+        Some(Modal::EditProject(form, _)) => (form, " Edit Project "),
         None => return,
     };
 
@@ -1428,7 +1561,7 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
     // Outer block
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Add Project ")
+        .title(title)
         .border_style(Style::default().add_modifier(Modifier::BOLD));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
@@ -3323,5 +3456,169 @@ mod tests {
     #[test]
     fn non_empty_opt_with_value() {
         assert_eq!(non_empty_opt("  hello  "), Some("hello".to_string()));
+    }
+
+    // ── Edit Project modal tests ──────────────────────────────────────────────
+
+    fn make_edit_modal(name: &str, path: &str) -> Modal {
+        let mut form = ProjectForm::new();
+        form.fields[0].value = path.to_string();
+        form.fields[1].value = name.to_string();
+        form.name_was_modified = true;
+        Modal::EditProject(form, name.to_string())
+    }
+
+    #[test]
+    fn edit_modal_opens_prefilled_with_project_values() {
+        let entry = ProjectEntry {
+            project: make_project("myapp", false),
+            sessions: vec![],
+        };
+        // Simulate 'E' key: create EditProject modal pre-filled from entry
+        let project = &entry.project;
+        let mut form = ProjectForm::new();
+        form.fields[0].value = project.path.to_string_lossy().to_string();
+        form.fields[1].value = project.name.clone();
+        form.fields[2].value = project.host.clone().unwrap_or_default();
+        form.fields[3].value = project.token.clone().unwrap_or_default();
+        form.name_was_modified = true;
+        let original_name = project.name.clone();
+        let modal = Modal::EditProject(form, original_name);
+
+        if let Modal::EditProject(ref form, ref orig) = modal {
+            assert_eq!(form.fields[0].value, "/home/user/myapp");
+            assert_eq!(form.fields[1].value, "myapp");
+            assert_eq!(orig, "myapp");
+        } else {
+            panic!("expected EditProject modal");
+        }
+    }
+
+    #[test]
+    fn advance_modal_edit_project_no_name_change_no_warning() {
+        let mut modal = make_edit_modal("myapp", "/code/myapp");
+        // Type in field 0 (path) — name field should not show warning
+        advance_modal(&mut modal, KeyCode::Char('x'));
+        if let Modal::EditProject(ref form, _) = modal {
+            assert!(form.fields[1].warning.is_none(), "no rename warning when name unchanged");
+        }
+    }
+
+    #[test]
+    fn advance_modal_edit_project_name_change_shows_warning() {
+        let mut modal = make_edit_modal("myapp", "/code/myapp");
+        // Tab to name field (field 1)
+        advance_modal(&mut modal, KeyCode::Tab);
+        // Type a character to change the name
+        advance_modal(&mut modal, KeyCode::Char('X'));
+        if let Modal::EditProject(ref form, _) = modal {
+            assert!(
+                form.fields[1].warning.is_some(),
+                "should show rename warning when name changes"
+            );
+            let warn = form.fields[1].warning.as_ref().unwrap();
+            assert!(
+                warn.contains("sessions will not be renamed"),
+                "warning should mention sessions: {}",
+                warn
+            );
+        } else {
+            panic!("expected EditProject modal");
+        }
+    }
+
+    #[test]
+    fn advance_modal_edit_project_name_restored_clears_warning() {
+        let mut modal = make_edit_modal("myapp", "/code/myapp");
+        // Tab to name field
+        advance_modal(&mut modal, KeyCode::Tab);
+        // Type a char (name becomes "myappX")
+        advance_modal(&mut modal, KeyCode::Char('X'));
+        // Delete the added char with backspace (name back to "myapp")
+        advance_modal(&mut modal, KeyCode::Backspace);
+        if let Modal::EditProject(ref form, _) = modal {
+            assert!(
+                form.fields[1].warning.is_none(),
+                "warning should clear when name is restored"
+            );
+        } else {
+            panic!("expected EditProject modal");
+        }
+    }
+
+    #[test]
+    fn advance_modal_edit_project_submit_returns_submit_edit() {
+        let mut modal = make_edit_modal("myapp", "/code/myapp");
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::SubmitEdit { original_name, path, name, host, token } => {
+                assert_eq!(original_name, "myapp");
+                assert_eq!(path, "/code/myapp");
+                assert_eq!(name, "myapp");
+                assert!(host.is_none());
+                assert!(token.is_none());
+            }
+            _ => panic!("expected SubmitEdit outcome"),
+        }
+    }
+
+    #[test]
+    fn advance_modal_edit_project_submit_with_rename_returns_submit_edit() {
+        let mut modal = make_edit_modal("myapp", "/code/myapp");
+        // Tab to name field and change name
+        advance_modal(&mut modal, KeyCode::Tab);
+        advance_modal(&mut modal, KeyCode::Char('-'));
+        advance_modal(&mut modal, KeyCode::Char('v'));
+        advance_modal(&mut modal, KeyCode::Char('2'));
+        // Tab back to path field so we can submit
+        advance_modal(&mut modal, KeyCode::BackTab);
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::SubmitEdit { original_name, name, .. } => {
+                assert_eq!(original_name, "myapp", "original_name should be preserved");
+                assert_eq!(name, "myapp-v2", "new name should reflect edits");
+            }
+            _ => panic!("expected SubmitEdit outcome"),
+        }
+    }
+
+    #[test]
+    fn tui_action_edit_project_variant_exists() {
+        let action = TuiAction::EditProject {
+            original_name: "old".to_string(),
+            path: "/code/app".to_string(),
+            name: "new".to_string(),
+            host: None,
+            token: None,
+        };
+        assert!(matches!(action, TuiAction::EditProject { .. }));
+    }
+
+    #[test]
+    fn render_modal_edit_project_shows_title_and_fields() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut form = ProjectForm::new();
+        form.fields[0].value = "/code/myapp".to_string();
+        form.fields[1].value = "myapp".to_string();
+        form.name_was_modified = true;
+        state.modal = Some(Modal::EditProject(form, "myapp".to_string()));
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("Edit Project"), "should show Edit Project title");
+        assert!(out.contains("Path"), "should show Path field");
+        assert!(out.contains("Name"), "should show Name field");
+    }
+
+    #[test]
+    fn e_uppercase_no_projects_does_nothing() {
+        let state = TuiState::new(vec![], Navigation::Arrows);
+        // With no entries, selected_entry() returns None — 'E' should not open a modal.
+        assert!(state.selected_entry().is_none(), "no entries means no modal should open");
+    }
+
+    #[test]
+    fn render_status_bar_shows_edit_project_hint() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        let out = render_to_string(&state, 100, 24);
+        assert!(out.contains("[E]"), "should show [E] edit project hint");
     }
 }
