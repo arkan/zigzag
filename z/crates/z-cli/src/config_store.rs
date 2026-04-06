@@ -58,15 +58,21 @@ impl ProjectStore for KdlProjectStore {
 // Writer implementation
 // ---------------------------------------------------------------------------
 
+/// Escape backslashes and double-quotes for use inside a KDL quoted string.
+fn escape_kdl_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Formats a project as a KDL node string.
 fn format_project_kdl(project: &Project) -> String {
-    let path_str = project.path.to_string_lossy();
-    let mut s = format!("project \"{}\" {{\n    path \"{}\"\n", project.name, path_str);
+    let name = escape_kdl_string(&project.name);
+    let path_str = escape_kdl_string(&project.path.to_string_lossy());
+    let mut s = format!("project \"{}\" {{\n    path \"{}\"\n", name, path_str);
     if let Some(host) = &project.host {
-        s.push_str(&format!("    host \"{}\"\n", host));
+        s.push_str(&format!("    host \"{}\"\n", escape_kdl_string(host)));
     }
     if let Some(token) = &project.token {
-        s.push_str(&format!("    token \"{}\"\n", token));
+        s.push_str(&format!("    token \"{}\"\n", escape_kdl_string(token)));
     }
     s.push_str("}\n");
     s
@@ -76,7 +82,20 @@ fn format_project_kdl(project: &Project) -> String {
 /// Returns `None` if the project is not found.
 fn remove_project_from_kdl(content: &str, name: &str) -> Option<String> {
     let marker = format!("project \"{}\"", name);
-    let start = content.find(&marker)?;
+    // Find the marker, skipping occurrences inside comment lines.
+    let mut search_from = 0;
+    let start = loop {
+        let pos = content[search_from..].find(&marker)?;
+        let abs = search_from + pos;
+        let line_start = content[..abs].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let before_on_line = content[line_start..abs].trim_start();
+        if before_on_line.starts_with("//") {
+            // This match is inside a comment — skip past it.
+            search_from = abs + marker.len();
+            continue;
+        }
+        break abs;
+    };
 
     // Find where this line starts
     let line_start = content[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
@@ -384,5 +403,56 @@ project "beta" {
         let kdl = "project \"alpha\" {\n    path \"/code/alpha\"\n}\n";
         let result = remove_project_from_kdl(kdl, "missing");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn remove_project_from_kdl_skips_comment_containing_marker() {
+        let kdl = r#"// old: project "alpha" was here
+project "alpha" {
+    path "/code/alpha"
+}
+"#;
+        let result = remove_project_from_kdl(kdl, "alpha").unwrap();
+        assert!(result.contains("// old: project \"alpha\" was here"), "comment preserved");
+        assert!(!result.contains("path \"/code/alpha\""), "project block removed");
+    }
+
+    #[test]
+    fn remove_project_from_kdl_preserves_surrounding_comments() {
+        let kdl = "// header comment\nproject \"alpha\" {\n    path \"/code/alpha\"\n}\n// footer comment\n";
+        let result = remove_project_from_kdl(kdl, "alpha").unwrap();
+        assert!(result.contains("// header comment"), "header preserved");
+        assert!(result.contains("// footer comment"), "footer preserved");
+    }
+
+    #[test]
+    fn remove_project_from_kdl_only_project_in_file() {
+        let kdl = "project \"only\" {\n    path \"/code/only\"\n}\n";
+        let result = remove_project_from_kdl(kdl, "only").unwrap();
+        assert!(result.trim().is_empty(), "file should be empty after removing only project");
+    }
+
+    #[test]
+    fn format_project_kdl_escapes_quotes_in_path() {
+        let project = Project {
+            name: "app".to_string(),
+            path: std::path::PathBuf::from("/code/my \"app\""),
+            host: None,
+            token: None,
+        };
+        let kdl = format_project_kdl(&project);
+        assert!(kdl.contains(r#"path "/code/my \"app\"""#), "quotes in path should be escaped");
+    }
+
+    #[test]
+    fn format_project_kdl_escapes_backslash_in_name() {
+        let project = Project {
+            name: r"back\slash".to_string(),
+            path: std::path::PathBuf::from("/code/app"),
+            host: None,
+            token: None,
+        };
+        let kdl = format_project_kdl(&project);
+        assert!(kdl.contains(r#"project "back\\slash""#), "backslash in name should be escaped");
     }
 }
