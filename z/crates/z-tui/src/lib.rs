@@ -952,6 +952,51 @@ fn validate_path_field(form: &mut ProjectForm) {
     }
 }
 
+/// Shared Tab-key logic for both AddProject and EditProject modals.
+///
+/// - Path field (field 0) with completions available → complete the path, stay on field 0.
+/// - Path field with no completions → validate path and navigate to field 1.
+/// - Any other field → navigate to next field (wrapping around).
+fn tab_advance_with_completion(form: &mut ProjectForm) {
+    if form.active_field == 0 {
+        let completions = complete_path(&form.fields[0].value);
+        match completions.len() {
+            0 => {
+                // No completions: validate and navigate forward.
+                validate_path_field(form);
+                form.active_field = 1;
+            }
+            1 => {
+                // Single match: complete inline with trailing slash.
+                // Autofill name before adding trailing slash (file_name() returns
+                // None for paths ending with '/', so we need the clean path first).
+                let completed = completions[0].clone();
+                form.fields[0].value = completed.clone();
+                form.fields[0].warning = None;
+                autofill_name_if_empty(form);
+                let with_slash = if completed.ends_with('/') {
+                    completed
+                } else {
+                    format!("{}/", completed)
+                };
+                form.fields[0].value = with_slash;
+            }
+            _ => {
+                // Multiple matches: complete to longest common prefix.
+                let prefix = longest_common_prefix(&completions);
+                if prefix.len() > form.fields[0].value.trim_end_matches('/').len() {
+                    form.fields[0].value = prefix;
+                    form.fields[0].warning = None;
+                    autofill_name_if_empty(form);
+                }
+            }
+        }
+    } else {
+        // Non-path fields: navigate to next field.
+        form.active_field = (form.active_field + 1) % form.fields.len();
+    }
+}
+
 /// Returns `Some(s)` if the trimmed string is non-empty, else `None`.
 fn non_empty_opt(s: &str) -> Option<String> {
     let t = s.trim();
@@ -1033,43 +1078,8 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             KeyCode::Esc => ModalOutcome::Close,
 
             KeyCode::Tab => {
-                if form.active_field == 0 {
-                    // Path field: attempt tab-completion instead of field navigation.
-                    let completions = complete_path(&form.fields[0].value);
-                    match completions.len() {
-                        0 => {} // no matches — do nothing
-                        1 => {
-                            // Single match: complete inline.
-                            // Autofill name before adding trailing slash (file_name() returns
-                            // None for paths ending with '/', so we need the clean path first).
-                            let completed = completions[0].clone();
-                            form.fields[0].value = completed.clone();
-                            form.fields[0].warning = None;
-                            autofill_name_if_empty(form);
-                            // Now append trailing slash so the user can keep tabbing deeper.
-                            let with_slash = if completed.ends_with('/') {
-                                completed
-                            } else {
-                                format!("{}/", completed)
-                            };
-                            form.fields[0].value = with_slash;
-                        }
-                        _ => {
-                            // Multiple matches: complete to longest common prefix.
-                            let prefix = longest_common_prefix(&completions);
-                            if prefix.len() > form.fields[0].value.trim_end_matches('/').len() {
-                                form.fields[0].value = prefix;
-                                form.fields[0].warning = None;
-                                autofill_name_if_empty(form);
-                            }
-                        }
-                    }
-                    ModalOutcome::Continue
-                } else {
-                    // Non-path fields: navigate to next field (existing behavior).
-                    form.active_field = (form.active_field + 1) % form.fields.len();
-                    ModalOutcome::Continue
-                }
+                tab_advance_with_completion(form);
+                ModalOutcome::Continue
             }
 
             KeyCode::BackTab => {
@@ -1135,17 +1145,17 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             KeyCode::Esc => ModalOutcome::Close,
 
             KeyCode::Tab => {
-                let was_path = form.active_field == 0;
-                form.active_field = (form.active_field + 1) % form.fields.len();
-                if was_path {
-                    validate_path_field(form);
-                }
+                tab_advance_with_completion(form);
                 ModalOutcome::Continue
             }
 
             KeyCode::BackTab => {
+                let was_path = form.active_field == 0;
                 form.active_field =
                     (form.active_field + form.fields.len() - 1) % form.fields.len();
+                if was_path {
+                    validate_path_field(form);
+                }
                 ModalOutcome::Continue
             }
 
@@ -3459,12 +3469,12 @@ mod tests {
     }
 
     #[test]
-    fn advance_modal_tab_on_path_field_does_completion_not_navigation() {
-        // Tab on empty path field does nothing (no completions), stays on field 0.
+    fn advance_modal_tab_on_empty_path_field_navigates_forward() {
+        // Tab on empty path field: no completions, so should navigate to field 1.
         let mut modal = Modal::AddProject(ProjectForm::new());
         advance_modal(&mut modal, KeyCode::Tab);
         let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
-        assert_eq!(form.active_field, 0, "Tab on path field should not navigate away");
+        assert_eq!(form.active_field, 1, "Tab on path with no completions should navigate to field 1");
     }
 
     #[test]
@@ -4466,15 +4476,47 @@ mod tests {
     }
 
     #[test]
-    fn tab_on_path_field_no_match_does_not_change_value() {
+    fn tab_on_path_field_no_match_navigates_to_next_field() {
+        // When path completion finds no matches, Tab should navigate forward.
         let mut modal = Modal::AddProject(ProjectForm::new());
         if let Modal::AddProject(ref mut form) = modal {
             form.fields[0].value = "/nonexistent/zzz_no_match_xyz".to_string();
         }
         advance_modal(&mut modal, KeyCode::Tab);
         let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
-        assert_eq!(form.fields[0].value, "/nonexistent/zzz_no_match_xyz");
-        assert_eq!(form.active_field, 0);
+        assert_eq!(form.fields[0].value, "/nonexistent/zzz_no_match_xyz", "value should not change");
+        assert_eq!(form.active_field, 1, "should navigate to field 1 when no completions");
+    }
+
+    #[test]
+    fn edit_modal_tab_on_path_field_single_match_completes_inline() {
+        let tmp = std::env::temp_dir();
+        let base = tmp.join("z_tui_test_edit_tab_single");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("myproject")).unwrap();
+
+        let partial = format!("{}/my", base.display());
+        let mut modal = make_edit_modal("myapp", &partial);
+
+        advance_modal(&mut modal, KeyCode::Tab);
+
+        let Modal::EditProject(ref form, _) = modal else { panic!("expected EditProject modal") };
+        let expected = format!("{}/myproject/", base.display());
+        assert_eq!(form.fields[0].value, expected, "should complete to single match with trailing slash");
+        assert_eq!(form.active_field, 0, "should stay on path field after completion");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn edit_modal_tab_on_path_field_no_match_navigates_to_next_field() {
+        // When EditProject path has no completions, Tab should navigate forward.
+        let mut modal = make_edit_modal("myapp", "/nonexistent/zzz_no_match_xyz");
+        advance_modal(&mut modal, KeyCode::Tab);
+        let Modal::EditProject(ref form, _) = modal else { panic!("expected EditProject modal") };
+        assert_eq!(form.active_field, 1, "should navigate to field 1 when no completions");
+        // Path validation should also run
+        assert!(form.fields[0].warning.is_some(), "path validation should run when navigating away");
     }
 
     #[test]
@@ -4570,6 +4612,15 @@ mod tests {
         let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
         assert_eq!(form.active_field, 3, "BackTab from field 0 wraps to last field");
         assert!(form.fields[0].warning.is_some(), "path validation should run when leaving field 0 via BackTab");
+    }
+
+    #[test]
+    fn edit_modal_backtab_from_path_field_validates_path() {
+        let mut modal = make_edit_modal("myapp", "/nonexistent/path/that/does/not/exist");
+        advance_modal(&mut modal, KeyCode::BackTab);
+        let Modal::EditProject(ref form, _) = modal else { panic!("expected EditProject modal") };
+        assert_eq!(form.active_field, 3, "BackTab from field 0 wraps to last field");
+        assert!(form.fields[0].warning.is_some(), "path validation should run when leaving field 0 via BackTab in EditProject");
     }
 
     // ── WorkflowSelector modal ─────────────────────────────────────────────
