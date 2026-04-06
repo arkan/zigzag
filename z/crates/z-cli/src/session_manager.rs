@@ -166,40 +166,6 @@ pub fn write_temp_layout(content: &str) -> Result<String> {
     Ok(path)
 }
 
-/// Parse `zellij list-sessions` output and return all z-managed sessions
-/// (those matching `project:branch` naming), sorted alphabetically.
-///
-/// This is the pure/testable core used by `list_all_z_sessions`.
-pub fn list_all_z_sessions_from_output(output: &str) -> Vec<String> {
-    let mut sessions: Vec<String> = output
-        .lines()
-        .filter_map(|line| {
-            let name = line.split_whitespace().next()?;
-            if line.contains("EXITED") {
-                return None;
-            }
-            if parse_session_name(name).is_some() {
-                Some(name.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-    sessions.sort();
-    sessions
-}
-
-/// List all active z-managed Zellij sessions across all projects, sorted alphabetically.
-pub fn list_all_z_sessions() -> Vec<String> {
-    let output = match Command::new("zellij").arg("list-sessions").output() {
-        Ok(o) => o,
-        Err(_) => return Vec::new(),
-    };
-    let raw = String::from_utf8_lossy(&output.stdout);
-    let stdout = strip_ansi(&raw);
-    list_all_z_sessions_from_output(&stdout)
-}
-
 /// Parse the session age from a `zellij list-sessions` output line.
 ///
 /// Handles both `[Created 2h 30m 5s ago]` and `[Created: 5h ago]` formats.
@@ -536,69 +502,6 @@ mod tests {
         assert!(sessions.is_empty(), "EXITED sessions must be filtered even after ANSI stripping");
     }
 
-    // --- list_all_z_sessions_from_output tests ---
-
-    #[test]
-    fn list_all_z_sessions_returns_z_managed_sessions() {
-        let output = "myapp:main [Created: 5h ago]\nhermes:dev [Created: 1h ago]\nplain-session\n";
-        let sessions = list_all_z_sessions_from_output(output);
-        assert_eq!(sessions.len(), 2);
-        assert!(sessions.contains(&"hermes:dev".to_string()));
-        assert!(sessions.contains(&"myapp:main".to_string()));
-    }
-
-    #[test]
-    fn list_all_z_sessions_excludes_exited() {
-        let output = "myapp:main (EXITED)\nhermes:dev [Created: 1h ago]\n";
-        let sessions = list_all_z_sessions_from_output(output);
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0], "hermes:dev");
-    }
-
-    #[test]
-    fn list_all_z_sessions_excludes_non_z_sessions() {
-        let output = "plain-session\nanother-session\nmyapp:main\n";
-        let sessions = list_all_z_sessions_from_output(output);
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0], "myapp:main");
-    }
-
-    #[test]
-    fn list_all_z_sessions_sorted_alphabetically() {
-        let output = "zzz:main\naaa:dev\nmid:branch\n";
-        let sessions = list_all_z_sessions_from_output(output);
-        assert_eq!(sessions, vec!["aaa:dev", "mid:branch", "zzz:main"]);
-    }
-
-    #[test]
-    fn list_all_z_sessions_empty_output() {
-        let sessions = list_all_z_sessions_from_output("");
-        assert!(sessions.is_empty());
-    }
-
-    #[test]
-    fn list_all_z_sessions_whitespace_only_lines() {
-        let output = "  \n\t\n  \n";
-        let sessions = list_all_z_sessions_from_output(output);
-        assert!(sessions.is_empty());
-    }
-
-    #[test]
-    fn list_all_z_sessions_deduplicates_not_expected_but_handles_gracefully() {
-        // Zellij shouldn't output duplicates, but if it does they pass through
-        let output = "myapp:main [Created: 5h ago]\nmyapp:main [Created: 1h ago]\n";
-        let sessions = list_all_z_sessions_from_output(output);
-        assert_eq!(sessions.len(), 2, "duplicates are preserved (no dedup)");
-    }
-
-    #[test]
-    fn list_all_z_sessions_exited_anywhere_in_line() {
-        // EXITED can appear with extra metadata around it
-        let output = "myapp:main [Created: 5h ago] (EXITED - 2 hours ago)\n";
-        let sessions = list_all_z_sessions_from_output(output);
-        assert!(sessions.is_empty(), "EXITED anywhere in the line should exclude it");
-    }
-
     #[test]
     fn strip_ansi_truncated_escape_dropped() {
         // Trailing incomplete escape sequence should be silently dropped
@@ -699,6 +602,76 @@ mod tests {
         let sessions = list_all_z_sessions_with_ages_from_output(output);
         assert_eq!(sessions[0].0, "aaa:dev");
         assert_eq!(sessions[1].0, "zzz:main");
+    }
+
+    #[test]
+    fn sessions_with_ages_excludes_non_z_sessions() {
+        let output = "plain-session\nanother-session\nmyapp:main [Created 1h ago]\n";
+        let sessions = list_all_z_sessions_with_ages_from_output(output);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].0, "myapp:main");
+    }
+
+    #[test]
+    fn sessions_with_ages_empty_output() {
+        let sessions = list_all_z_sessions_with_ages_from_output("");
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn sessions_with_ages_whitespace_only_lines() {
+        let output = "  \n\t\n  \n";
+        let sessions = list_all_z_sessions_with_ages_from_output(output);
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn sessions_with_ages_duplicates_preserved() {
+        let output = "myapp:main [Created: 5h ago]\nmyapp:main [Created: 1h ago]\n";
+        let sessions = list_all_z_sessions_with_ages_from_output(output);
+        assert_eq!(sessions.len(), 2, "duplicates are preserved (no dedup)");
+    }
+
+    #[test]
+    fn sessions_with_ages_exited_with_extra_metadata() {
+        let output = "myapp:main [Created: 5h ago] (EXITED - 2 hours ago)\n";
+        let sessions = list_all_z_sessions_with_ages_from_output(output);
+        assert!(sessions.is_empty(), "EXITED anywhere in the line should exclude it");
+    }
+
+    #[test]
+    fn parse_session_age_all_zeros() {
+        assert_eq!(parse_session_age("myapp:main [Created 0h 0m 0s ago]"), None);
+    }
+
+    #[test]
+    fn parse_session_age_no_duration_between_created_and_ago() {
+        assert_eq!(parse_session_age("myapp:main [Created  ago]"), None);
+    }
+
+    #[test]
+    fn parse_session_age_colon_format_with_minutes() {
+        assert_eq!(
+            parse_session_age("myapp:main [Created: 15m ago]"),
+            Some("15m".to_string())
+        );
+    }
+
+    #[test]
+    fn compact_duration_empty_string() {
+        assert_eq!(compact_duration(""), None);
+    }
+
+    #[test]
+    fn extract_unit_non_digit_before_unit() {
+        // "abc5m" — only the "5" immediately before "m" should be captured
+        assert_eq!(extract_unit("abc5m", 'm'), Some(5));
+    }
+
+    #[test]
+    fn extract_unit_no_digits_before_unit() {
+        assert_eq!(extract_unit("m", 'm'), None);
+        assert_eq!(extract_unit("xm", 'm'), None);
     }
 
     /// Verify that `env_remove("ZELLIJ")` on a Command prevents the env var

@@ -2303,6 +2303,11 @@ impl SwitchPickerState {
         ages: Vec<Option<String>>,
         current_session: String,
     ) -> Self {
+        debug_assert_eq!(
+            sessions.len(),
+            ages.len(),
+            "sessions and ages must have the same length"
+        );
         let selected = sessions
             .iter()
             .position(|s| s == &current_session)
@@ -6271,5 +6276,18 @@ mod tests {
             "myapp:main".to_string(),
         );
         let _out = render_switch_picker_to_string(&state, 20, 5);
+    }
+
+    #[test]
+    fn switch_picker_mixed_ages_some_and_none() {
+        let state = SwitchPickerState::with_ages(
+            vec!["alpha:main".to_string(), "beta:dev".to_string(), "gamma:feat".to_string()],
+            vec![Some("1h".to_string()), None, Some("3d".to_string())],
+            "alpha:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        assert!(out.contains("1h"), "should render age for alpha");
+        assert!(out.contains("3d"), "should render age for gamma");
+        assert!(out.contains("beta:dev"), "should render beta name without age");
     }
 }
