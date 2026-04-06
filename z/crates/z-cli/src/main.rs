@@ -1,5 +1,6 @@
 mod config_store;
 mod depcheck_impl;
+mod log;
 mod notify;
 mod prune;
 mod remote;
@@ -128,9 +129,21 @@ fn run() {
                 std::process::exit(1);
             }
         }
+        Some("logs") => {
+            let n: usize = args
+                .iter()
+                .position(|a| a == "-n")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            if let Err(e) = cmd_logs(n) {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Some(cmd) => {
             eprintln!("unknown command: {:?}", cmd);
-            eprintln!("usage: z [list|open|close|delete|prune|notify|autopilot]");
+            eprintln!("usage: z [list|open|close|delete|prune|notify|autopilot|logs]");
             std::process::exit(1);
         }
     }
@@ -150,6 +163,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
 
     // Track the name of the most recently added project for auto-selection.
     let mut initial_project: Option<String> = None;
+    let mut status_message: Option<String> = None;
+    let logger = log::FileLogger::new();
 
     // Load built-in workflows once; they are the same for every project.
     let builtin: Vec<AutopilotWorkflow> = builtin_workflows().unwrap_or_default();
@@ -195,9 +210,19 @@ fn cmd_tui() -> z_core::error::Result<()> {
             .as_deref()
             .and_then(|name| entries.iter().position(|e| e.project.name == name));
 
-        let action = z_tui::run_tui(entries, navigation.clone(), notifications, initial_idx, || {
-            prune_summary().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
-        })
+        let action = z_tui::run_tui(
+            entries,
+            navigation.clone(),
+            notifications,
+            initial_idx,
+            status_message.take(),
+            |force| prune_summary(force).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string())),
+            |max_lines| {
+                let l = log::FileLogger::new();
+                let entries = l.read_recent(max_lines);
+                Ok(entries.iter().map(|e| e.format()).collect())
+            },
+        )
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
         match action {
@@ -211,8 +236,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     token,
                 };
                 store.add_project(&project)?;
+                log::log_info(&logger, &format!("project {} added", name));
                 initial_project = Some(name);
-                // Loop back to re-enter TUI with the new project selected.
             }
 
             TuiAction::Open { project, session } => {
@@ -239,8 +264,31 @@ fn cmd_tui() -> z_core::error::Result<()> {
             }
 
             TuiAction::Delete { session } => {
-                cmd_delete(&session)?;
-                return Ok(());
+                // Kill the Zellij session and loop back to the TUI.
+                // Worktree cleanup is handled separately via prune.
+                let (project_name, _branch) =
+                    parse_session_name(&session).ok_or_else(|| {
+                        z_core::error::ZError::Session(format!(
+                            "invalid session name {:?}: expected project:branch",
+                            session
+                        ))
+                    })?;
+                let sess = z_core::domain::Session {
+                    name: session.clone(),
+                    project: project_name.clone(),
+                    branch: _branch,
+                };
+                match ZellijSessionManager.kill_session(&sess) {
+                    Ok(()) => {
+                        log::log_info(&logger, &format!("session {} killed", session));
+                        status_message = Some(format!("Session {} killed.", session));
+                    }
+                    Err(e) => {
+                        log::log_error(&logger, &format!("session kill failed: {}", e));
+                        status_message = Some(format!("Error: {}", e));
+                    }
+                }
+                initial_project = Some(project_name);
             }
 
             TuiAction::Autopilot { project, workflow: _ } => {
@@ -288,8 +336,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     }
                 };
                 store.remove_project(&project)?;
+                log::log_info(&logger, &format!("project {} deleted", project));
                 initial_project = neighbor;
-                // Loop back to re-enter TUI with nearest neighbor selected.
             }
         }
     }
@@ -381,9 +429,12 @@ fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<(
     // Build the expected session name (branch "/" → "-" normalization applied).
     let target_session = z_core::domain::Session::new(&project.name, effective_branch);
 
+    let logger = log::FileLogger::new();
+
     // Check for an existing live session.
     let sessions = session_mgr.list_sessions(&project.name)?;
     if let Some(existing) = sessions.iter().find(|s| s.name == target_session.name) {
+        log::log_info(&logger, &format!("session {} attached", existing.name));
         return session_mgr.attach_session(existing);
     }
 
@@ -400,6 +451,7 @@ fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<(
         } else {
             // Create new worktree via `wt switch -c <branch>`.
             let new_wt = wt_mgr.create_worktree(&project.name, branch_name)?;
+            log::log_info(&logger, &format!("worktree {} created for {}", branch_name, project_name));
             new_wt.path
         };
         worktree_path
@@ -414,6 +466,7 @@ fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<(
     let mut layout = effective_layout(&global, &per_repo);
     layout.cwd = Some(cwd);
     session_mgr.create_session(&project.name, effective_branch, layout)?;
+    log::log_info(&logger, &format!("session {} created", target_session.name));
 
     Ok(())
 }
@@ -676,7 +729,7 @@ fn cmd_prune(dry_run: bool) -> z_core::error::Result<()> {
 
     for (wt, project_path) in &all_orphaned_worktrees {
         let wt_mgr = WtWorktreeManager::new(project_path.clone());
-        wt_mgr.remove_worktree(wt)?;
+        wt_mgr.remove_worktree(wt, true)?;
         println!("Removed worktree: {}", wt.branch);
         removed += 1;
     }
@@ -694,7 +747,7 @@ fn cmd_prune(dry_run: bool) -> z_core::error::Result<()> {
 /// Finds and immediately removes orphaned sessions and worktrees without
 /// asking for confirmation (the TUI 'p' binding acts as implicit confirmation).
 /// Returns a one-line summary string to display in the status bar.
-fn prune_summary() -> z_core::error::Result<String> {
+fn prune_summary(force: bool) -> z_core::error::Result<String> {
     let store = KdlProjectStore::new();
     let session_mgr = ZellijSessionManager;
 
@@ -720,19 +773,56 @@ fn prune_summary() -> z_core::error::Result<String> {
         return Ok("Nothing to prune.".to_string());
     }
 
-    let killed = all_orphaned_sessions.len();
-    let removed = all_orphaned_worktrees.len();
+    let mut killed = 0usize;
+    let mut removed = 0usize;
+    let mut skipped = 0usize;
 
     for session in &all_orphaned_sessions {
-        session_mgr.kill_session(session)?;
+        if session_mgr.kill_session(session).is_ok() {
+            killed += 1;
+        }
     }
 
     for (wt, project_path) in &all_orphaned_worktrees {
         let wt_mgr = WtWorktreeManager::new(project_path.clone());
-        wt_mgr.remove_worktree(wt)?;
+        if wt_mgr.remove_worktree(wt, force).is_ok() {
+            removed += 1;
+        } else {
+            skipped += 1;
+        }
     }
 
-    Ok(format!("Pruned: {} session(s) killed, {} worktree(s) removed.", killed, removed))
+    let mut msg = format!("Pruned: {} session(s) killed, {} worktree(s) removed.", killed, removed);
+    if skipped > 0 {
+        msg.push_str(&format!(" {} worktree(s) skipped (uncommitted changes).", skipped));
+    }
+    log::log_info(&log::FileLogger::new(), &msg);
+    Ok(msg)
+}
+
+// ---------------------------------------------------------------------------
+// Logs command
+// ---------------------------------------------------------------------------
+
+/// Print log entries. If `n` is 0, print all; otherwise print last `n` lines.
+fn cmd_logs(n: usize) -> z_core::error::Result<()> {
+    let logger = log::FileLogger::new();
+    if n == 0 {
+        match logger.read_all() {
+            Ok(content) => print!("{}", content),
+            Err(_) => println!("No logs found."),
+        }
+    } else {
+        let entries = logger.read_recent(n);
+        if entries.is_empty() {
+            println!("No logs found.");
+        } else {
+            for entry in &entries {
+                println!("{}", entry.format());
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

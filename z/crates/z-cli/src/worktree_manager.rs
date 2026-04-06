@@ -66,9 +66,13 @@ impl WorktreeManager for WtWorktreeManager {
             })
     }
 
-    fn remove_worktree(&self, worktree: &Worktree) -> Result<()> {
-        let status = Command::new("wt")
-            .args(["remove", &worktree.branch])
+    fn remove_worktree(&self, worktree: &Worktree, force: bool) -> Result<()> {
+        let mut cmd = Command::new("wt");
+        cmd.args(["remove", &worktree.branch]);
+        if force {
+            cmd.arg("--force");
+        }
+        let status = cmd
             .current_dir(&self.project_path)
             .status()
             .map_err(|e| ZError::Worktree(format!("wt remove failed: {}", e)))?;
