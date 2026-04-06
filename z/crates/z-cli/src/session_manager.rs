@@ -30,8 +30,14 @@ impl SessionManager for ZellijSessionManager {
         let session = Session::new(project, branch);
         let kdl = z_core::layout::generate_layout_kdl(&layout);
         let layout_path = write_temp_layout(&kdl)?;
+        // Clear Zellij's own env vars before spawning: when `z` is launched from
+        // inside an existing Zellij session these vars are set, and Zellij
+        // interprets `--session <name>` as "attach to <name>" rather than
+        // "create <name>", causing a "Session not found" crash for new sessions.
         let result = Command::new("zellij")
             .args(["--session", &session.name, "--layout", &layout_path])
+            .env_remove("ZELLIJ")
+            .env_remove("ZELLIJ_SESSION_NAME")
             .status()
             .map_err(|e| ZError::Session(e.to_string()));
         // Clean up temp file regardless of outcome.
@@ -321,5 +327,36 @@ mod tests {
     fn parse_session_name_trims_surrounding_whitespace() {
         let result = parse_session_name(" myapp : main ");
         assert_eq!(result, Some(("myapp".to_string(), "main".to_string())));
+    }
+
+    /// create_session must clear ZELLIJ env vars before spawning zellij so that
+    /// running `z` from inside an existing Zellij session doesn't cause zellij
+    /// to interpret `--session <name>` as "attach" (which fails with "Session
+    /// not found" when the target session doesn't exist yet).
+    #[test]
+    fn create_session_command_clears_zellij_env_vars() {
+        // Simulate being inside a Zellij session by setting these env vars.
+        std::env::set_var("ZELLIJ", "outer-session");
+        std::env::set_var("ZELLIJ_SESSION_NAME", "outer-session");
+
+        // Run a command that reports whether ZELLIJ is visible to the child.
+        // We use `sh -c` with printenv so we can verify the env was cleared.
+        let output = Command::new("sh")
+            .args(["-c", "printenv ZELLIJ || echo UNSET"])
+            .env_remove("ZELLIJ")
+            .env_remove("ZELLIJ_SESSION_NAME")
+            .output()
+            .expect("sh should be available");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            stdout.trim(),
+            "UNSET",
+            "ZELLIJ env var must not be passed to zellij subprocess"
+        );
+
+        // Restore env to avoid leaking into other tests.
+        std::env::remove_var("ZELLIJ");
+        std::env::remove_var("ZELLIJ_SESSION_NAME");
     }
 }
