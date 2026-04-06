@@ -26,7 +26,9 @@ use z_autopilot::state::{WorkflowRun, WorkflowStatus};
 use crate::config_store::KdlProjectStore;
 use crate::depcheck_impl::ProcessDepChecker;
 use crate::notify::DispatchNotifier;
-use crate::session_manager::{list_all_z_sessions, parse_session_name, ZellijSessionManager};
+use crate::session_manager::{
+    list_all_z_sessions_with_ages, parse_session_name, ZellijSessionManager,
+};
 use crate::worktree_manager::WtWorktreeManager;
 
 use z_tui::{Navigation, ProjectEntry, TuiAction, WorkflowInfo};
@@ -859,7 +861,7 @@ fn cmd_switch() -> z_core::error::Result<()> {
         std::process::exit(1);
     }
 
-    let sessions = list_all_z_sessions();
+    let sessions = list_all_z_sessions_with_ages();
 
     let selected = z_tui::run_switch_picker(sessions, current_session)
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
