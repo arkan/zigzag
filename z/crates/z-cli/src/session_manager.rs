@@ -105,14 +105,15 @@ impl SessionManager for ZellijSessionManager {
     }
 
     fn kill_session(&self, session: &Session) -> Result<()> {
-        let status = Command::new("zellij")
+        let output = Command::new("zellij")
             .args(["delete-session", &session.name, "--force"])
-            .status()
+            .output()
             .map_err(|e| ZError::Session(e.to_string()))?;
-        if !status.success() {
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ZError::Session(format!(
-                "zellij delete-session exited with status {}",
-                status
+                "zellij delete-session failed: {}",
+                stderr.trim()
             )));
         }
         Ok(())

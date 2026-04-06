@@ -785,10 +785,15 @@ fn prune_summary(force: bool) -> z_core::error::Result<String> {
 
     for (wt, project_path) in &all_orphaned_worktrees {
         let wt_mgr = WtWorktreeManager::new(project_path.clone());
-        if wt_mgr.remove_worktree(wt, force).is_ok() {
-            removed += 1;
-        } else {
-            skipped += 1;
+        match wt_mgr.remove_worktree(wt, force) {
+            Ok(()) => removed += 1,
+            Err(e) => {
+                log::log_info(
+                    &log::FileLogger::new(),
+                    &format!("worktree {} skipped: {}", wt.branch, e),
+                );
+                skipped += 1;
+            }
         }
     }
 
