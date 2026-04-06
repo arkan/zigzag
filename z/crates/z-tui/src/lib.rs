@@ -5884,4 +5884,48 @@ mod tests {
         );
         let _out = render_switch_picker_to_string(&state, 20, 5);
     }
+
+    #[test]
+    fn switch_picker_selected_session_empty_vec() {
+        let state = SwitchPickerState::new(vec![], "myapp:main".to_string());
+        assert_eq!(state.selected_session(), None);
+    }
+
+    #[test]
+    fn switch_picker_navigation_empty_vec_no_panic() {
+        let mut state = SwitchPickerState::new(vec![], "myapp:main".to_string());
+        state.move_up();
+        assert_eq!(state.selected, 0);
+        state.move_down();
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn switch_picker_non_current_session_has_no_marker() {
+        let state = SwitchPickerState::new(
+            vec!["alpha:main".to_string(), "beta:dev".to_string()],
+            "alpha:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        // ● should appear exactly once — only on alpha:main (the current session)
+        let marker_count = out.matches('\u{25cf}').count();
+        assert_eq!(marker_count, 1, "● marker should appear exactly once for the current session");
+    }
+
+    #[test]
+    fn switch_picker_render_many_sessions_capped_at_20() {
+        let sessions: Vec<String> = (0..30)
+            .map(|i| format!("proj{}:main", i))
+            .collect();
+        let state = SwitchPickerState::new(sessions, "proj0:main".to_string());
+        // Should not panic; modal height is capped via .min(20)
+        let _out = render_switch_picker_to_string(&state, 80, 30);
+    }
+
+    #[test]
+    fn switch_picker_render_empty_sessions_no_panic() {
+        let state = SwitchPickerState::new(vec![], String::new());
+        // Empty sessions: content_rows = 0, modal_height = 3 (borders + footer)
+        let _out = render_switch_picker_to_string(&state, 60, 15);
+    }
 }
