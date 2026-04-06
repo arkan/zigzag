@@ -2279,6 +2279,8 @@ fn render_log_viewer_modal(f: &mut Frame, lines: &[String], scroll_offset: usize
 pub struct SwitchPickerState {
     /// All z-managed session names, sorted alphabetically.
     pub sessions: Vec<String>,
+    /// Ages corresponding to each session (largest unit: "2h", "30m", "1d", "5s").
+    pub ages: Vec<Option<String>>,
     /// Currently highlighted item index.
     pub selected: usize,
     /// Name of the current Zellij session (from `$ZELLIJ_SESSION_NAME`).
@@ -2291,7 +2293,21 @@ impl SwitchPickerState {
             .iter()
             .position(|s| s == &current_session)
             .unwrap_or(0);
-        Self { sessions, selected, current_session }
+        let ages = vec![None; sessions.len()];
+        Self { sessions, ages, selected, current_session }
+    }
+
+    /// Create state with per-session age strings.
+    pub fn with_ages(
+        sessions: Vec<String>,
+        ages: Vec<Option<String>>,
+        current_session: String,
+    ) -> Self {
+        let selected = sessions
+            .iter()
+            .position(|s| s == &current_session)
+            .unwrap_or(0);
+        Self { sessions, ages, selected, current_session }
     }
 
     pub fn move_up(&mut self) {
@@ -2340,6 +2356,7 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
         .split(inner);
 
     // Build list items
+    let inner_width = modal_width.saturating_sub(2) as usize;
     let items: Vec<ListItem> = state
         .sessions
         .iter()
@@ -2347,7 +2364,20 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
         .map(|(i, name)| {
             let is_current = name == &state.current_session;
             let marker = if is_current { "\u{25cf} " } else { "  " };
-            let label = format!("{}{}", marker, name);
+            let left = format!("{}{}", marker, name);
+            let age_str = state
+                .ages
+                .get(i)
+                .and_then(|a| a.as_deref())
+                .unwrap_or("");
+            let label = if !age_str.is_empty()
+                && inner_width > left.len() + age_str.len() + 1
+            {
+                let padding = inner_width - left.len() - age_str.len();
+                format!("{}{}{}", left, " ".repeat(padding), age_str)
+            } else {
+                left
+            };
             let style = if i == state.selected {
                 Style::default().add_modifier(Modifier::REVERSED)
             } else if is_current {
@@ -2407,11 +2437,14 @@ fn switch_picker_event_loop<B: Backend>(
 ///
 /// Returns `Some(session_name)` if the user pressed `Enter` to switch,
 /// or `None` if the user pressed `Esc`/`q` to close without switching.
+///
+/// Each entry in `sessions_with_ages` is `(session_name, age)` where `age`
+/// is the compact duration string (e.g. `"2h"`) or `None` if unknown.
 pub fn run_switch_picker(
-    sessions: Vec<String>,
+    sessions_with_ages: Vec<(String, Option<String>)>,
     current_session: String,
 ) -> io::Result<Option<String>> {
-    if sessions.is_empty() {
+    if sessions_with_ages.is_empty() {
         return Ok(None);
     }
 
@@ -2421,7 +2454,9 @@ pub fn run_switch_picker(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut state = SwitchPickerState::new(sessions, current_session);
+    let (sessions, ages): (Vec<String>, Vec<Option<String>>) =
+        sessions_with_ages.into_iter().unzip();
+    let mut state = SwitchPickerState::with_ages(sessions, ages, current_session);
 
     let result = switch_picker_event_loop(&mut terminal, &mut state);
 
@@ -6180,5 +6215,61 @@ mod tests {
         let state = SwitchPickerState::new(vec![], String::new());
         // Empty sessions: content_rows = 0, modal_height = 3 (borders + footer)
         let _out = render_switch_picker_to_string(&state, 60, 15);
+    }
+
+    // ── Age display tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn switch_picker_with_ages_renders_age_in_output() {
+        let state = SwitchPickerState::with_ages(
+            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
+            vec![Some("2h".to_string()), Some("30m".to_string())],
+            "myapp:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        assert!(out.contains("2h"), "should render age '2h'");
+        assert!(out.contains("30m"), "should render age '30m'");
+    }
+
+    #[test]
+    fn switch_picker_with_ages_none_age_renders_gracefully() {
+        let state = SwitchPickerState::with_ages(
+            vec!["myapp:main".to_string()],
+            vec![None],
+            "myapp:main".to_string(),
+        );
+        // Should not panic and should render session name
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        assert!(out.contains("myapp:main"), "should still render session name");
+    }
+
+    #[test]
+    fn switch_picker_with_ages_initial_selection_on_current() {
+        let state = SwitchPickerState::with_ages(
+            vec!["alpha:main".to_string(), "beta:dev".to_string()],
+            vec![Some("1h".to_string()), Some("5m".to_string())],
+            "beta:dev".to_string(),
+        );
+        assert_eq!(state.selected, 1, "should start on beta:dev");
+    }
+
+    #[test]
+    fn switch_picker_new_ages_all_none() {
+        let state = SwitchPickerState::new(
+            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
+            "myapp:main".to_string(),
+        );
+        assert_eq!(state.ages, vec![None, None], "new() should set all ages to None");
+    }
+
+    #[test]
+    fn switch_picker_age_not_shown_when_insufficient_width() {
+        // Very narrow terminal: age should not overflow or panic
+        let state = SwitchPickerState::with_ages(
+            vec!["myapp:main".to_string()],
+            vec![Some("2h".to_string())],
+            "myapp:main".to_string(),
+        );
+        let _out = render_switch_picker_to_string(&state, 20, 5);
     }
 }

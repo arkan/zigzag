@@ -200,6 +200,87 @@ pub fn list_all_z_sessions() -> Vec<String> {
     list_all_z_sessions_from_output(&stdout)
 }
 
+/// Parse the session age from a `zellij list-sessions` output line.
+///
+/// Handles both `[Created 2h 30m 5s ago]` and `[Created: 5h ago]` formats.
+/// Returns the largest meaningful unit: `"Xd"`, `"Xh"`, `"Xm"`, or `"Xs"`.
+/// Returns `None` if no age can be parsed.
+pub fn parse_session_age(line: &str) -> Option<String> {
+    // Handle "Created: " (with colon) and "Created " (without colon)
+    let duration_str = if let Some(idx) = line.find("Created: ") {
+        let rest = &line[idx + "Created: ".len()..];
+        rest.split(" ago").next()?
+    } else if let Some(idx) = line.find("Created ") {
+        let rest = &line[idx + "Created ".len()..];
+        rest.split(" ago").next()?
+    } else {
+        return None;
+    };
+    compact_duration(duration_str.trim())
+}
+
+/// Convert a zellij duration string (e.g. `"2h 30m 5s"`) to the largest unit.
+fn compact_duration(s: &str) -> Option<String> {
+    if let Some(n) = extract_unit(s, 'd') { if n > 0 { return Some(format!("{}d", n)); } }
+    if let Some(n) = extract_unit(s, 'h') { if n > 0 { return Some(format!("{}h", n)); } }
+    if let Some(n) = extract_unit(s, 'm') { if n > 0 { return Some(format!("{}m", n)); } }
+    if let Some(n) = extract_unit(s, 's') { if n > 0 { return Some(format!("{}s", n)); } }
+    None
+}
+
+/// Extract the numeric value preceding `unit` char in `s`.
+fn extract_unit(s: &str, unit: char) -> Option<u64> {
+    let idx = s.find(unit)?;
+    let before = &s[..idx];
+    let digits: String = before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Parse `zellij list-sessions` output and return active z-managed sessions with their ages.
+///
+/// Each entry is `(session_name, age)` where `age` is `None` when the age cannot be parsed.
+/// Sorted alphabetically by session name.
+pub fn list_all_z_sessions_with_ages_from_output(output: &str) -> Vec<(String, Option<String>)> {
+    let mut sessions: Vec<(String, Option<String>)> = output
+        .lines()
+        .filter_map(|line| {
+            let name = line.split_whitespace().next()?;
+            if line.contains("EXITED") {
+                return None;
+            }
+            if parse_session_name(name).is_some() {
+                let age = parse_session_age(line);
+                Some((name.to_string(), age))
+            } else {
+                None
+            }
+        })
+        .collect();
+    sessions.sort_by(|a, b| a.0.cmp(&b.0));
+    sessions
+}
+
+/// List all active z-managed sessions with their ages.
+pub fn list_all_z_sessions_with_ages() -> Vec<(String, Option<String>)> {
+    let output = match Command::new("zellij").arg("list-sessions").output() {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let stdout = strip_ansi(&raw);
+    list_all_z_sessions_with_ages_from_output(&stdout)
+}
+
 /// Parse `zellij list-sessions` output and return sessions belonging to `project`.
 ///
 /// Zellij output format (one session per line):
@@ -523,6 +604,101 @@ mod tests {
         // Trailing incomplete escape sequence should be silently dropped
         assert_eq!(strip_ansi("hello\x1b"), "hello");
         assert_eq!(strip_ansi("hello\x1b[32"), "hello");
+    }
+
+    // --- parse_session_age tests ---
+
+    #[test]
+    fn parse_session_age_hours() {
+        assert_eq!(
+            parse_session_age("myapp:main [Created 2h 30m 5s ago]"),
+            Some("2h".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_session_age_minutes_only() {
+        assert_eq!(
+            parse_session_age("myapp:main [Created 30m 5s ago]"),
+            Some("30m".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_session_age_seconds_only() {
+        assert_eq!(
+            parse_session_age("myapp:main [Created 45s ago]"),
+            Some("45s".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_session_age_days() {
+        assert_eq!(
+            parse_session_age("myapp:main [Created 3d 2h ago]"),
+            Some("3d".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_session_age_colon_format() {
+        // Zellij sometimes uses "Created: Xh ago"
+        assert_eq!(
+            parse_session_age("myapp:main [Created: 5h ago]"),
+            Some("5h".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_session_age_no_created_tag() {
+        assert_eq!(parse_session_age("myapp:main"), None);
+    }
+
+    #[test]
+    fn parse_session_age_empty_line() {
+        assert_eq!(parse_session_age(""), None);
+    }
+
+    #[test]
+    fn parse_session_age_hours_only() {
+        assert_eq!(
+            parse_session_age("proj:branch [Created 7h ago]"),
+            Some("7h".to_string())
+        );
+    }
+
+    // --- list_all_z_sessions_with_ages_from_output tests ---
+
+    #[test]
+    fn sessions_with_ages_returns_name_and_age() {
+        let output = "myapp:main [Created 2h 30m ago]\nhermes:dev [Created: 1h ago]\n";
+        let sessions = list_all_z_sessions_with_ages_from_output(output);
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.contains(&("hermes:dev".to_string(), Some("1h".to_string()))));
+        assert!(sessions.contains(&("myapp:main".to_string(), Some("2h".to_string()))));
+    }
+
+    #[test]
+    fn sessions_with_ages_none_when_no_age() {
+        let output = "myapp:main\n";
+        let sessions = list_all_z_sessions_with_ages_from_output(output);
+        assert_eq!(sessions, vec![("myapp:main".to_string(), None)]);
+    }
+
+    #[test]
+    fn sessions_with_ages_excludes_exited() {
+        let output = "myapp:main (EXITED)\nhermes:dev [Created 1h ago]\n";
+        let sessions = list_all_z_sessions_with_ages_from_output(output);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].0, "hermes:dev");
+    }
+
+    #[test]
+    fn sessions_with_ages_sorted_alphabetically() {
+        let output = "zzz:main [Created 5h ago]\naaa:dev [Created 1h ago]\n";
+        let sessions = list_all_z_sessions_with_ages_from_output(output);
+        assert_eq!(sessions[0].0, "aaa:dev");
+        assert_eq!(sessions[1].0, "zzz:main");
     }
 
     /// Verify that `env_remove("ZELLIJ")` on a Command prevents the env var
