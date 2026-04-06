@@ -2485,14 +2485,14 @@ fn switch_picker_event_loop<B: Backend>(
 /// Returns `Some(session_name)` if the user pressed `Enter` to switch,
 /// or `None` if the user pressed `Esc`/`q` to close without switching.
 ///
-/// Each entry in `sessions_with_ages` is `(session_name, age, notification_count)` where
+/// Each entry in `session_entries` is `(session_name, age, notification_count)` where
 /// `age` is the compact duration string (e.g. `"2h"`) or `None` if unknown, and
 /// `notification_count` is the number of pending notifications (0 = no badge).
 pub fn run_switch_picker(
-    sessions_with_ages: Vec<(String, Option<String>, usize)>,
+    session_entries: Vec<(String, Option<String>, usize)>,
     current_session: String,
 ) -> io::Result<Option<String>> {
-    if sessions_with_ages.is_empty() {
+    if session_entries.is_empty() {
         return Ok(None);
     }
 
@@ -2502,10 +2502,10 @@ pub fn run_switch_picker(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut sessions = Vec::with_capacity(sessions_with_ages.len());
-    let mut ages = Vec::with_capacity(sessions_with_ages.len());
-    let mut notification_counts = Vec::with_capacity(sessions_with_ages.len());
-    for (s, a, n) in sessions_with_ages {
+    let mut sessions = Vec::with_capacity(session_entries.len());
+    let mut ages = Vec::with_capacity(session_entries.len());
+    let mut notification_counts = Vec::with_capacity(session_entries.len());
+    for (s, a, n) in session_entries {
         sessions.push(s);
         ages.push(a);
         notification_counts.push(n);
@@ -6367,6 +6367,47 @@ mod tests {
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains('\u{1f514}'), "should render 🔔 badge");
         assert!(out.contains("3h"), "should render age '3h' alongside badge");
+    }
+
+    #[test]
+    fn switch_picker_with_notifications_empty_vecs() {
+        let state = SwitchPickerState::with_notifications(
+            vec![],
+            vec![],
+            vec![],
+            "nonexistent".to_string(),
+        );
+        assert_eq!(state.sessions.len(), 0);
+        assert_eq!(state.notification_counts.len(), 0);
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn switch_picker_large_notification_count() {
+        let state = SwitchPickerState::with_notifications(
+            vec!["myapp:main".to_string()],
+            vec![Some("1h".to_string())],
+            vec![99],
+            "myapp:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        assert!(out.contains('\u{1f514}'), "should render 🔔 badge for large count");
+        assert!(out.contains("99"), "should render count 99");
+        assert!(out.contains("1h"), "should still render age alongside large count");
+    }
+
+    #[test]
+    fn switch_picker_narrow_terminal_with_notifications_no_panic() {
+        // Terminal too narrow to fit badge+age — should fall back to name-only
+        let state = SwitchPickerState::with_notifications(
+            vec!["very-long-project-name:very-long-branch-name".to_string()],
+            vec![Some("2h".to_string())],
+            vec![5],
+            "very-long-project-name:very-long-branch-name".to_string(),
+        );
+        // 40 is minimum modal width; inner = 38, name with marker = 47 chars
+        // Right side won't fit, should gracefully omit badge+age
+        let _out = render_switch_picker_to_string(&state, 40, 10);
     }
 
     // ── Age display tests ─────────────────────────────────────────────────
