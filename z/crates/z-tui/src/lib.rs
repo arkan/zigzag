@@ -2222,19 +2222,16 @@ fn render_log_viewer_modal(f: &mut Frame, lines: &[String], scroll_offset: usize
 
     f.render_widget(Clear, rect);
 
-    let title = format!(
-        " Logs ({}/{}) — j/k scroll, G end, g top, Esc close ",
-        scroll_offset + 1,
-        lines.len().max(1)
-    );
-    let block = Block::default()
+    // Compute inner rect early so we can clamp scroll_offset before the title.
+    let block_template = Block::default()
         .borders(Borders::ALL)
-        .title(title)
         .border_style(Style::default().add_modifier(Modifier::BOLD));
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
+    let inner = block_template.inner(rect);
 
     if lines.is_empty() {
+        let title = " Logs (0) — Esc close ";
+        let block = block_template.title(title);
+        f.render_widget(block, rect);
         let paragraph = Paragraph::new(Text::from(vec![
             Line::from(Span::styled(" No logs yet.", Style::default().add_modifier(Modifier::DIM))),
         ]));
@@ -2243,8 +2240,18 @@ fn render_log_viewer_modal(f: &mut Frame, lines: &[String], scroll_offset: usize
     }
 
     let visible_height = inner.height as usize;
-    let start = scroll_offset;
+    // Clamp so the viewport is full when scrolled to the bottom.
+    let max_start = lines.len().saturating_sub(visible_height);
+    let start = scroll_offset.min(max_start);
     let end = (start + visible_height).min(lines.len());
+
+    let title = format!(
+        " Logs ({}/{}) — j/k scroll, G end, g top, Esc close ",
+        start + 1,
+        lines.len()
+    );
+    let block = block_template.title(title);
+    f.render_widget(block, rect);
 
     let display_lines: Vec<Line> = lines[start..end]
         .iter()
@@ -5735,5 +5742,97 @@ mod tests {
         });
         // Should not panic even when terminal is smaller than the modal
         let _out = render_to_string(&state, 20, 5);
+    }
+
+    #[test]
+    fn log_viewer_g_on_empty_lines() {
+        let mut modal = Modal::LogViewer {
+            lines: vec![],
+            scroll_offset: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('g'));
+        assert!(matches!(outcome, ModalOutcome::Continue));
+        if let Modal::LogViewer { scroll_offset, .. } = &modal {
+            assert_eq!(*scroll_offset, 0, "g on empty should stay at 0");
+        }
+    }
+
+    #[test]
+    fn log_viewer_capital_g_on_empty_lines() {
+        let mut modal = Modal::LogViewer {
+            lines: vec![],
+            scroll_offset: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('G'));
+        assert!(matches!(outcome, ModalOutcome::Continue));
+        if let Modal::LogViewer { scroll_offset, .. } = &modal {
+            assert_eq!(*scroll_offset, 0, "G on empty should stay at 0");
+        }
+    }
+
+    #[test]
+    fn log_viewer_j_on_empty_lines() {
+        let mut modal = Modal::LogViewer {
+            lines: vec![],
+            scroll_offset: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('j'));
+        assert!(matches!(outcome, ModalOutcome::Continue));
+        if let Modal::LogViewer { scroll_offset, .. } = &modal {
+            assert_eq!(*scroll_offset, 0, "j on empty should stay at 0");
+        }
+    }
+
+    #[test]
+    fn log_viewer_scroll_clamped_shows_last_page() {
+        // When scroll_offset is at the last line (e.g. from G or initial open),
+        // render should clamp it so the viewport shows a full page of lines,
+        // not just the single last line.
+        let lines: Vec<String> = (0..50).map(|i| format!("[INFO] line {}", i)).collect();
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::LogViewer {
+            lines: lines.clone(),
+            scroll_offset: 49, // last line index, as set by G or initial open
+        });
+        // 40-row terminal, modal takes ~36 rows, inner ~34 rows visible
+        let out = render_to_string(&state, 120, 40);
+        // With clamping, we should see lines near the end, not just "line 49"
+        assert!(out.contains("line 49"), "should show the last line");
+        assert!(out.contains("line 48"), "should show second-to-last line too");
+    }
+
+    #[test]
+    fn log_viewer_empty_title_shows_zero() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::LogViewer {
+            lines: vec![],
+            scroll_offset: 0,
+        });
+        let out = render_to_string(&state, 120, 40);
+        // Empty log should not show "1/1"
+        assert!(!out.contains("1/1"), "empty logs should not show 1/1 in title");
+    }
+
+    #[test]
+    fn log_viewer_arrow_keys_scroll() {
+        // Arrow Up behaves same as 'k'
+        let mut modal = Modal::LogViewer {
+            lines: vec!["a".to_string(), "b".to_string()],
+            scroll_offset: 1,
+        };
+        advance_modal(&mut modal, KeyCode::Up);
+        if let Modal::LogViewer { scroll_offset, .. } = &modal {
+            assert_eq!(*scroll_offset, 0, "Up should decrement scroll_offset");
+        }
+
+        // Arrow Down behaves same as 'j'
+        let mut modal = Modal::LogViewer {
+            lines: vec!["a".to_string(), "b".to_string()],
+            scroll_offset: 0,
+        };
+        advance_modal(&mut modal, KeyCode::Down);
+        if let Modal::LogViewer { scroll_offset, .. } = &modal {
+            assert_eq!(*scroll_offset, 1, "Down should increment scroll_offset");
+        }
     }
 }
