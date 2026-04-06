@@ -1476,7 +1476,7 @@ fn event_loop<B: Backend>(
                         // transition, so the result appears without screen flicker.
                         // status_message was cleared above (keypress dismiss), so we
                         // re-set it with the fresh prune result.
-                        apply_prune(state, prune_fn)?;
+                        apply_prune(state, prune_fn);
                     }
 
                     KeyCode::Char('a') => {
@@ -1560,13 +1560,15 @@ fn event_loop<B: Backend>(
 // In-place action helpers
 // ---------------------------------------------------------------------------
 
-/// Run the prune closure and store the result as a status message.
+/// Run the prune closure and store the result (or error) as a status message.
 ///
 /// Called directly from the event loop when the user presses `p`, so the TUI
 /// never leaves the alternate screen — no flicker, no re-entry.
-fn apply_prune(state: &mut TuiState, prune_fn: &dyn Fn() -> io::Result<String>) -> io::Result<()> {
-    state.status_message = Some(prune_fn()?);
-    Ok(())
+fn apply_prune(state: &mut TuiState, prune_fn: &dyn Fn() -> io::Result<String>) {
+    match prune_fn() {
+        Ok(msg) => state.status_message = Some(msg),
+        Err(e) => state.status_message = Some(format!("Prune failed: {e}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4576,7 +4578,7 @@ mod tests {
     fn apply_prune_sets_status_message_nothing_to_prune() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
         assert!(state.status_message.is_none());
-        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string())).unwrap();
+        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string()));
         assert_eq!(
             state.status_message.as_deref(),
             Some("Nothing to prune."),
@@ -4590,8 +4592,7 @@ mod tests {
         apply_prune(
             &mut state,
             &|| Ok("Pruned: 2 session(s) killed, 1 worktree(s) removed.".to_string()),
-        )
-        .unwrap();
+        );
         assert_eq!(
             state.status_message.as_deref(),
             Some("Pruned: 2 session(s) killed, 1 worktree(s) removed.")
@@ -4601,7 +4602,7 @@ mod tests {
     #[test]
     fn apply_prune_result_visible_in_render() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
-        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string())).unwrap();
+        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string()));
         let out = render_to_string(&state, 120, 24);
         assert!(
             out.contains("Nothing to prune"),
@@ -4613,8 +4614,21 @@ mod tests {
     fn apply_prune_overwrites_previous_status_message() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
         state.status_message = Some("old message".to_string());
-        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string())).unwrap();
+        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string()));
         assert_eq!(state.status_message.as_deref(), Some("Nothing to prune."));
+    }
+
+    #[test]
+    fn apply_prune_shows_error_as_status_message() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        apply_prune(&mut state, &|| {
+            Err(io::Error::new(io::ErrorKind::Other, "session kill failed"))
+        });
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("Prune failed: session kill failed"),
+            "apply_prune should display errors inline instead of crashing the TUI"
+        );
     }
 
     #[test]
@@ -4622,7 +4636,7 @@ mod tests {
         // The message set by apply_prune should survive move_down (navigation
         // doesn't clear it — only an explicit keypress-clear mechanism does).
         let mut state = TuiState::new(make_entries(), Navigation::Arrows);
-        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string())).unwrap();
+        apply_prune(&mut state, &|| Ok("Nothing to prune.".to_string()));
         state.move_down();
         assert!(
             state.status_message.is_some(),
