@@ -26,7 +26,7 @@ use z_autopilot::state::{WorkflowRun, WorkflowStatus};
 use crate::config_store::KdlProjectStore;
 use crate::depcheck_impl::ProcessDepChecker;
 use crate::notify::DispatchNotifier;
-use crate::session_manager::{parse_session_name, ZellijSessionManager};
+use crate::session_manager::{list_all_z_sessions, parse_session_name, ZellijSessionManager};
 use crate::worktree_manager::WtWorktreeManager;
 
 use z_tui::{Navigation, ProjectEntry, TuiAction, WorkflowInfo};
@@ -141,9 +141,15 @@ fn run() {
                 std::process::exit(1);
             }
         }
+        Some("switch") => {
+            if let Err(e) = cmd_switch() {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Some(cmd) => {
             eprintln!("unknown command: {:?}", cmd);
-            eprintln!("usage: z [list|open|close|delete|prune|notify|autopilot|logs]");
+            eprintln!("usage: z [list|open|close|delete|prune|notify|autopilot|logs|switch]");
             std::process::exit(1);
         }
     }
@@ -834,6 +840,44 @@ fn cmd_logs(n: usize) -> z_core::error::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Switch command
+// ---------------------------------------------------------------------------
+
+/// Launch the interactive session switch picker.
+///
+/// Guard: must be run inside a Zellij session (`$ZELLIJ_SESSION_NAME` set).
+/// Lists all z-managed sessions, presents a picker TUI, and if the user
+/// selects a session runs `zellij action switch-session <name>`.
+fn cmd_switch() -> z_core::error::Result<()> {
+    let current_session = std::env::var("ZELLIJ_SESSION_NAME").unwrap_or_default();
+    if current_session.is_empty() {
+        eprintln!("z switch must be run inside a Zellij session");
+        std::process::exit(1);
+    }
+
+    let sessions = list_all_z_sessions();
+
+    let selected = z_tui::run_switch_picker(sessions, current_session)
+        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+
+    if let Some(session_name) = selected {
+        let output = std::process::Command::new("zellij")
+            .args(["action", "switch-session", &session_name])
+            .output()
+            .map_err(|e| z_core::error::ZError::Session(e.to_string()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(z_core::error::ZError::Session(format!(
+                "zellij action switch-session failed: {}",
+                stderr.trim()
+            )));
+        }
+    }
+
     Ok(())
 }
 
