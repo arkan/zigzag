@@ -226,12 +226,16 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     .and_then(|s| parse_session_name(s))
                     .map(|(_, b)| b);
                 cmd_open(&project, branch_owned.as_deref())?;
-                return Ok(());
+                // Loop back to re-enter the TUI after the session ends,
+                // with the same project re-selected.
+                initial_project = Some(project);
             }
 
             TuiAction::New { project } => {
                 cmd_open(&project, None)?;
-                return Ok(());
+                // Loop back to re-enter the TUI after the session ends,
+                // with the same project re-selected.
+                initial_project = Some(project);
             }
 
             TuiAction::Delete { session } => {
