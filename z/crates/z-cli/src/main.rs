@@ -265,6 +265,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
             }
 
             TuiAction::New { project, branch } => {
+                let session_name = z_core::domain::Session::new(&project, &branch).name;
+                let _ = z_core::notification::clear_notifications(&session_name);
                 cmd_open(&project, Some(&branch))?;
                 // Loop back to re-enter the TUI after the session ends,
                 // with the same project re-selected.
@@ -861,6 +863,24 @@ fn cmd_switch() -> z_core::error::Result<()> {
         std::process::exit(1);
     }
 
+    // Prevent multiple switch pickers from opening simultaneously.
+    let lock_path = format!("/tmp/z-switch-{}.lock", std::process::id());
+    let global_lock = "/tmp/z-switch.lock";
+    if std::path::Path::new(global_lock).exists() {
+        // Another instance is already running — exit silently so the
+        // floating pane closes immediately via close_on_exit.
+        std::process::exit(0);
+    }
+    let _ = fs::write(global_lock, std::process::id().to_string());
+    // Ensure cleanup on exit (normal or panic).
+    struct LockGuard;
+    impl Drop for LockGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_file("/tmp/z-switch.lock");
+        }
+    }
+    let _lock = LockGuard;
+
     let sessions: Vec<(String, Option<String>, usize)> = list_all_z_sessions_with_ages()
         .into_iter()
         .map(|(name, age)| {
@@ -873,6 +893,7 @@ fn cmd_switch() -> z_core::error::Result<()> {
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
     if let Some(session_name) = selected {
+        let _ = z_core::notification::clear_notifications(&session_name);
         let output = std::process::Command::new("zellij")
             .args(["action", "switch-session", &session_name])
             .output()

@@ -1301,7 +1301,7 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
         },
 
         Modal::LogViewer { lines, scroll_offset } => match code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('l') => ModalOutcome::Close,
+            KeyCode::Esc | KeyCode::Char('q') => ModalOutcome::Close,
             KeyCode::Up | KeyCode::Char('k') => {
                 *scroll_offset = scroll_offset.saturating_sub(1);
                 ModalOutcome::Continue
@@ -1642,7 +1642,7 @@ fn event_loop<B: Backend>(
                         state.modal = Some(Modal::Help);
                     }
 
-                    KeyCode::Char('l') => {
+                    KeyCode::Char('l') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                         match log_fn(200) {
                             Ok(lines) => {
                                 let scroll_offset = lines.len().saturating_sub(1);
@@ -1720,7 +1720,17 @@ fn render_projects(f: &mut Frame, area: Rect, state: &TuiState) {
         .map(|(_, entry)| {
             let active = if !entry.sessions.is_empty() { " \u{25cf}" } else { "" };
             let remote = if entry.project.host.is_some() { " \u{1f310}" } else { "" };
-            ListItem::new(format!("{}{}{}", entry.project.name, active, remote))
+            let notif_count: usize = entry
+                .sessions
+                .iter()
+                .filter(|s| state.notifications.contains(&s.name))
+                .count();
+            let notif_badge = if notif_count > 0 {
+                format!(" \u{1f514} {}", notif_count)
+            } else {
+                String::new()
+            };
+            ListItem::new(format!("{}{}{}{}", entry.project.name, active, remote, notif_badge))
         })
         .collect();
 
@@ -2388,8 +2398,11 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    // Build list items
+    // Build list items.
+    // Use fixed-width right columns: badge (6 display cols) + age (4 display cols).
+    // Compute all display widths in terminal columns, not byte lengths.
     let inner_width = modal_width.saturating_sub(2) as usize;
+    let right_cols = 10; // 6 (badge) + 4 (age)
     let items: Vec<ListItem> = state
         .sessions
         .iter()
@@ -2398,30 +2411,29 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
             let is_current = name == &state.current_session;
             let marker = if is_current { "\u{25cf} " } else { "  " };
             let left = format!("{}{}", marker, name);
+            let left_display_len = marker.chars().count() + name.len();
             let age_str = state
                 .ages
                 .get(i)
                 .and_then(|a| a.as_deref())
                 .unwrap_or("");
             let notif_count = state.notification_counts.get(i).copied().unwrap_or(0);
-            // Badge: "🔔 N  " (with trailing spaces to separate from age).
-            // 🔔 (U+1F514) is 4 bytes in UTF-8 but occupies 2 terminal columns.
-            // emoji_byte_overhead = 4 - 2 = 2 corrects padding calculations that
-            // use byte lengths (via .len()) instead of display widths.
-            let badge_str = if notif_count > 0 {
-                format!("\u{1f514} {}  ", notif_count)
+
+            // Right-aligned age, 4 chars wide.
+            let age_col = format!("{:>4}", age_str);
+            // Badge: "🔔 N" padded to 6 display cols, or 6 spaces if none.
+            let (badge_col, badge_display_len) = if notif_count > 0 {
+                let digits = notif_count.to_string();
+                let display_len = 2 + 1 + digits.len(); // 🔔=2cols + space + digits
+                let pad = 6usize.saturating_sub(display_len);
+                (format!("\u{1f514} {}{}", digits, " ".repeat(pad)), 6)
             } else {
-                String::new()
+                ("      ".to_string(), 6)
             };
-            let emoji_byte_overhead: usize = if notif_count > 0 { 2 } else { 0 };
-            let right_str = format!("{}{}", badge_str, age_str);
-            // right_display_width: how many terminal columns right_str actually occupies.
-            let right_display_width = right_str.len().saturating_sub(emoji_byte_overhead);
-            let label = if !right_str.is_empty()
-                && inner_width > left.len() + right_display_width + 1
-            {
-                let padding = inner_width - left.len() - right_display_width;
-                format!("{}{}{}", left, " ".repeat(padding), right_str)
+
+            let label = if inner_width > left_display_len + right_cols + 1 {
+                let padding = inner_width - left_display_len - right_cols;
+                format!("{}{}{}{}", left, " ".repeat(padding), badge_col, age_col)
             } else {
                 left
             };

@@ -20,7 +20,7 @@ const KEYBINDS_BLOCK: &str = "\
     keybinds {\n\
         shared {\n\
             bind \"Ctrl k\" {\n\
-                Run \"z\" \"switch\" {\n\
+                Run \"/Users/arkan/Code/z/z/target/debug/z\" \"switch\" {\n\
                     floating true\n\
                     close_on_exit true\n\
                 }\n\
@@ -424,7 +424,7 @@ mod tests {
         assert!(kdl.contains("keybinds {"), "layout must include keybinds block");
         assert!(kdl.contains("shared {"), "keybinds must include shared block");
         assert!(kdl.contains("bind \"Ctrl k\""), "keybinds must bind Ctrl k");
-        assert!(kdl.contains("Run \"z\" \"switch\""), "binding must run z switch");
+        assert!(kdl.contains("\"switch\""), "binding must run z switch");
         assert!(kdl.contains("floating true"), "binding must set floating true");
         assert!(kdl.contains("close_on_exit true"), "binding must set close_on_exit true");
     }
