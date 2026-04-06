@@ -376,6 +376,50 @@ mod tests {
         assert_eq!(result, Some(("myapp".to_string(), "main".to_string())));
     }
 
+    // --- strip_ansi tests ---
+
+    #[test]
+    fn strip_ansi_empty_string() {
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn strip_ansi_plain_text_unchanged() {
+        assert_eq!(strip_ansi("hello world"), "hello world");
+    }
+
+    #[test]
+    fn strip_ansi_removes_sgr_sequence() {
+        // \x1b[32;1m is bold green; should be stripped entirely
+        assert_eq!(strip_ansi("\x1b[32;1mhello\x1b[0m"), "hello");
+    }
+
+    #[test]
+    fn strip_ansi_removes_multiple_codes() {
+        let input = "\x1b[1mmyapp:main\x1b[0m [Created: \x1b[33m5h ago\x1b[0m]";
+        assert_eq!(strip_ansi(input), "myapp:main [Created: 5h ago]");
+    }
+
+    #[test]
+    fn strip_ansi_preserves_structure_for_session_parsing() {
+        // Simulate actual Zellij output with ANSI codes around the session name
+        let colored = "\x1b[32;1mmyapp:main\x1b[0m [Created: 2h ago]";
+        let stripped = strip_ansi(colored);
+        // After stripping, parse_zellij_sessions should still find the session
+        let sessions = parse_zellij_sessions(&stripped, "myapp");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].name, "myapp:main");
+    }
+
+    #[test]
+    fn strip_ansi_exited_session_still_filtered() {
+        // EXITED sessions with ANSI codes around status should still be filtered
+        let colored = "\x1b[31mmyapp:main\x1b[0m [Created: 5h ago] \x1b[31m(EXITED)\x1b[0m";
+        let stripped = strip_ansi(colored);
+        let sessions = parse_zellij_sessions(&stripped, "myapp");
+        assert!(sessions.is_empty(), "EXITED sessions must be filtered even after ANSI stripping");
+    }
+
     /// Verify that `env_remove("ZELLIJ")` on a Command prevents the env var
     /// from reaching the child process. This documents the mechanism used in
     /// `create_session()` to avoid Zellij interpreting `--session <name>` as
