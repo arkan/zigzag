@@ -63,6 +63,8 @@ use z_core::traits::ForgeClient as _;
 pub struct ProjectEntry {
     pub project: Project,
     pub sessions: Vec<Session>,
+    /// Number of git worktrees for this project (used in the delete confirmation modal).
+    pub worktree_count: usize,
 }
 
 /// Navigation key style.
@@ -108,6 +110,8 @@ pub enum TuiAction {
     },
     /// User pressed `e` — open per-repo config in $EDITOR.
     EditPerRepoConfig { project_path: std::path::PathBuf },
+    /// User confirmed deletion of a project in the delete modal.
+    DeleteProject { project: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +182,12 @@ impl Default for ProjectForm {
 #[derive(Debug, Clone)]
 pub enum Modal {
     AddProject(ProjectForm),
+    /// Confirmation dialog shown before deleting a project.
+    DeleteConfirm {
+        project_name: String,
+        session_count: usize,
+        worktree_count: usize,
+    },
 }
 
 /// Outcome of processing one keypress inside a modal.
@@ -190,6 +200,7 @@ enum ModalOutcome {
         host: Option<String>,
         token: Option<String>,
     },
+    DeleteConfirmed { project: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -976,6 +987,14 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
 
             _ => ModalOutcome::Continue,
         },
+
+        Modal::DeleteConfirm { project_name, .. } => match code {
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => ModalOutcome::Close,
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                ModalOutcome::DeleteConfirmed { project: project_name.clone() }
+            }
+            _ => ModalOutcome::Continue,
+        },
     }
 }
 
@@ -1062,6 +1081,10 @@ fn event_loop<B: Backend>(
                     ModalOutcome::Submit { path, name, host, token } => {
                         state.modal = None;
                         return Ok(TuiAction::AddProject { path, name, host, token });
+                    }
+                    ModalOutcome::DeleteConfirmed { project } => {
+                        state.modal = None;
+                        return Ok(TuiAction::DeleteProject { project });
                     }
                     ModalOutcome::Continue => {}
                 }
@@ -1183,6 +1206,21 @@ fn event_loop<B: Backend>(
                     KeyCode::Char('A') => {
                         if state.focused_panel == Panel::Projects {
                             state.modal = Some(Modal::AddProject(ProjectForm::new()));
+                        }
+                    }
+
+                    KeyCode::Char('D') => {
+                        if state.focused_panel == Panel::Projects {
+                            if let Some(entry) = state.selected_entry() {
+                                let project_name = entry.project.name.clone();
+                                let session_count = entry.sessions.len();
+                                let worktree_count = entry.worktree_count;
+                                state.modal = Some(Modal::DeleteConfirm {
+                                    project_name,
+                                    session_count,
+                                    worktree_count,
+                                });
+                            }
                         }
                     }
 
@@ -1402,7 +1440,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
         })
         .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string());
 
-    let hints = " [o]pen [n]ew [d]elete [p]rune [a]utopilot [A]dd [e]dit [/]search [q]uit";
+    let hints = " [o]pen [n]ew [d]elete [p]rune [a]utopilot [A]dd [D]elete [e]dit [/]search [q]uit";
     let content = format!("{}\n{}", project_info, hints);
 
     let paragraph = Paragraph::new(content)
@@ -1410,10 +1448,75 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_widget(paragraph, area);
 }
 
+fn render_delete_confirm_modal(
+    f: &mut Frame,
+    project_name: &str,
+    session_count: usize,
+    worktree_count: usize,
+) {
+    let area = f.area();
+    // 3 info lines + 1 blank + 1 hint + 2 separator + 2 borders = 9 rows
+    let modal_width = 62u16;
+    let modal_height = 9u16;
+    let rect = modal_rect(modal_width, modal_height, area);
+
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Delete Project ")
+        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let session_word = if session_count == 1 { "session" } else { "sessions" };
+    let worktree_word = if worktree_count == 1 { "worktree" } else { "worktrees" };
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            format!(" Delete project: {}", project_name),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!(" Active {}: {}", session_word, session_count),
+            Style::default(),
+        )),
+        Line::from(Span::styled(
+            format!(" Git {}: {}", worktree_word, worktree_count),
+            Style::default(),
+        )),
+        Line::from(""),
+    ];
+
+    // Separator
+    let sep_width = inner.width.saturating_sub(1) as usize;
+    lines.push(Line::from(Span::styled(
+        "\u{2500}".repeat(sep_width),
+        Style::default().add_modifier(Modifier::DIM),
+    )));
+    lines.push(Line::from(Span::styled(
+        " Enter/y: confirm  Esc/n: cancel  (only removes KDL entry)",
+        Style::default().add_modifier(Modifier::DIM),
+    )));
+
+    let paragraph = Paragraph::new(Text::from(lines));
+    f.render_widget(paragraph, inner);
+}
+
 fn render_modal(f: &mut Frame, state: &TuiState) {
-    let form = match &state.modal {
-        Some(Modal::AddProject(form)) => form,
+    match &state.modal {
         None => return,
+        Some(Modal::DeleteConfirm { project_name, session_count, worktree_count }) => {
+            render_delete_confirm_modal(f, project_name, *session_count, *worktree_count);
+            return;
+        }
+        Some(Modal::AddProject(_)) => {}
+    }
+    // Only AddProject reaches here.
+    let form = if let Some(Modal::AddProject(form)) = &state.modal {
+        form
+    } else {
+        return;
     };
 
     let area = f.area();
@@ -1524,14 +1627,17 @@ mod tests {
                     Session::new("myapp", "main"),
                     Session::new("myapp", "feat/login"),
                 ],
+                worktree_count: 0,
             },
             ProjectEntry {
                 project: make_project("hermes", false),
                 sessions: vec![],
+                worktree_count: 0,
             },
             ProjectEntry {
                 project: make_project("prod-api", true),
                 sessions: vec![],
+                worktree_count: 0,
             },
         ]
     }
@@ -2201,6 +2307,7 @@ mod tests {
         let entries = vec![ProjectEntry {
             project: make_project("solo", false),
             sessions: vec![Session::new("solo", "main")],
+            worktree_count: 0,
         }];
         let mut state = TuiState::new(entries, Navigation::Arrows);
         state.move_up();
@@ -3323,5 +3430,173 @@ mod tests {
     #[test]
     fn non_empty_opt_with_value() {
         assert_eq!(non_empty_opt("  hello  "), Some("hello".to_string()));
+    }
+
+    // ── Delete Project modal tests ─────────────────────────────────────────
+
+    #[test]
+    fn d_key_on_projects_panel_with_project_opens_delete_modal() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.focused_panel = Panel::Projects;
+        assert!(state.modal.is_none());
+
+        // Simulate 'D' key press logic: open delete confirm modal
+        if let Some(entry) = state.selected_entry() {
+            let project_name = entry.project.name.clone();
+            let session_count = entry.sessions.len();
+            let worktree_count = entry.worktree_count;
+            state.modal = Some(Modal::DeleteConfirm {
+                project_name: project_name.clone(),
+                session_count,
+                worktree_count,
+            });
+        }
+
+        assert!(state.modal.is_some(), "modal should be opened");
+        match &state.modal {
+            Some(Modal::DeleteConfirm { project_name, session_count, .. }) => {
+                assert_eq!(project_name, "myapp");
+                assert_eq!(*session_count, 2);
+            }
+            _ => panic!("expected DeleteConfirm modal"),
+        }
+    }
+
+    #[test]
+    fn d_key_with_no_projects_does_not_open_modal() {
+        let mut state = TuiState::new(vec![], Navigation::Arrows);
+        state.focused_panel = Panel::Projects;
+        // Simulate D key: selected_entry() returns None → no modal
+        if let Some(entry) = state.selected_entry() {
+            state.modal = Some(Modal::DeleteConfirm {
+                project_name: entry.project.name.clone(),
+                session_count: entry.sessions.len(),
+                worktree_count: entry.worktree_count,
+            });
+        }
+        assert!(state.modal.is_none(), "no modal when no projects");
+    }
+
+    #[test]
+    fn advance_modal_delete_confirm_enter_returns_delete_confirmed() {
+        let mut modal = Modal::DeleteConfirm {
+            project_name: "myapp".to_string(),
+            session_count: 2,
+            worktree_count: 1,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::DeleteConfirmed { project } => assert_eq!(project, "myapp"),
+            _ => panic!("expected DeleteConfirmed"),
+        }
+    }
+
+    #[test]
+    fn advance_modal_delete_confirm_y_returns_delete_confirmed() {
+        let mut modal = Modal::DeleteConfirm {
+            project_name: "hermes".to_string(),
+            session_count: 0,
+            worktree_count: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('y'));
+        assert!(matches!(outcome, ModalOutcome::DeleteConfirmed { .. }));
+    }
+
+    #[test]
+    fn advance_modal_delete_confirm_uppercase_y_returns_delete_confirmed() {
+        let mut modal = Modal::DeleteConfirm {
+            project_name: "hermes".to_string(),
+            session_count: 0,
+            worktree_count: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('Y'));
+        assert!(matches!(outcome, ModalOutcome::DeleteConfirmed { .. }));
+    }
+
+    #[test]
+    fn advance_modal_delete_confirm_esc_closes() {
+        let mut modal = Modal::DeleteConfirm {
+            project_name: "myapp".to_string(),
+            session_count: 0,
+            worktree_count: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Esc);
+        assert!(matches!(outcome, ModalOutcome::Close));
+    }
+
+    #[test]
+    fn advance_modal_delete_confirm_n_closes() {
+        let mut modal = Modal::DeleteConfirm {
+            project_name: "myapp".to_string(),
+            session_count: 0,
+            worktree_count: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('n'));
+        assert!(matches!(outcome, ModalOutcome::Close));
+    }
+
+    #[test]
+    fn advance_modal_delete_confirm_uppercase_n_closes() {
+        let mut modal = Modal::DeleteConfirm {
+            project_name: "myapp".to_string(),
+            session_count: 0,
+            worktree_count: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('N'));
+        assert!(matches!(outcome, ModalOutcome::Close));
+    }
+
+    #[test]
+    fn advance_modal_delete_confirm_other_key_continues() {
+        let mut modal = Modal::DeleteConfirm {
+            project_name: "myapp".to_string(),
+            session_count: 0,
+            worktree_count: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('x'));
+        assert!(matches!(outcome, ModalOutcome::Continue));
+    }
+
+    #[test]
+    fn renders_delete_confirm_modal_shows_project_name() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::DeleteConfirm {
+            project_name: "myapp".to_string(),
+            session_count: 2,
+            worktree_count: 3,
+        });
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("Delete Project"), "should show Delete Project title");
+        assert!(out.contains("myapp"), "should show project name");
+    }
+
+    #[test]
+    fn renders_delete_confirm_modal_shows_counts() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::DeleteConfirm {
+            project_name: "myapp".to_string(),
+            session_count: 2,
+            worktree_count: 3,
+        });
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("2"), "should show session count");
+        assert!(out.contains("3"), "should show worktree count");
+    }
+
+    #[test]
+    fn status_bar_shows_delete_project_hint() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        let out = render_to_string(&state, 100, 30);
+        assert!(out.contains("[D]elete"), "status bar should include [D]elete hint");
+    }
+
+    #[test]
+    fn worktree_count_stored_in_project_entry() {
+        let entry = ProjectEntry {
+            project: make_project("test", false),
+            sessions: vec![],
+            worktree_count: 5,
+        };
+        assert_eq!(entry.worktree_count, 5);
     }
 }
