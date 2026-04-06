@@ -420,6 +420,13 @@ mod tests {
         assert!(sessions.is_empty(), "EXITED sessions must be filtered even after ANSI stripping");
     }
 
+    #[test]
+    fn strip_ansi_truncated_escape_dropped() {
+        // Trailing incomplete escape sequence should be silently dropped
+        assert_eq!(strip_ansi("hello\x1b"), "hello");
+        assert_eq!(strip_ansi("hello\x1b[32"), "hello");
+    }
+
     /// Verify that `env_remove("ZELLIJ")` on a Command prevents the env var
     /// from reaching the child process. This documents the mechanism used in
     /// `create_session()` to avoid Zellij interpreting `--session <name>` as
