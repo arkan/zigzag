@@ -301,6 +301,9 @@ pub struct TuiState {
     pub notifications: HashSet<String>,
     /// Active modal overlay, if any.
     pub modal: Option<Modal>,
+    /// One-shot status message to display in the status bar (e.g. prune result).
+    /// Shown instead of project info; cleared on the next render by the caller.
+    pub status_message: Option<String>,
 }
 
 impl TuiState {
@@ -319,6 +322,7 @@ impl TuiState {
             forge_rx: None,
             notifications: HashSet::new(),
             modal: None,
+            status_message: None,
         }
     }
 
@@ -1225,6 +1229,7 @@ pub fn run_tui(
     navigation: Navigation,
     notifications: HashSet<String>,
     initial_project: Option<usize>,
+    status_message: Option<String>,
 ) -> io::Result<TuiAction> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1234,6 +1239,7 @@ pub fn run_tui(
 
     let mut state = TuiState::new(entries, navigation);
     state.notifications = notifications;
+    state.status_message = status_message;
     if let Some(idx) = initial_project {
         state.selected_project = idx;
     }
@@ -1664,17 +1670,21 @@ fn render_preview(f: &mut Frame, area: Rect, state: &TuiState) {
 }
 
 fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
-    let project_info = state
-        .selected_entry()
-        .map(|e| {
-            let locality = if e.project.host.is_some() { "remote" } else { "local" };
-            let session_count = e.sessions.len();
-            format!(" {} | {} | sessions: {} ", e.project.name, locality, session_count)
-        })
-        .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string());
+    let first_line = if let Some(msg) = &state.status_message {
+        format!(" {} ", msg)
+    } else {
+        state
+            .selected_entry()
+            .map(|e| {
+                let locality = if e.project.host.is_some() { "remote" } else { "local" };
+                let session_count = e.sessions.len();
+                format!(" {} | {} | sessions: {} ", e.project.name, locality, session_count)
+            })
+            .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string())
+    };
 
     let hints = " [o]pen [n]ew [d]elete [p]rune [a]utopilot [A]dd [E]dit [D]el [e]config [/]search [q]uit";
-    let content = format!("{}\n{}", project_info, hints);
+    let content = format!("{}\n{}", first_line, hints);
 
     let paragraph = Paragraph::new(content)
         .block(Block::default().borders(Borders::ALL).title(" STATUS "));
@@ -4378,6 +4388,41 @@ mod tests {
         advance_modal(&mut modal, KeyCode::Tab);
         let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
         assert_eq!(form.active_field, 3);
+    }
+
+    // ── Prune inline status message tests ────────────────────────────────────
+
+    #[test]
+    fn status_message_shown_in_status_bar_when_set() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.status_message = Some("Pruned: 1 session(s) killed, 0 worktree(s) removed.".to_string());
+        let out = render_to_string(&state, 120, 24);
+        assert!(
+            out.contains("Pruned:"),
+            "status bar should show prune result message when status_message is set"
+        );
+    }
+
+    #[test]
+    fn project_info_shown_when_status_message_is_none() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows);
+        assert!(state.status_message.is_none());
+        let out = render_to_string(&state, 120, 24);
+        assert!(
+            out.contains("myapp"),
+            "status bar should show project info when status_message is None"
+        );
+    }
+
+    #[test]
+    fn nothing_to_prune_message_shown_inline() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.status_message = Some("Nothing to prune.".to_string());
+        let out = render_to_string(&state, 120, 24);
+        assert!(
+            out.contains("Nothing to prune"),
+            "status bar should show 'Nothing to prune.' inline"
+        );
     }
 
     #[test]
