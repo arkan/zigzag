@@ -105,8 +105,8 @@ pub enum TuiAction {
         /// open the project's default (main) session.
         session: Option<String>,
     },
-    /// User pressed `n` — create a new session for the selected project.
-    New { project: String },
+    /// User pressed `n` — create a new session for the selected project on a named branch.
+    New { project: String, branch: String },
     /// User pressed `d` — delete the selected session.
     Delete { session: String },
     /// User selected a workflow in the autopilot modal.
@@ -218,6 +218,8 @@ pub enum Modal {
     },
     /// Full-screen help overlay showing all keybindings (opened with '?').
     Help,
+    /// Branch name input shown when the user presses 'n' (new session).
+    BranchInput { project: String, input: String },
 }
 
 /// Outcome of processing one keypress inside a modal.
@@ -239,6 +241,7 @@ enum ModalOutcome {
     },
     DeleteConfirmed { project: String },
     WorkflowSelected { project: String, workflow: String },
+    NewBranch { project: String, branch: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -1262,6 +1265,27 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => ModalOutcome::Close,
             _ => ModalOutcome::Continue,
         },
+
+        Modal::BranchInput { project, input } => match code {
+            KeyCode::Esc => ModalOutcome::Close,
+            KeyCode::Enter => {
+                let branch = input.trim().to_string();
+                if branch.is_empty() {
+                    ModalOutcome::Continue
+                } else {
+                    ModalOutcome::NewBranch { project: project.clone(), branch }
+                }
+            }
+            KeyCode::Backspace => {
+                input.pop();
+                ModalOutcome::Continue
+            }
+            KeyCode::Char(c) => {
+                input.push(c);
+                ModalOutcome::Continue
+            }
+            _ => ModalOutcome::Continue,
+        },
     }
 }
 
@@ -1371,6 +1395,10 @@ fn event_loop<B: Backend>(
                         state.modal = None;
                         return Ok(TuiAction::Autopilot { project, workflow });
                     }
+                    ModalOutcome::NewBranch { project, branch } => {
+                        state.modal = None;
+                        return Ok(TuiAction::New { project, branch });
+                    }
                     ModalOutcome::Continue => {}
                 }
                 continue;
@@ -1462,8 +1490,9 @@ fn event_loop<B: Backend>(
 
                     KeyCode::Char('n') => {
                         if let Some(entry) = state.selected_entry() {
-                            return Ok(TuiAction::New {
+                            state.modal = Some(Modal::BranchInput {
                                 project: entry.project.name.clone(),
+                                input: String::new(),
                             });
                         }
                     }
@@ -1961,6 +1990,10 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
             render_help_modal(f);
             return;
         }
+        Some(Modal::BranchInput { project, input }) => {
+            render_branch_input_modal(f, project, input);
+            return;
+        }
         Some(Modal::AddProject(form)) => (form, " Add Project "),
         Some(Modal::EditProject(form, _)) => (form, " Edit Project "),
     };
@@ -2033,6 +2066,42 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
         " Tab: complete path / next  S-Tab: prev  Enter: save  Esc: cancel",
         Style::default().add_modifier(Modifier::DIM),
     )));
+
+    let paragraph = Paragraph::new(Text::from(lines));
+    f.render_widget(paragraph, inner);
+}
+
+fn render_branch_input_modal(f: &mut Frame, project: &str, input: &str) {
+    let area = f.area();
+    // Modal: 52 wide, 7 tall (title row + label + value + blank + sep + hint + 2 borders)
+    let rect = modal_rect(52, 7, area);
+
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" New Session — {} ", project))
+        .border_style(Style::default().add_modifier(Modifier::BOLD));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let sep_width = inner.width.saturating_sub(1) as usize;
+    let lines = vec![
+        Line::from(Span::styled(" Branch name:", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            format!(" \u{25b6} {}█", input),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "\u{2500}".repeat(sep_width),
+            Style::default().add_modifier(Modifier::DIM),
+        )),
+        Line::from(Span::styled(
+            " Enter: create  Esc: cancel",
+            Style::default().add_modifier(Modifier::DIM),
+        )),
+    ];
 
     let paragraph = Paragraph::new(Text::from(lines));
     f.render_widget(paragraph, inner);
@@ -5188,5 +5257,117 @@ mod tests {
         let state = TuiState::new(make_entries(), Navigation::Arrows);
         let out = render_to_string(&state, 120, 24);
         assert!(out.contains("[?]help"), "status bar should advertise '?' for help");
+    }
+
+    // ── BranchInput modal tests ──────────────────────────────────────────────
+
+    #[test]
+    fn n_key_opens_branch_input_modal() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        // Simulate 'n' key in normal mode: should open BranchInput modal
+        state.modal = None;
+        if let Some(entry) = state.selected_entry() {
+            state.modal = Some(Modal::BranchInput {
+                project: entry.project.name.clone(),
+                input: String::new(),
+            });
+        }
+        assert!(
+            matches!(state.modal, Some(Modal::BranchInput { .. })),
+            "n key should open BranchInput modal"
+        );
+    }
+
+    #[test]
+    fn branch_input_modal_esc_closes() {
+        let mut modal = Modal::BranchInput {
+            project: "myapp".to_string(),
+            input: "feat".to_string(),
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Esc);
+        assert!(matches!(outcome, ModalOutcome::Close), "Esc should close BranchInput modal");
+    }
+
+    #[test]
+    fn branch_input_modal_char_appends() {
+        let mut modal = Modal::BranchInput {
+            project: "myapp".to_string(),
+            input: "feat".to_string(),
+        };
+        advance_modal(&mut modal, KeyCode::Char('-'));
+        advance_modal(&mut modal, KeyCode::Char('x'));
+        if let Modal::BranchInput { input, .. } = &modal {
+            assert_eq!(input, "feat-x");
+        } else {
+            panic!("expected BranchInput modal");
+        }
+    }
+
+    #[test]
+    fn branch_input_modal_backspace_removes_char() {
+        let mut modal = Modal::BranchInput {
+            project: "myapp".to_string(),
+            input: "feat".to_string(),
+        };
+        advance_modal(&mut modal, KeyCode::Backspace);
+        if let Modal::BranchInput { input, .. } = &modal {
+            assert_eq!(input, "fea");
+        } else {
+            panic!("expected BranchInput modal");
+        }
+    }
+
+    #[test]
+    fn branch_input_modal_enter_empty_continues() {
+        let mut modal = Modal::BranchInput {
+            project: "myapp".to_string(),
+            input: String::new(),
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        assert!(matches!(outcome, ModalOutcome::Continue), "Enter on empty input should not submit");
+    }
+
+    #[test]
+    fn branch_input_modal_enter_with_branch_submits() {
+        let mut modal = Modal::BranchInput {
+            project: "myapp".to_string(),
+            input: "feature/foo".to_string(),
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::NewBranch { project, branch } => {
+                assert_eq!(project, "myapp");
+                assert_eq!(branch, "feature/foo");
+            }
+            _ => panic!("expected NewBranch outcome"),
+        }
+    }
+
+    #[test]
+    fn branch_input_modal_renders() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::BranchInput {
+            project: "myapp".to_string(),
+            input: "feat-123".to_string(),
+        });
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("New Session"), "should show 'New Session' title");
+        assert!(out.contains("feat-123"), "should show current input");
+    }
+
+    #[test]
+    fn tui_action_new_includes_branch() {
+        // TuiAction::New must carry the branch name
+        let action = TuiAction::New {
+            project: "myapp".to_string(),
+            branch: "feature/bar".to_string(),
+        };
+        match action {
+            TuiAction::New { project, branch } => {
+                assert_eq!(project, "myapp");
+                assert_eq!(branch, "feature/bar");
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 }

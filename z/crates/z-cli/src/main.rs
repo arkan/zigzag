@@ -231,8 +231,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 initial_project = Some(project);
             }
 
-            TuiAction::New { project } => {
-                cmd_open(&project, None)?;
+            TuiAction::New { project, branch } => {
+                cmd_open(&project, Some(&branch))?;
                 // Loop back to re-enter the TUI after the session ends,
                 // with the same project re-selected.
                 initial_project = Some(project);
