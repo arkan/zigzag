@@ -1797,7 +1797,7 @@ fn render_workflow_selector_modal(
     selected: usize,
 ) {
     let area = f.area();
-    // Height: 1 title line per workflow + 1 blank + 1 separator + 1 hint + 2 borders, min 7
+    // Height: 1 line per workflow + 1 separator + 1 hint + 2 borders, min 7
     let modal_height = (workflows.len() as u16 + 4).max(7).min(area.height);
     let modal_width = 72u16;
     let rect = modal_rect(modal_width, modal_height, area);
@@ -4709,5 +4709,73 @@ mod tests {
             }
         }
         assert!(state.modal.is_none(), "'a' with no workflows should not open any modal");
+    }
+
+    #[test]
+    fn workflow_selector_k_moves_selection_up() {
+        let mut modal = Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: make_workflows(),
+            selected: 2,
+        };
+        advance_modal(&mut modal, KeyCode::Char('k'));
+        if let Modal::WorkflowSelector { selected, .. } = modal {
+            assert_eq!(selected, 1, "k should move selection up");
+        } else {
+            panic!("expected WorkflowSelector");
+        }
+    }
+
+    #[test]
+    fn workflow_selector_up_from_middle_moves_up() {
+        let mut modal = Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: make_workflows(),
+            selected: 2,
+        };
+        advance_modal(&mut modal, KeyCode::Up);
+        if let Modal::WorkflowSelector { selected, .. } = modal {
+            assert_eq!(selected, 1, "Up from index 2 should go to 1");
+        } else {
+            panic!("expected WorkflowSelector");
+        }
+    }
+
+    #[test]
+    fn workflow_selector_enter_on_empty_list_closes() {
+        let mut modal = Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: vec![],
+            selected: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        assert!(matches!(outcome, ModalOutcome::Close), "Enter on empty workflows should close");
+    }
+
+    #[test]
+    fn workflow_selector_single_workflow_navigation() {
+        let single = vec![WorkflowInfo {
+            name: "only-one".to_string(),
+            trigger: "manual".to_string(),
+            description: "The sole workflow".to_string(),
+        }];
+        let mut modal = Modal::WorkflowSelector {
+            project: "myapp".to_string(),
+            workflows: single,
+            selected: 0,
+        };
+        // Down should not move past the single item
+        advance_modal(&mut modal, KeyCode::Down);
+        if let Modal::WorkflowSelector { selected, .. } = &modal {
+            assert_eq!(*selected, 0, "Down on single-item list should stay at 0");
+        }
+        // Enter should select it
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::WorkflowSelected { workflow, .. } => {
+                assert_eq!(workflow, "only-one");
+            }
+            _ => panic!("expected WorkflowSelected"),
+        }
     }
 }

@@ -151,11 +151,11 @@ fn cmd_tui() -> z_core::error::Result<()> {
     // Track the name of the most recently added project for auto-selection.
     let mut initial_project: Option<String> = None;
 
+    // Load built-in workflows once; they are the same for every project.
+    let builtin: Vec<AutopilotWorkflow> = builtin_workflows().unwrap_or_default();
+
     loop {
         let projects = store.list_projects()?;
-
-        // Load built-in workflows once; they are the same for every project.
-        let builtin: Vec<AutopilotWorkflow> = builtin_workflows().unwrap_or_default();
 
         let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
         for project in &projects {
