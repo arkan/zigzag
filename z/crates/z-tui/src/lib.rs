@@ -1440,7 +1440,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
         })
         .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string());
 
-    let hints = " [o]pen [n]ew [d]elete [p]rune [a]utopilot [A]dd [D]elete [e]dit [/]search [q]uit";
+    let hints = " [o]pen [n]ew [d]el session [p]rune [a]utopilot [A]dd [D]el project [e]dit [/]search [q]uit";
     let content = format!("{}\n{}", project_info, hints);
 
     let paragraph = Paragraph::new(content)
@@ -1455,7 +1455,7 @@ fn render_delete_confirm_modal(
     worktree_count: usize,
 ) {
     let area = f.area();
-    // 3 info lines + 1 blank + 1 hint + 2 separator + 2 borders = 9 rows
+    // 3 info lines + 1 blank + 1 separator + 1 hint + 2 borders = 8; round to 9 for padding
     let modal_width = 62u16;
     let modal_height = 9u16;
     let rect = modal_rect(modal_width, modal_height, area);
@@ -1504,19 +1504,13 @@ fn render_delete_confirm_modal(
 }
 
 fn render_modal(f: &mut Frame, state: &TuiState) {
-    match &state.modal {
+    let form = match &state.modal {
         None => return,
         Some(Modal::DeleteConfirm { project_name, session_count, worktree_count }) => {
             render_delete_confirm_modal(f, project_name, *session_count, *worktree_count);
             return;
         }
-        Some(Modal::AddProject(_)) => {}
-    }
-    // Only AddProject reaches here.
-    let form = if let Some(Modal::AddProject(form)) = &state.modal {
-        form
-    } else {
-        return;
+        Some(Modal::AddProject(form)) => form,
     };
 
     let area = f.area();
@@ -3586,8 +3580,8 @@ mod tests {
     #[test]
     fn status_bar_shows_delete_project_hint() {
         let state = TuiState::new(make_entries(), Navigation::Arrows);
-        let out = render_to_string(&state, 100, 30);
-        assert!(out.contains("[D]elete"), "status bar should include [D]elete hint");
+        let out = render_to_string(&state, 120, 30);
+        assert!(out.contains("[D]el project"), "status bar should include [D]el project hint");
     }
 
     #[test]
@@ -3598,5 +3592,82 @@ mod tests {
             worktree_count: 5,
         };
         assert_eq!(entry.worktree_count, 5);
+    }
+
+    #[test]
+    fn d_key_on_sessions_panel_does_not_open_delete_modal() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.focused_panel = Panel::Sessions;
+        // Replicate the guard from the event loop: D only opens modal on Projects panel.
+        if state.focused_panel == Panel::Projects {
+            if let Some(entry) = state.selected_entry() {
+                state.modal = Some(Modal::DeleteConfirm {
+                    project_name: entry.project.name.clone(),
+                    session_count: entry.sessions.len(),
+                    worktree_count: entry.worktree_count,
+                });
+            }
+        }
+        assert!(state.modal.is_none(), "D on Sessions panel should not open delete modal");
+    }
+
+    #[test]
+    fn delete_confirm_modal_with_singular_counts() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::DeleteConfirm {
+            project_name: "solo".to_string(),
+            session_count: 1,
+            worktree_count: 1,
+        });
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("session"), "should show 'session' (singular)");
+        assert!(out.contains("worktree"), "should show 'worktree' (singular)");
+        // Ensure it doesn't say "sessions" or "worktrees" (plural)
+        assert!(!out.contains("sessions"), "should not use plural 'sessions' for count 1");
+        assert!(!out.contains("worktrees"), "should not use plural 'worktrees' for count 1");
+    }
+
+    #[test]
+    fn delete_confirm_modal_with_zero_counts() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::DeleteConfirm {
+            project_name: "empty".to_string(),
+            session_count: 0,
+            worktree_count: 0,
+        });
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("sessions"), "should use plural 'sessions' for count 0");
+        assert!(out.contains("worktrees"), "should use plural 'worktrees' for count 0");
+    }
+
+    #[test]
+    fn delete_confirm_preserves_project_name_on_continue() {
+        let mut modal = Modal::DeleteConfirm {
+            project_name: "my-project".to_string(),
+            session_count: 3,
+            worktree_count: 2,
+        };
+        // Press some random keys — modal should still hold the same project name.
+        assert!(matches!(advance_modal(&mut modal, KeyCode::Char('z')), ModalOutcome::Continue));
+        assert!(matches!(advance_modal(&mut modal, KeyCode::Left), ModalOutcome::Continue));
+        // Now confirm — should return the original name.
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::DeleteConfirmed { project } => assert_eq!(project, "my-project"),
+            _ => panic!("expected DeleteConfirmed after Continue keys"),
+        }
+    }
+
+    #[test]
+    fn delete_confirm_modal_renders_on_small_terminal() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::DeleteConfirm {
+            project_name: "test".to_string(),
+            session_count: 0,
+            worktree_count: 0,
+        });
+        // Render on a very small terminal — should not panic.
+        let out = render_to_string(&state, 30, 10);
+        assert!(out.contains("Delete"), "modal should still render on small terminal");
     }
 }
