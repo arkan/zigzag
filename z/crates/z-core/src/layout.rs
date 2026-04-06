@@ -37,30 +37,12 @@ const KEYBINDS_BLOCK: &str = "\
 /// Output format:
 /// ```kdl
 /// layout {
-///     default_tab_template {
-///         pane size=1 borderless=true {
-///             plugin location="tab-bar"
-///         }
-///         children
-///         pane size=2 borderless=true {
-///             plugin location="status-bar"
-///         }
-///     }
-///     keybinds {
-///         shared {
-///             bind "Ctrl s" {
-///                 Run "z" "switch" {
-///                     floating true
-///                     close_on_exit true
-///                 }
-///             }
-///         }
-///     }
-///     tab name="claude" {
-///         pane command="claude"
-///     }
-///     tab name="shell" {
-///         pane
+///     default_tab_template { ... }
+///     tab name="claude" { ... }
+/// }
+/// keybinds {
+///     shared {
+///         bind "Ctrl s" { ... }
 ///     }
 /// }
 /// ```
@@ -71,11 +53,11 @@ pub fn generate_layout_kdl(layout: &Layout) -> String {
         String::from("layout {\n")
     };
     out.push_str(DEFAULT_TAB_TEMPLATE);
-    out.push_str(KEYBINDS_BLOCK);
     for tab in &layout.tabs {
         out.push_str(&generate_tab_kdl(tab));
     }
     out.push_str("}\n");
+    out.push_str(KEYBINDS_BLOCK);
     out
 }
 
@@ -483,14 +465,14 @@ mod tests {
     }
 
     #[test]
-    fn generate_kdl_keybinds_appears_before_tabs() {
+    fn generate_kdl_keybinds_appears_after_layout_block() {
         let layout = default_layout();
         let kdl = generate_layout_kdl(&layout);
+        let layout_close = kdl.find("}\n").unwrap();
         let keybinds_pos = kdl.find("keybinds {").unwrap();
-        let first_tab_pos = kdl.find("tab name=").unwrap();
         assert!(
-            keybinds_pos < first_tab_pos,
-            "keybinds block must appear before tab definitions"
+            keybinds_pos > layout_close,
+            "keybinds block must appear outside (after) the layout block"
         );
     }
 }
