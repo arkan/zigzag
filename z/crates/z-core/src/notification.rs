@@ -106,6 +106,17 @@ pub fn has_notifications(session: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// Returns the number of pending notifications for `session`.
+///
+/// Returns 0 if the session directory does not exist or cannot be read.
+pub fn count_notifications(session: &str) -> usize {
+    let dir = session_notifications_dir(session);
+    if !dir.exists() {
+        return 0;
+    }
+    fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0)
+}
+
 /// Returns the names of all sessions that have pending notifications.
 ///
 /// Scans subdirectories of `/tmp/z/notifications/`; only includes directories
@@ -244,6 +255,45 @@ mod tests {
     }
 
     // ── Path traversal validation tests ──────────────────────────────────
+
+    #[test]
+    fn count_notifications_zero_when_dir_does_not_exist() {
+        // Use a name that should never exist on disk
+        assert_eq!(count_notifications("nonexistent__count__test__xyz"), 0);
+    }
+
+    #[test]
+    fn count_notifications_counts_files() {
+        let session = unique_session("count_files");
+        cleanup(&session);
+
+        write_notification(&session, "first", NotifyLevel::Info).unwrap();
+        write_notification(&session, "second", NotifyLevel::Warning).unwrap();
+        write_notification(&session, "third", NotifyLevel::Error).unwrap();
+        assert_eq!(count_notifications(&session), 3);
+        cleanup(&session);
+    }
+
+    #[test]
+    fn count_notifications_one_file() {
+        let session = unique_session("count_one");
+        cleanup(&session);
+
+        write_notification(&session, "msg", NotifyLevel::Info).unwrap();
+        assert_eq!(count_notifications(&session), 1);
+        cleanup(&session);
+    }
+
+    #[test]
+    fn count_notifications_zero_after_clear() {
+        let session = unique_session("count_after_clear");
+        cleanup(&session);
+
+        write_notification(&session, "msg", NotifyLevel::Info).unwrap();
+        assert_eq!(count_notifications(&session), 1);
+        clear_notifications(&session).unwrap();
+        assert_eq!(count_notifications(&session), 0);
+    }
 
     #[test]
     fn write_rejects_session_with_slash() {
