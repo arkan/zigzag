@@ -149,9 +149,15 @@ fn run() {
                 std::process::exit(1);
             }
         }
+        Some("logs-viewer") => {
+            if let Err(e) = cmd_logs_viewer() {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Some(cmd) => {
             eprintln!("unknown command: {:?}", cmd);
-            eprintln!("usage: z [list|open|close|delete|prune|notify|autopilot|logs|switch]");
+            eprintln!("usage: z [list|open|close|delete|prune|notify|autopilot|logs|switch|logs-viewer]");
             std::process::exit(1);
         }
     }
@@ -908,6 +914,18 @@ fn cmd_switch() -> z_core::error::Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Logs viewer command (standalone, for Zellij floating pane)
+// ---------------------------------------------------------------------------
+
+fn cmd_logs_viewer() -> z_core::error::Result<()> {
+    let logger = log::FileLogger::new();
+    let entries = logger.read_recent(500);
+    let lines: Vec<String> = entries.iter().map(|e| e.format()).collect();
+    z_tui::run_log_viewer(lines)
+        .map_err(|e| z_core::error::ZError::Io(e.to_string()))
 }
 
 // ---------------------------------------------------------------------------
