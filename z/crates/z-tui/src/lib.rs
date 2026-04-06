@@ -1020,8 +1020,12 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             }
 
             KeyCode::BackTab => {
+                let was_path = form.active_field == 0;
                 form.active_field =
                     (form.active_field + form.fields.len() - 1) % form.fields.len();
+                if was_path {
+                    validate_path_field(form);
+                }
                 ModalOutcome::Continue
             }
 
@@ -3082,7 +3086,7 @@ mod tests {
     #[test]
     fn advance_modal_tab_wraps_around() {
         let mut modal = Modal::AddProject(ProjectForm::new());
-        // Start at field 1; Tab 3 times → wraps back to 1.
+        // Start at field 1; Tab 3 times → 1→2→3→0 (wraps to path field).
         if let Modal::AddProject(ref mut form) = modal {
             form.active_field = 1;
         }
@@ -3090,7 +3094,7 @@ mod tests {
             advance_modal(&mut modal, KeyCode::Tab);
         }
         let Modal::AddProject(ref form) = modal;
-        assert_eq!(form.active_field, 1);
+        assert_eq!(form.active_field, 0);
     }
 
     #[test]
@@ -3105,10 +3109,14 @@ mod tests {
     #[test]
     fn advance_modal_backtab_goes_to_previous() {
         let mut modal = Modal::AddProject(ProjectForm::new());
-        advance_modal(&mut modal, KeyCode::Tab); // field 1
-        advance_modal(&mut modal, KeyCode::BackTab); // back to field 0
+        // Start at field 2, Tab forward to field 3, BackTab back to field 2.
+        if let Modal::AddProject(ref mut form) = modal {
+            form.active_field = 2;
+        }
+        advance_modal(&mut modal, KeyCode::Tab); // field 3
+        advance_modal(&mut modal, KeyCode::BackTab); // back to field 2
         let Modal::AddProject(ref form) = modal;
-        assert_eq!(form.active_field, 0);
+        assert_eq!(form.active_field, 2);
     }
 
     #[test]
@@ -3631,5 +3639,17 @@ mod tests {
         advance_modal(&mut modal, KeyCode::Tab);
         let Modal::AddProject(ref form) = modal;
         assert_eq!(form.active_field, 3);
+    }
+
+    #[test]
+    fn backtab_from_path_field_validates_path() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = "/nonexistent/path/that/does/not/exist".to_string();
+        }
+        advance_modal(&mut modal, KeyCode::BackTab);
+        let Modal::AddProject(ref form) = modal;
+        assert_eq!(form.active_field, 3, "BackTab from field 0 wraps to last field");
+        assert!(form.fields[0].warning.is_some(), "path validation should run when leaving field 0 via BackTab");
     }
 }
