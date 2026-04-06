@@ -1899,8 +1899,8 @@ fn render_workflow_selector_modal(
 
 fn render_help_modal(f: &mut Frame) {
     let area = f.area();
-    // 4 section headers + ~13 keybinding rows + 2 blank + 1 sep + 1 hint + 2 borders = 23
-    let modal_height = 23u16;
+    // 3 section headers + 16 keybinding rows + 2 blank + 1 sep + 1 hint = 23 content + 2 borders = 25
+    let modal_height = 25u16;
     let modal_width = 56u16;
     let rect = modal_rect(modal_width, modal_height, area);
 
@@ -1927,6 +1927,7 @@ fn render_help_modal(f: &mut Frame) {
         Line::from(Span::styled(" Actions", heading)),
         Line::from("   o / Enter        Open session"),
         Line::from("   n                New session on main branch"),
+        Line::from("   d                Delete session"),
         Line::from("   A                Add project"),
         Line::from("   E                Edit project"),
         Line::from("   D                Delete project"),
@@ -5169,8 +5170,17 @@ mod tests {
         state.modal = Some(Modal::Help);
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("Open session"), "help modal should describe 'o' key");
+        assert!(out.contains("Delete session"), "help modal should describe 'd' key");
         assert!(out.contains("Fuzzy search"), "help modal should describe '/' key");
         assert!(out.contains("Prune orphaned sessions"), "help modal should describe 'p' key");
+    }
+
+    #[test]
+    fn help_modal_renders_in_small_terminal() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::Help);
+        // Should not panic even when terminal is smaller than the modal's preferred size
+        let _out = render_to_string(&state, 30, 10);
     }
 
     #[test]
