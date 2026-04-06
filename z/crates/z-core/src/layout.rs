@@ -14,13 +14,19 @@ const DEFAULT_TAB_TEMPLATE: &str = "\
     }\n";
 
 /// Keybind block injected into every generated layout.
-/// Binds `Ctrl+s` to run `z switch` in a floating pane that closes on exit,
-/// providing a session-switcher accessible from any z-managed session.
+/// Binds `Ctrl+k` to session switcher and `Ctrl+l` to log viewer,
+/// both running in floating panes that close on exit.
 const KEYBINDS_BLOCK: &str = "\
     keybinds {\n\
         shared {\n\
             bind \"Ctrl k\" {\n\
                 Run \"/Users/arkan/Code/z/z/target/debug/z\" \"switch\" {\n\
+                    floating true\n\
+                    close_on_exit true\n\
+                }\n\
+            }\n\
+            bind \"Ctrl l\" {\n\
+                Run \"/Users/arkan/Code/z/z/target/debug/z\" \"logs-viewer\" {\n\
                     floating true\n\
                     close_on_exit true\n\
                 }\n\

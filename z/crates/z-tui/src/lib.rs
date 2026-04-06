@@ -2077,7 +2077,7 @@ fn render_help_modal(f: &mut Frame) {
         Line::from("   Ctrl+O \u{2192} D      Detach (return to z)"),
         Line::from("   Ctrl+Q           Quit session (return to z)"),
         Line::from(Span::styled(" \u{2500}".repeat((inner.width.saturating_sub(1) / 2) as usize), dim)),
-        Line::from(Span::styled("   l  view logs   ?  this help   q  quit z", dim)),
+        Line::from(Span::styled("   Ctrl+l  logs   ?  this help   q  quit z", dim)),
     ];
 
     let paragraph = Paragraph::new(Text::from(lines));
@@ -2526,6 +2526,50 @@ pub fn run_switch_picker(
         SwitchPickerState::with_notifications(sessions, ages, notification_counts, current_session);
 
     let result = switch_picker_event_loop(&mut terminal, &mut state);
+
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = terminal.show_cursor();
+
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Standalone log viewer (used by `z logs-viewer` in a Zellij floating pane)
+// ---------------------------------------------------------------------------
+
+/// Run a standalone log viewer TUI. `lines` are the log entries to display.
+/// Blocks until the user presses Esc or q.
+pub fn run_log_viewer(lines: Vec<String>) -> io::Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let scroll_offset = lines.len().saturating_sub(1);
+    let mut modal = Modal::LogViewer { lines, scroll_offset };
+
+    let result = loop {
+        terminal.draw(|f| {
+            if let Modal::LogViewer { ref lines, scroll_offset } = modal {
+                render_log_viewer_modal(f, lines, scroll_offset);
+            }
+        })?;
+
+        if !event::poll(Duration::from_millis(100))? {
+            continue;
+        }
+        if let event::Event::Key(key) = event::read()? {
+            if key.kind != event::KeyEventKind::Press {
+                continue;
+            }
+            match advance_modal(&mut modal, key.code) {
+                ModalOutcome::Close => break Ok(()),
+                _ => {}
+            }
+        }
+    };
 
     let _ = disable_raw_mode();
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
@@ -5876,13 +5920,13 @@ mod tests {
     }
 
     #[test]
-    fn log_viewer_l_closes() {
+    fn log_viewer_l_does_not_close() {
         let mut modal = Modal::LogViewer {
             lines: vec!["[2026-04-06] [INFO] test".to_string()],
             scroll_offset: 0,
         };
         let outcome = advance_modal(&mut modal, KeyCode::Char('l'));
-        assert!(matches!(outcome, ModalOutcome::Close), "l should close LogViewer");
+        assert!(matches!(outcome, ModalOutcome::Continue), "l should not close LogViewer (Ctrl+l does)");
     }
 
     #[test]
