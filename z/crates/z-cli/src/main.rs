@@ -150,6 +150,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
 
     // Track the name of the most recently added project for auto-selection.
     let mut initial_project: Option<String> = None;
+    // One-shot status message shown in the TUI status bar on the next iteration.
+    let mut status_message: Option<String> = None;
 
     // Load built-in workflows once; they are the same for every project.
     let builtin: Vec<AutopilotWorkflow> = builtin_workflows().unwrap_or_default();
@@ -195,7 +197,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
             .as_deref()
             .and_then(|name| entries.iter().position(|e| e.project.name == name));
 
-        let action = z_tui::run_tui(entries, navigation.clone(), notifications, initial_idx)
+        let action = z_tui::run_tui(entries, navigation.clone(), notifications, initial_idx, status_message.take())
             .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
         match action {
@@ -238,8 +240,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
             }
 
             TuiAction::Prune => {
-                cmd_prune(false)?;
-                return Ok(());
+                status_message = Some(prune_summary()?);
+                // Loop back to re-enter TUI with the prune result shown inline.
             }
 
             TuiAction::Autopilot { project, workflow: _ } => {
@@ -686,6 +688,52 @@ fn cmd_prune(dry_run: bool) -> z_core::error::Result<()> {
     );
 
     Ok(())
+}
+
+/// Non-interactive prune for use in TUI mode.
+///
+/// Finds and immediately removes orphaned sessions and worktrees without
+/// asking for confirmation (the TUI 'p' binding acts as implicit confirmation).
+/// Returns a one-line summary string to display in the status bar.
+fn prune_summary() -> z_core::error::Result<String> {
+    let store = KdlProjectStore::new();
+    let session_mgr = ZellijSessionManager;
+
+    let projects = store.list_projects()?;
+
+    let mut all_orphaned_sessions: Vec<z_core::domain::Session> = Vec::new();
+    let mut all_orphaned_worktrees: Vec<(z_core::domain::Worktree, std::path::PathBuf)> =
+        Vec::new();
+
+    for project in &projects {
+        let wt_mgr = WtWorktreeManager::new(project.path.clone());
+        let sessions = session_mgr.list_sessions(&project.name)?;
+        let worktrees = wt_mgr.list_worktrees(&project.name)?;
+
+        all_orphaned_sessions
+            .extend(prune::find_orphaned_sessions(&sessions, &worktrees));
+        for wt in prune::find_orphaned_worktrees(&worktrees, &sessions) {
+            all_orphaned_worktrees.push((wt, project.path.clone()));
+        }
+    }
+
+    if all_orphaned_sessions.is_empty() && all_orphaned_worktrees.is_empty() {
+        return Ok("Nothing to prune.".to_string());
+    }
+
+    let killed = all_orphaned_sessions.len();
+    let removed = all_orphaned_worktrees.len();
+
+    for session in &all_orphaned_sessions {
+        session_mgr.kill_session(session)?;
+    }
+
+    for (wt, project_path) in &all_orphaned_worktrees {
+        let wt_mgr = WtWorktreeManager::new(project_path.clone());
+        wt_mgr.remove_worktree(wt)?;
+    }
+
+    Ok(format!("Pruned: {} session(s) killed, {} worktree(s) removed.", killed, removed))
 }
 
 // ---------------------------------------------------------------------------
