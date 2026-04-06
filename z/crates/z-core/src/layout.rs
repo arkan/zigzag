@@ -2,9 +2,22 @@ use crate::domain::{Layout, Pane, Tab};
 
 /// Generate a Zellij KDL layout string from a `Layout`.
 ///
+/// Always includes a `default_tab_template` with `tab-bar` and `status-bar`
+/// plugins so Zellij renders its UI chrome (tab bar and status bar) even
+/// when a custom layout is provided.
+///
 /// Output format:
 /// ```kdl
 /// layout {
+///     default_tab_template {
+///         pane size=1 borderless=true {
+///             plugin location="tab-bar"
+///         }
+///         children
+///         pane size=2 borderless=true {
+///             plugin location="status-bar"
+///         }
+///     }
 ///     tab name="claude" {
 ///         pane command="claude"
 ///     }
@@ -19,6 +32,15 @@ pub fn generate_layout_kdl(layout: &Layout) -> String {
     } else {
         String::from("layout {\n")
     };
+    out.push_str("    default_tab_template {\n");
+    out.push_str("        pane size=1 borderless=true {\n");
+    out.push_str("            plugin location=\"tab-bar\"\n");
+    out.push_str("        }\n");
+    out.push_str("        children\n");
+    out.push_str("        pane size=2 borderless=true {\n");
+    out.push_str("            plugin location=\"status-bar\"\n");
+    out.push_str("        }\n");
+    out.push_str("    }\n");
     for tab in &layout.tabs {
         out.push_str(&generate_tab_kdl(tab));
     }
@@ -93,7 +115,9 @@ mod tests {
     fn generate_kdl_empty_layout() {
         let layout = Layout { tabs: vec![], cwd: None };
         let kdl = generate_layout_kdl(&layout);
-        assert_eq!(kdl, "layout {\n}\n");
+        assert!(kdl.starts_with("layout {\n"));
+        assert!(kdl.ends_with("}\n"));
+        assert!(kdl.contains("default_tab_template"));
     }
 
     #[test]
@@ -103,10 +127,9 @@ mod tests {
             cwd: Some(std::path::PathBuf::from("/home/user/projects/myapp-feat-login")),
         };
         let kdl = generate_layout_kdl(&layout);
-        assert_eq!(
-            kdl,
-            "layout cwd=\"/home/user/projects/myapp-feat-login\" {\n}\n"
-        );
+        assert!(kdl.starts_with("layout cwd=\"/home/user/projects/myapp-feat-login\" {\n"));
+        assert!(kdl.ends_with("}\n"));
+        assert!(kdl.contains("default_tab_template"));
     }
 
     #[test]
@@ -132,10 +155,10 @@ mod tests {
             cwd: None,
         };
         let kdl = generate_layout_kdl(&layout);
-        assert_eq!(
-            kdl,
-            "layout {\n    tab name=\"shell\" {\n        pane\n    }\n}\n"
-        );
+        assert!(kdl.starts_with("layout {\n"));
+        assert!(kdl.contains("tab name=\"shell\""));
+        assert!(kdl.contains("        pane\n"));
+        assert!(kdl.ends_with("}\n"));
     }
 
     #[test]
@@ -216,7 +239,9 @@ mod tests {
             cwd: None,
         };
         let kdl = generate_layout_kdl(&layout);
-        assert_eq!(kdl, "layout {\n    tab name=\"empty\" {\n    }\n}\n");
+        assert!(kdl.starts_with("layout {\n"));
+        assert!(kdl.contains("tab name=\"empty\""));
+        assert!(kdl.ends_with("}\n"));
     }
 
     #[test]
@@ -333,6 +358,40 @@ mod tests {
         assert!(kdl.contains("tab name=\"claude\""));
         assert!(kdl.contains("pane command=\"claude\""));
         assert!(kdl.contains("tab name=\"shell\""));
+    }
+
+    #[test]
+    fn generate_kdl_includes_default_tab_template_with_tab_bar_and_status_bar() {
+        let layout = default_layout();
+        let kdl = generate_layout_kdl(&layout);
+        assert!(
+            kdl.contains("default_tab_template"),
+            "layout must include default_tab_template block"
+        );
+        assert!(
+            kdl.contains("plugin location=\"tab-bar\""),
+            "layout must include tab-bar plugin"
+        );
+        assert!(
+            kdl.contains("plugin location=\"status-bar\""),
+            "layout must include status-bar plugin"
+        );
+        assert!(
+            kdl.contains("children"),
+            "default_tab_template must include children placeholder"
+        );
+    }
+
+    #[test]
+    fn generate_kdl_tab_template_appears_before_tabs() {
+        let layout = default_layout();
+        let kdl = generate_layout_kdl(&layout);
+        let template_pos = kdl.find("default_tab_template").unwrap();
+        let first_tab_pos = kdl.find("tab name=").unwrap();
+        assert!(
+            template_pos < first_tab_pos,
+            "default_tab_template must appear before tab definitions"
+        );
     }
 
     #[test]
