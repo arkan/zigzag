@@ -2281,6 +2281,8 @@ pub struct SwitchPickerState {
     pub sessions: Vec<String>,
     /// Ages corresponding to each session (largest unit: "2h", "30m", "1d", "5s").
     pub ages: Vec<Option<String>>,
+    /// Pending notification counts per session (0 = no badge).
+    pub notification_counts: Vec<usize>,
     /// Currently highlighted item index.
     pub selected: usize,
     /// Name of the current Zellij session (from `$ZELLIJ_SESSION_NAME`).
@@ -2294,10 +2296,11 @@ impl SwitchPickerState {
             .position(|s| s == &current_session)
             .unwrap_or(0);
         let ages = vec![None; sessions.len()];
-        Self { sessions, ages, selected, current_session }
+        let notification_counts = vec![0; sessions.len()];
+        Self { sessions, ages, notification_counts, selected, current_session }
     }
 
-    /// Create state with per-session age strings.
+    /// Create state with per-session age strings (notification counts default to 0).
     pub fn with_ages(
         sessions: Vec<String>,
         ages: Vec<Option<String>>,
@@ -2312,7 +2315,32 @@ impl SwitchPickerState {
             .iter()
             .position(|s| s == &current_session)
             .unwrap_or(0);
-        Self { sessions, ages, selected, current_session }
+        let notification_counts = vec![0; sessions.len()];
+        Self { sessions, ages, notification_counts, selected, current_session }
+    }
+
+    /// Create state with per-session age strings and notification counts.
+    pub fn with_notifications(
+        sessions: Vec<String>,
+        ages: Vec<Option<String>>,
+        notification_counts: Vec<usize>,
+        current_session: String,
+    ) -> Self {
+        debug_assert_eq!(
+            sessions.len(),
+            ages.len(),
+            "sessions and ages must have the same length"
+        );
+        debug_assert_eq!(
+            sessions.len(),
+            notification_counts.len(),
+            "sessions and notification_counts must have the same length"
+        );
+        let selected = sessions
+            .iter()
+            .position(|s| s == &current_session)
+            .unwrap_or(0);
+        Self { sessions, ages, notification_counts, selected, current_session }
     }
 
     pub fn move_up(&mut self) {
@@ -2375,11 +2403,25 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
                 .get(i)
                 .and_then(|a| a.as_deref())
                 .unwrap_or("");
-            let label = if !age_str.is_empty()
-                && inner_width > left.len() + age_str.len() + 1
+            let notif_count = state.notification_counts.get(i).copied().unwrap_or(0);
+            // Badge: "🔔 N  " (with trailing spaces to separate from age).
+            // 🔔 (U+1F514) is 4 bytes in UTF-8 but occupies 2 terminal columns.
+            // emoji_byte_overhead = 4 - 2 = 2 corrects padding calculations that
+            // use byte lengths (via .len()) instead of display widths.
+            let badge_str = if notif_count > 0 {
+                format!("\u{1f514} {}  ", notif_count)
+            } else {
+                String::new()
+            };
+            let emoji_byte_overhead: usize = if notif_count > 0 { 2 } else { 0 };
+            let right_str = format!("{}{}", badge_str, age_str);
+            // right_display_width: how many terminal columns right_str actually occupies.
+            let right_display_width = right_str.len().saturating_sub(emoji_byte_overhead);
+            let label = if !right_str.is_empty()
+                && inner_width > left.len() + right_display_width + 1
             {
-                let padding = inner_width - left.len() - age_str.len();
-                format!("{}{}{}", left, " ".repeat(padding), age_str)
+                let padding = inner_width - left.len() - right_display_width;
+                format!("{}{}{}", left, " ".repeat(padding), right_str)
             } else {
                 left
             };
@@ -2443,10 +2485,11 @@ fn switch_picker_event_loop<B: Backend>(
 /// Returns `Some(session_name)` if the user pressed `Enter` to switch,
 /// or `None` if the user pressed `Esc`/`q` to close without switching.
 ///
-/// Each entry in `sessions_with_ages` is `(session_name, age)` where `age`
-/// is the compact duration string (e.g. `"2h"`) or `None` if unknown.
+/// Each entry in `sessions_with_ages` is `(session_name, age, notification_count)` where
+/// `age` is the compact duration string (e.g. `"2h"`) or `None` if unknown, and
+/// `notification_count` is the number of pending notifications (0 = no badge).
 pub fn run_switch_picker(
-    sessions_with_ages: Vec<(String, Option<String>)>,
+    sessions_with_ages: Vec<(String, Option<String>, usize)>,
     current_session: String,
 ) -> io::Result<Option<String>> {
     if sessions_with_ages.is_empty() {
@@ -2459,9 +2502,16 @@ pub fn run_switch_picker(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let (sessions, ages): (Vec<String>, Vec<Option<String>>) =
-        sessions_with_ages.into_iter().unzip();
-    let mut state = SwitchPickerState::with_ages(sessions, ages, current_session);
+    let mut sessions = Vec::with_capacity(sessions_with_ages.len());
+    let mut ages = Vec::with_capacity(sessions_with_ages.len());
+    let mut notification_counts = Vec::with_capacity(sessions_with_ages.len());
+    for (s, a, n) in sessions_with_ages {
+        sessions.push(s);
+        ages.push(a);
+        notification_counts.push(n);
+    }
+    let mut state =
+        SwitchPickerState::with_notifications(sessions, ages, notification_counts, current_session);
 
     let result = switch_picker_event_loop(&mut terminal, &mut state);
 
@@ -6220,6 +6270,103 @@ mod tests {
         let state = SwitchPickerState::new(vec![], String::new());
         // Empty sessions: content_rows = 0, modal_height = 3 (borders + footer)
         let _out = render_switch_picker_to_string(&state, 60, 15);
+    }
+
+    // ── Notification count badge tests ────────────────────────────────────
+
+    #[test]
+    fn switch_picker_notification_counts_default_to_zero_in_new() {
+        let state = SwitchPickerState::new(
+            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
+            "myapp:main".to_string(),
+        );
+        assert_eq!(state.notification_counts, vec![0, 0]);
+    }
+
+    #[test]
+    fn switch_picker_notification_counts_default_to_zero_in_with_ages() {
+        let state = SwitchPickerState::with_ages(
+            vec!["myapp:main".to_string()],
+            vec![Some("1h".to_string())],
+            "myapp:main".to_string(),
+        );
+        assert_eq!(state.notification_counts, vec![0]);
+    }
+
+    #[test]
+    fn switch_picker_with_notifications_stores_counts() {
+        let state = SwitchPickerState::with_notifications(
+            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
+            vec![Some("2h".to_string()), None],
+            vec![3, 0],
+            "myapp:main".to_string(),
+        );
+        assert_eq!(state.notification_counts, vec![3, 0]);
+    }
+
+    #[test]
+    fn switch_picker_renders_bell_badge_for_session_with_notifications() {
+        let state = SwitchPickerState::with_notifications(
+            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
+            vec![Some("2h".to_string()), None],
+            vec![2, 0],
+            "myapp:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        assert!(out.contains('\u{1f514}'), "should render 🔔 badge for session with notifications");
+    }
+
+    #[test]
+    fn switch_picker_renders_notification_count_number() {
+        let state = SwitchPickerState::with_notifications(
+            vec!["myapp:main".to_string()],
+            vec![None],
+            vec![5],
+            "myapp:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        assert!(out.contains('\u{1f514}'), "should render 🔔 badge");
+        assert!(out.contains('5'), "should render notification count 5");
+    }
+
+    #[test]
+    fn switch_picker_no_bell_badge_when_zero_notifications() {
+        let state = SwitchPickerState::with_notifications(
+            vec!["myapp:main".to_string()],
+            vec![None],
+            vec![0],
+            "myapp:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        assert!(!out.contains('\u{1f514}'), "should not render 🔔 badge when zero notifications");
+    }
+
+    #[test]
+    fn switch_picker_only_notified_sessions_show_badge() {
+        let state = SwitchPickerState::with_notifications(
+            vec!["alpha:main".to_string(), "beta:dev".to_string(), "gamma:feat".to_string()],
+            vec![None, None, None],
+            vec![0, 2, 0],
+            "alpha:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 70, 15);
+        assert!(out.contains('\u{1f514}'), "🔔 should appear for beta:dev");
+        // Count occurrences of 🔔 — should be exactly 1
+        let bell_count = out.matches('\u{1f514}').count();
+        assert_eq!(bell_count, 1, "🔔 should appear exactly once (only for beta:dev)");
+    }
+
+    #[test]
+    fn switch_picker_badge_with_age_both_visible() {
+        let state = SwitchPickerState::with_notifications(
+            vec!["myapp:main".to_string()],
+            vec![Some("3h".to_string())],
+            vec![1],
+            "myapp:main".to_string(),
+        );
+        let out = render_switch_picker_to_string(&state, 60, 15);
+        assert!(out.contains('\u{1f514}'), "should render 🔔 badge");
+        assert!(out.contains("3h"), "should render age '3h' alongside badge");
     }
 
     // ── Age display tests ─────────────────────────────────────────────────

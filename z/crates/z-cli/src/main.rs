@@ -861,7 +861,13 @@ fn cmd_switch() -> z_core::error::Result<()> {
         std::process::exit(1);
     }
 
-    let sessions = list_all_z_sessions_with_ages();
+    let sessions: Vec<(String, Option<String>, usize)> = list_all_z_sessions_with_ages()
+        .into_iter()
+        .map(|(name, age)| {
+            let count = z_core::notification::count_notifications(&name);
+            (name, age, count)
+        })
+        .collect();
 
     let selected = z_tui::run_switch_picker(sessions, current_session)
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
