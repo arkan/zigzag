@@ -329,22 +329,23 @@ mod tests {
         assert_eq!(result, Some(("myapp".to_string(), "main".to_string())));
     }
 
-    /// create_session must clear ZELLIJ env vars before spawning zellij so that
-    /// running `z` from inside an existing Zellij session doesn't cause zellij
-    /// to interpret `--session <name>` as "attach" (which fails with "Session
-    /// not found" when the target session doesn't exist yet).
+    /// Verify that `env_remove("ZELLIJ")` on a Command prevents the env var
+    /// from reaching the child process. This documents the mechanism used in
+    /// `create_session()` to avoid Zellij interpreting `--session <name>` as
+    /// "attach" when `z` is launched from inside an existing Zellij session.
+    ///
+    /// Note: we cannot call `create_session()` directly because it requires
+    /// zellij to be installed. Instead we verify the env_remove mechanism on
+    /// a plain `sh` command.
     #[test]
-    fn create_session_command_clears_zellij_env_vars() {
-        // Simulate being inside a Zellij session by setting these env vars.
-        std::env::set_var("ZELLIJ", "outer-session");
-        std::env::set_var("ZELLIJ_SESSION_NAME", "outer-session");
-
-        // Run a command that reports whether ZELLIJ is visible to the child.
-        // We use `sh -c` with printenv so we can verify the env was cleared.
+    fn env_remove_prevents_zellij_var_in_child_process() {
+        // Run a child that checks for ZELLIJ — env_remove should strip it
+        // even if the current process has it set. We pass it explicitly via
+        // .env() to avoid the thread-unsafe std::env::set_var.
         let output = Command::new("sh")
             .args(["-c", "printenv ZELLIJ || echo UNSET"])
+            .env("ZELLIJ", "outer-session")
             .env_remove("ZELLIJ")
-            .env_remove("ZELLIJ_SESSION_NAME")
             .output()
             .expect("sh should be available");
 
@@ -352,11 +353,7 @@ mod tests {
         assert_eq!(
             stdout.trim(),
             "UNSET",
-            "ZELLIJ env var must not be passed to zellij subprocess"
+            "ZELLIJ env var must not be passed to child subprocess"
         );
-
-        // Restore env to avoid leaking into other tests.
-        std::env::remove_var("ZELLIJ");
-        std::env::remove_var("ZELLIJ_SESSION_NAME");
     }
 }
