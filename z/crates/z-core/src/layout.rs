@@ -1,5 +1,18 @@
 use crate::domain::{Layout, Pane, Tab};
 
+/// Zellij's default UI chrome: tab-bar above content, status-bar below.
+/// Without this block in a custom layout, Zellij renders no UI chrome.
+const DEFAULT_TAB_TEMPLATE: &str = "\
+    default_tab_template {\n\
+        pane size=1 borderless=true {\n\
+            plugin location=\"tab-bar\"\n\
+        }\n\
+        children\n\
+        pane size=2 borderless=true {\n\
+            plugin location=\"status-bar\"\n\
+        }\n\
+    }\n";
+
 /// Generate a Zellij KDL layout string from a `Layout`.
 ///
 /// Always includes a `default_tab_template` with `tab-bar` and `status-bar`
@@ -32,15 +45,7 @@ pub fn generate_layout_kdl(layout: &Layout) -> String {
     } else {
         String::from("layout {\n")
     };
-    out.push_str("    default_tab_template {\n");
-    out.push_str("        pane size=1 borderless=true {\n");
-    out.push_str("            plugin location=\"tab-bar\"\n");
-    out.push_str("        }\n");
-    out.push_str("        children\n");
-    out.push_str("        pane size=2 borderless=true {\n");
-    out.push_str("            plugin location=\"status-bar\"\n");
-    out.push_str("        }\n");
-    out.push_str("    }\n");
+    out.push_str(DEFAULT_TAB_TEMPLATE);
     for tab in &layout.tabs {
         out.push_str(&generate_tab_kdl(tab));
     }
