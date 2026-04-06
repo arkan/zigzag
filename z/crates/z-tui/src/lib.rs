@@ -3621,4 +3621,99 @@ mod tests {
         let out = render_to_string(&state, 100, 24);
         assert!(out.contains("[E]"), "should show [E] edit project hint");
     }
+
+    #[test]
+    fn edit_modal_esc_closes() {
+        let mut modal = make_edit_modal("myapp", "/code/myapp");
+        let outcome = advance_modal(&mut modal, KeyCode::Esc);
+        assert!(matches!(outcome, ModalOutcome::Close));
+    }
+
+    #[test]
+    fn edit_modal_backspace_name_to_empty_clears_warning() {
+        // Use a short name so we can backspace to empty quickly.
+        let mut modal = make_edit_modal("ab", "/code/ab");
+        // Tab to name field
+        advance_modal(&mut modal, KeyCode::Tab);
+        // Backspace: "ab" → "a" (differs from "ab" → warning shows)
+        advance_modal(&mut modal, KeyCode::Backspace);
+        if let Modal::EditProject(ref form, _) = modal {
+            assert!(form.fields[1].warning.is_some(), "warning should show for partial rename");
+        } else {
+            panic!("expected EditProject modal");
+        }
+        // Backspace: "a" → "" (empty → warning clears despite differing from original)
+        advance_modal(&mut modal, KeyCode::Backspace);
+        if let Modal::EditProject(ref form, _) = modal {
+            assert!(
+                form.fields[1].warning.is_none(),
+                "warning should clear when name is empty"
+            );
+        } else {
+            panic!("expected EditProject modal");
+        }
+    }
+
+    #[test]
+    fn edit_modal_submit_preserves_host_and_token() {
+        let mut form = ProjectForm::new();
+        form.fields[0].value = "/code/myapp".to_string();
+        form.fields[1].value = "myapp".to_string();
+        form.fields[2].value = "  github.com  ".to_string();
+        form.fields[3].value = "  tok_123  ".to_string();
+        form.name_was_modified = true;
+        let mut modal = Modal::EditProject(form, "myapp".to_string());
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::SubmitEdit { host, token, .. } => {
+                assert_eq!(host, Some("github.com".to_string()), "host should be trimmed and preserved");
+                assert_eq!(token, Some("tok_123".to_string()), "token should be trimmed and preserved");
+            }
+            _ => panic!("expected SubmitEdit"),
+        }
+    }
+
+    #[test]
+    fn edit_modal_submit_rejects_empty_required_fields() {
+        let mut form = ProjectForm::new();
+        form.fields[0].value = "".to_string();
+        form.fields[1].value = "   ".to_string(); // whitespace-only
+        form.name_was_modified = true;
+        let mut modal = Modal::EditProject(form, "myapp".to_string());
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        assert!(matches!(outcome, ModalOutcome::Continue), "should not submit with empty required fields");
+        if let Modal::EditProject(ref form, _) = modal {
+            assert_eq!(form.fields[0].warning.as_deref(), Some("Required"));
+            assert_eq!(form.fields[1].warning.as_deref(), Some("Required"));
+        } else {
+            panic!("expected EditProject modal");
+        }
+    }
+
+    #[test]
+    fn edit_modal_tab_from_path_validates_path() {
+        let mut modal = make_edit_modal("myapp", "/nonexistent/path/xyz");
+        // Tab away from path field triggers validation
+        advance_modal(&mut modal, KeyCode::Tab);
+        if let Modal::EditProject(ref form, _) = modal {
+            assert!(
+                form.fields[0].warning.is_some(),
+                "path validation should set warning for non-existent path"
+            );
+        } else {
+            panic!("expected EditProject modal");
+        }
+    }
+
+    #[test]
+    fn edit_modal_backtab_cycles_fields_backward() {
+        let mut modal = make_edit_modal("myapp", "/code/myapp");
+        // Start on field 0. BackTab should wrap to field 3.
+        advance_modal(&mut modal, KeyCode::BackTab);
+        if let Modal::EditProject(ref form, _) = modal {
+            assert_eq!(form.active_field, 3, "BackTab from field 0 should wrap to last field");
+        } else {
+            panic!("expected EditProject modal");
+        }
+    }
 }
