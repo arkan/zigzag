@@ -628,9 +628,14 @@ fn extract_json_u64(json: &str, key: &str) -> Option<u64> {
 
 /// Extract a string value from a simple JSON object: `"key": "value"`.
 fn extract_json_string(json: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{}\":\"", key);
-    let start = json.find(&needle)? + needle.len();
-    let rest = &json[start..];
+    let needle = format!("\"{}\":", key);
+    let after_colon = json.find(&needle)? + needle.len();
+    // Skip optional whitespace between ':' and the opening '"'.
+    let trimmed = json[after_colon..].trim_start();
+    if !trimmed.starts_with('"') {
+        return None;
+    }
+    let rest = &trimmed[1..];
     // Find the closing quote, respecting simple escapes.
     let mut result = String::new();
     let mut chars = rest.chars().peekable();
@@ -705,14 +710,18 @@ fn fetch_zellij_info(session_name: &str) -> Option<ZellijInfo> {
 /// Expected format (may vary by Zellij version):
 /// `[{"name":"myapp:feat-login","tabs":3,"panes":5,"created_at":"..."},...]`
 fn parse_zellij_json_for_session(json: &str, session_name: &str) -> Option<ZellijInfo> {
-    // Find the object that contains `"name":"<session_name>"`
-    let name_needle = format!("\"name\":\"{}\"", session_name);
-    let obj_start = json.find(&name_needle)?;
+    // Find the object that contains `"name":"<session_name>"` (with or without space after colon).
+    let compact = format!("\"name\":\"{}\"", session_name);
+    let spaced = format!("\"name\": \"{}\"", session_name);
+    let obj_start = json.find(&compact).or_else(|| json.find(&spaced))?;
 
     // Walk backwards to find the '{' that starts this object.
     let before = &json[..obj_start];
     let brace_pos = before.rfind('{')?;
-    let obj = &json[brace_pos..];
+    // Find the matching closing '}' to avoid reading fields from later objects.
+    let after_brace = &json[brace_pos..];
+    let close = after_brace.find('}').unwrap_or(after_brace.len());
+    let obj = &after_brace[..=close.min(after_brace.len() - 1)];
 
     let tab_count = extract_json_u64(obj, "tabs")
         .or_else(|| extract_json_u64(obj, "tab_count"))
@@ -1069,13 +1078,16 @@ fn render_preview(f: &mut Frame, area: Rect, state: &TuiState) {
                 None => String::new(),
             };
             let ci_str = match &info.ci {
-                Some(CiStatus::Passing) => " | CI: \u{2705} passing".to_string(),
-                Some(CiStatus::Failing) => " | CI: \u{274c} failing".to_string(),
-                Some(CiStatus::Pending) => " | CI: \u{23f3} pending".to_string(),
-                Some(CiStatus::Unknown) | None => String::new(),
+                Some(CiStatus::Passing) => Some("CI: \u{2705} passing"),
+                Some(CiStatus::Failing) => Some("CI: \u{274c} failing"),
+                Some(CiStatus::Pending) => Some("CI: \u{23f3} pending"),
+                Some(CiStatus::Unknown) | None => None,
             };
-            if !pr_str.is_empty() || !ci_str.is_empty() {
-                lines.push(format!(" {}{}", pr_str, ci_str));
+            match (pr_str.is_empty(), ci_str) {
+                (false, Some(ci)) => lines.push(format!(" {} | {}", pr_str, ci)),
+                (false, None) => lines.push(format!(" {}", pr_str)),
+                (true, Some(ci)) => lines.push(format!(" {}", ci)),
+                (true, None) => {}
             }
 
             // Zellij session info line
@@ -2443,5 +2455,125 @@ mod tests {
     fn forge_rx_default_is_none() {
         let state = TuiState::new(make_entries(), Navigation::Arrows);
         assert!(state.forge_rx.is_none());
+    }
+
+    // ── Edge-case tests (review round) ──────────────────────────────────────
+
+    #[test]
+    fn extract_json_string_handles_space_after_colon() {
+        // gh CLI may produce `"key": "value"` with a space after the colon.
+        let json = r#"{"state": "OPEN", "title": "my pr"}"#;
+        assert_eq!(
+            extract_json_string(json, "state"),
+            Some("OPEN".to_string())
+        );
+        assert_eq!(
+            extract_json_string(json, "title"),
+            Some("my pr".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_json_string_non_string_value_returns_none() {
+        // If the value is a number, not a string, should return None.
+        let json = r#"{"number": 42}"#;
+        assert_eq!(extract_json_string(json, "number"), None);
+    }
+
+    #[test]
+    fn parse_pr_json_with_spaced_json() {
+        // Ensure PR parsing works with spaces after colons.
+        let json = r#"{"number": 99, "state": "MERGED", "title": "fix: thing", "url": "https://github.com/o/r/pull/99"}"#;
+        let pr = parse_pr_json(json).unwrap();
+        assert_eq!(pr.number, 99);
+        assert_eq!(pr.state, PrState::Merged);
+        assert_eq!(pr.title, "fix: thing");
+    }
+
+    #[test]
+    fn parse_ci_status_json_cancelled_is_unknown() {
+        let json = r#"[{"conclusion":"cancelled","status":"completed"}]"#;
+        assert_eq!(parse_ci_status_json(json), CiStatus::Unknown);
+    }
+
+    #[test]
+    fn parse_ci_status_json_queued_is_pending() {
+        let json = r#"[{"conclusion":"","status":"queued"}]"#;
+        assert_eq!(parse_ci_status_json(json), CiStatus::Pending);
+    }
+
+    #[test]
+    fn renders_ci_without_pr_no_orphaned_separator() {
+        // When CI is shown but no PR exists, there should be no " | " prefix.
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.ci = Some(CiStatus::Passing);
+        // pr remains None
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("CI:"), "should show CI line");
+        assert!(!out.contains("| CI:"), "should not have orphaned '| ' before CI");
+    }
+
+    #[test]
+    fn renders_pr_without_ci() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        let mut info = make_git_info();
+        info.pr = Some(make_pull_request(10, PrState::Open));
+        // ci remains None
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("PR: #10 (open)"), "should show PR info");
+        assert!(!out.contains("CI:"), "should not show CI when absent");
+    }
+
+    #[test]
+    fn parse_zellij_json_multiple_sessions_picks_correct_one() {
+        // The first session has 10 tabs, the target has 3 tabs.
+        // Without bounded object slicing, extract_json_u64 might pick up the wrong "tabs".
+        let json = r#"[{"name":"other","tabs":10,"panes":20},{"name":"target","tabs":3,"panes":5}]"#;
+        let info = parse_zellij_json_for_session(json, "target").unwrap();
+        assert_eq!(info.tab_count, 3, "should pick tabs from the correct session object");
+        assert_eq!(info.pane_count, 5, "should pick panes from the correct session object");
+    }
+
+    #[test]
+    fn parse_zellij_json_session_not_found() {
+        let json = r#"[{"name":"other","tabs":2,"panes":3}]"#;
+        assert!(parse_zellij_json_for_session(json, "missing").is_none());
+    }
+
+    #[test]
+    fn extract_zellij_uptime_no_pattern_returns_none() {
+        assert!(extract_zellij_uptime("myapp:main [EXITED]").is_none());
+    }
+
+    #[test]
+    fn extract_zellij_uptime_extracts_duration() {
+        let line = "myapp:main [Created 3h12m ago]";
+        assert_eq!(extract_zellij_uptime(line), Some("3h12m".to_string()));
+    }
+
+    #[test]
+    fn extract_json_u64_missing_key() {
+        let json = r#"{"other":42}"#;
+        assert_eq!(extract_json_u64(json, "number"), None);
+    }
+
+    #[test]
+    fn parse_zellij_json_with_spaces_after_colons() {
+        let json = r#"[{"name": "target", "tabs": 2, "panes": 4}]"#;
+        let info = parse_zellij_json_for_session(json, "target").unwrap();
+        assert_eq!(info.tab_count, 2);
+        assert_eq!(info.pane_count, 4);
+    }
+
+    #[test]
+    fn extract_json_string_with_escaped_quote() {
+        let json = r#"{"title":"fix: \"quoted\" thing"}"#;
+        assert_eq!(
+            extract_json_string(json, "title"),
+            Some("fix: \"quoted\" thing".to_string())
+        );
     }
 }
