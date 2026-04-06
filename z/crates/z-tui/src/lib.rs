@@ -222,7 +222,7 @@ pub enum Modal {
     Help,
     /// Branch name input shown when the user presses 'n' (new session).
     BranchInput { project: String, input: String },
-    /// Scrollable log viewer opened with 'L'.
+    /// Scrollable log viewer opened with 'l'.
     LogViewer { lines: Vec<String>, scroll_offset: usize },
 }
 
@@ -1301,7 +1301,7 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
         },
 
         Modal::LogViewer { lines, scroll_offset } => match code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('L') => ModalOutcome::Close,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('l') => ModalOutcome::Close,
             KeyCode::Up | KeyCode::Char('k') => {
                 *scroll_offset = scroll_offset.saturating_sub(1);
                 ModalOutcome::Continue
@@ -1642,7 +1642,7 @@ fn event_loop<B: Backend>(
                         state.modal = Some(Modal::Help);
                     }
 
-                    KeyCode::Char('L') => {
+                    KeyCode::Char('l') => {
                         match log_fn(200) {
                             Ok(lines) => {
                                 let scroll_offset = lines.len().saturating_sub(1);
@@ -2067,7 +2067,7 @@ fn render_help_modal(f: &mut Frame) {
         Line::from("   Ctrl+O \u{2192} D      Detach (return to z)"),
         Line::from("   Ctrl+Q           Quit session (return to z)"),
         Line::from(Span::styled(" \u{2500}".repeat((inner.width.saturating_sub(1) / 2) as usize), dim)),
-        Line::from(Span::styled("   L  view logs   ?  this help   q  quit z", dim)),
+        Line::from(Span::styled("   l  view logs   ?  this help   q  quit z", dim)),
     ];
 
     let paragraph = Paragraph::new(Text::from(lines));
@@ -5578,6 +5578,160 @@ mod tests {
         state.modal = Some(Modal::BranchInput {
             project: "myapp".to_string(),
             input: "feat".to_string(),
+        });
+        // Should not panic even when terminal is smaller than the modal
+        let _out = render_to_string(&state, 20, 5);
+    }
+
+    // ── LogViewer modal tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn log_viewer_esc_closes() {
+        let mut modal = Modal::LogViewer {
+            lines: vec!["[2026-04-06] [INFO] test".to_string()],
+            scroll_offset: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Esc);
+        assert!(matches!(outcome, ModalOutcome::Close), "Esc should close LogViewer");
+    }
+
+    #[test]
+    fn log_viewer_q_closes() {
+        let mut modal = Modal::LogViewer {
+            lines: vec!["[2026-04-06] [INFO] test".to_string()],
+            scroll_offset: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('q'));
+        assert!(matches!(outcome, ModalOutcome::Close), "q should close LogViewer");
+    }
+
+    #[test]
+    fn log_viewer_l_closes() {
+        let mut modal = Modal::LogViewer {
+            lines: vec!["[2026-04-06] [INFO] test".to_string()],
+            scroll_offset: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('l'));
+        assert!(matches!(outcome, ModalOutcome::Close), "l should close LogViewer");
+    }
+
+    #[test]
+    fn log_viewer_j_scrolls_down() {
+        let mut modal = Modal::LogViewer {
+            lines: vec!["line1".to_string(), "line2".to_string(), "line3".to_string()],
+            scroll_offset: 0,
+        };
+        advance_modal(&mut modal, KeyCode::Char('j'));
+        if let Modal::LogViewer { scroll_offset, .. } = &modal {
+            assert_eq!(*scroll_offset, 1, "j should increment scroll_offset");
+        } else {
+            panic!("expected LogViewer modal");
+        }
+    }
+
+    #[test]
+    fn log_viewer_k_scrolls_up() {
+        let mut modal = Modal::LogViewer {
+            lines: vec!["line1".to_string(), "line2".to_string(), "line3".to_string()],
+            scroll_offset: 2,
+        };
+        advance_modal(&mut modal, KeyCode::Char('k'));
+        if let Modal::LogViewer { scroll_offset, .. } = &modal {
+            assert_eq!(*scroll_offset, 1, "k should decrement scroll_offset");
+        } else {
+            panic!("expected LogViewer modal");
+        }
+    }
+
+    #[test]
+    fn log_viewer_k_does_not_underflow() {
+        let mut modal = Modal::LogViewer {
+            lines: vec!["line1".to_string()],
+            scroll_offset: 0,
+        };
+        advance_modal(&mut modal, KeyCode::Char('k'));
+        if let Modal::LogViewer { scroll_offset, .. } = &modal {
+            assert_eq!(*scroll_offset, 0, "k at top should stay at 0");
+        } else {
+            panic!("expected LogViewer modal");
+        }
+    }
+
+    #[test]
+    fn log_viewer_j_does_not_exceed_last_line() {
+        let mut modal = Modal::LogViewer {
+            lines: vec!["line1".to_string(), "line2".to_string()],
+            scroll_offset: 1,
+        };
+        advance_modal(&mut modal, KeyCode::Char('j'));
+        if let Modal::LogViewer { scroll_offset, .. } = &modal {
+            assert_eq!(*scroll_offset, 1, "j at last line should not exceed bounds");
+        } else {
+            panic!("expected LogViewer modal");
+        }
+    }
+
+    #[test]
+    fn log_viewer_g_jumps_to_top() {
+        let mut modal = Modal::LogViewer {
+            lines: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            scroll_offset: 2,
+        };
+        advance_modal(&mut modal, KeyCode::Char('g'));
+        if let Modal::LogViewer { scroll_offset, .. } = &modal {
+            assert_eq!(*scroll_offset, 0, "g should jump to top");
+        } else {
+            panic!("expected LogViewer modal");
+        }
+    }
+
+    #[test]
+    fn log_viewer_capital_g_jumps_to_bottom() {
+        let mut modal = Modal::LogViewer {
+            lines: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            scroll_offset: 0,
+        };
+        advance_modal(&mut modal, KeyCode::Char('G'));
+        if let Modal::LogViewer { scroll_offset, .. } = &modal {
+            assert_eq!(*scroll_offset, 2, "G should jump to last line index");
+        } else {
+            panic!("expected LogViewer modal");
+        }
+    }
+
+    #[test]
+    fn log_viewer_renders_log_content() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::LogViewer {
+            lines: vec![
+                "[2026-04-06] [INFO] session created".to_string(),
+                "[2026-04-06] [ERROR] worktree failed".to_string(),
+            ],
+            scroll_offset: 0,
+        });
+        let out = render_to_string(&state, 120, 40);
+        assert!(out.contains("Logs"), "should render Logs title");
+        assert!(out.contains("session created"), "should render log line content");
+    }
+
+    #[test]
+    fn log_viewer_renders_empty_state() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::LogViewer {
+            lines: vec![],
+            scroll_offset: 0,
+        });
+        let out = render_to_string(&state, 120, 40);
+        assert!(out.contains("Logs"), "should render Logs title even when empty");
+        assert!(out.contains("No logs yet"), "should show empty state message");
+    }
+
+    #[test]
+    fn log_viewer_small_terminal_no_panic() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows);
+        state.modal = Some(Modal::LogViewer {
+            lines: vec!["test line".to_string()],
+            scroll_offset: 0,
         });
         // Should not panic even when terminal is smaller than the modal
         let _out = render_to_string(&state, 20, 5);

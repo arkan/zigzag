@@ -776,22 +776,29 @@ fn prune_summary(force: bool) -> z_core::error::Result<String> {
     let mut killed = 0usize;
     let mut removed = 0usize;
     let mut skipped = 0usize;
+    let logger = log::FileLogger::new();
 
     for session in &all_orphaned_sessions {
-        if session_mgr.kill_session(session).is_ok() {
-            killed += 1;
+        match session_mgr.kill_session(session) {
+            Ok(()) => {
+                log::log_info(&logger, &format!("PRUNE KILL {}", session.name));
+                killed += 1;
+            }
+            Err(e) => {
+                log::log_error(&logger, &format!("PRUNE ERROR killing {}: {}", session.name, e));
+            }
         }
     }
 
     for (wt, project_path) in &all_orphaned_worktrees {
         let wt_mgr = WtWorktreeManager::new(project_path.clone());
         match wt_mgr.remove_worktree(wt, force) {
-            Ok(()) => removed += 1,
+            Ok(()) => {
+                log::log_info(&logger, &format!("PRUNE REMOVE {}", wt.branch));
+                removed += 1;
+            }
             Err(e) => {
-                log::log_info(
-                    &log::FileLogger::new(),
-                    &format!("worktree {} skipped: {}", wt.branch, e),
-                );
+                log::log_info(&logger, &format!("PRUNE SKIP {}: {}", wt.branch, e));
                 skipped += 1;
             }
         }
@@ -801,7 +808,7 @@ fn prune_summary(force: bool) -> z_core::error::Result<String> {
     if skipped > 0 {
         msg.push_str(&format!(" {} worktree(s) skipped (uncommitted changes).", skipped));
     }
-    log::log_info(&log::FileLogger::new(), &msg);
+    log::log_info(&logger, &format!("PRUNE OK {}", msg));
     Ok(msg)
 }
 
