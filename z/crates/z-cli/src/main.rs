@@ -17,6 +17,11 @@ use z_core::depcheck::{check_deps, format_dep_error, DepCheckStatus};
 use z_core::domain::{NotifyLevel, Session};
 use z_core::traits::{ProjectStore, SessionManager, WorktreeManager, Notifier};
 
+use z_autopilot::builtin::builtin_workflows;
+use z_autopilot::dsl::AutopilotWorkflow;
+use z_autopilot::persist::list_runs;
+use z_autopilot::state::{WorkflowRun, WorkflowStatus};
+
 use crate::config_store::KdlProjectStore;
 use crate::depcheck_impl::ProcessDepChecker;
 use crate::notify::DispatchNotifier;
@@ -116,8 +121,17 @@ fn run() {
                 std::process::exit(1);
             }
         }
+        Some("autopilot") => {
+            let sub = args.get(1).map(|s| s.as_str());
+            if let Err(e) = cmd_autopilot_dispatch(sub, &args[1..]) {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Some(cmd) => {
-            eprintln!("CLI command not yet implemented: {:?}", cmd);
+            eprintln!("unknown command: {:?}", cmd);
+            eprintln!("usage: z [list|open|close|delete|prune|notify|autopilot]");
+            std::process::exit(1);
         }
     }
 }
@@ -173,11 +187,13 @@ fn cmd_tui() -> z_core::error::Result<()> {
         }
 
         TuiAction::Prune => {
-            eprintln!("prune: not yet implemented");
+            cmd_prune(false)?;
         }
 
-        TuiAction::Autopilot { project: _ } => {
-            eprintln!("autopilot: not yet implemented");
+        TuiAction::Autopilot { project } => {
+            let store = KdlProjectStore::new();
+            let project_path = store.get_project(&project).ok().map(|p| p.path);
+            cmd_autopilot_list(project_path.as_deref())?;
         }
     }
 
@@ -659,6 +675,230 @@ mod tests {
         let args: Vec<String> = vec!["--level".to_string()];
         assert_eq!(parse_notify_level(args.iter()), NotifyLevel::Info);
     }
+
+    // ── format_workflow_list tests ────────────────────────────────────────────
+
+    #[test]
+    fn format_workflow_list_empty_returns_no_workflows_message() {
+        let output = format_workflow_list(&[]);
+        assert_eq!(output, "No workflows available.");
+    }
+
+    #[test]
+    fn format_workflow_list_includes_header() {
+        let wfs = builtin_workflows().unwrap();
+        let output = format_workflow_list(&wfs);
+        assert!(output.contains("Available workflows:"), "must have header");
+    }
+
+    #[test]
+    fn format_workflow_list_includes_all_builtin_names() {
+        let wfs = builtin_workflows().unwrap();
+        let output = format_workflow_list(&wfs);
+        assert!(output.contains("pr-ci-fix"));
+        assert!(output.contains("pr-review-fix"));
+        assert!(output.contains("pr-merge-when-ready"));
+        assert!(output.contains("dependabot-auto"));
+        assert!(output.contains("deploy-watch"));
+        assert!(output.contains("deploy-sync"));
+    }
+
+    #[test]
+    fn format_workflow_list_includes_trigger() {
+        let wfs = builtin_workflows().unwrap();
+        let output = format_workflow_list(&wfs);
+        assert!(output.contains("post-push"), "must show trigger for pr-ci-fix");
+    }
+
+    #[test]
+    fn format_workflow_list_includes_description() {
+        let wfs = builtin_workflows().unwrap();
+        let output = format_workflow_list(&wfs);
+        assert!(output.contains("Monitor CI"), "must include pr-ci-fix description");
+    }
+
+    // ── format_run_status tests ───────────────────────────────────────────────
+
+    #[test]
+    fn format_run_status_empty_returns_no_runs_message() {
+        let output = format_run_status(&[]);
+        assert_eq!(output, "No active or completed workflow runs.");
+    }
+
+    #[test]
+    fn format_run_status_includes_header() {
+        let run = z_autopilot::state::WorkflowRun::new("pr-ci-fix", "myapp", "monitor-ci");
+        let runs = vec![&run];
+        let output = format_run_status(&runs);
+        assert!(output.contains("Workflow runs:"), "must have header");
+    }
+
+    #[test]
+    fn format_run_status_shows_project_and_workflow() {
+        let run = z_autopilot::state::WorkflowRun::new("pr-ci-fix", "myapp", "monitor-ci");
+        let runs = vec![&run];
+        let output = format_run_status(&runs);
+        assert!(output.contains("myapp"), "must show project name");
+        assert!(output.contains("pr-ci-fix"), "must show workflow name");
+    }
+
+    #[test]
+    fn format_run_status_shows_running_status() {
+        let run = z_autopilot::state::WorkflowRun::new("pr-ci-fix", "myapp", "monitor-ci");
+        let runs = vec![&run];
+        let output = format_run_status(&runs);
+        assert!(output.contains("running"), "must show running status");
+    }
+
+    #[test]
+    fn format_run_status_shows_current_step() {
+        let run = z_autopilot::state::WorkflowRun::new("pr-ci-fix", "myapp", "monitor-ci");
+        let runs = vec![&run];
+        let output = format_run_status(&runs);
+        assert!(output.contains("monitor-ci"), "must show current step");
+    }
+
+    #[test]
+    fn format_run_status_shows_completed_status() {
+        use z_autopilot::state::WorkflowStatus;
+        let mut run = z_autopilot::state::WorkflowRun::new("pr-ci-fix", "myapp", "monitor-ci");
+        run.status = WorkflowStatus::Completed;
+        run.current_step = None;
+        let runs = vec![&run];
+        let output = format_run_status(&runs);
+        assert!(output.contains("completed"), "must show completed status");
+        assert!(output.contains('-'), "current step must be '-' when None");
+    }
+
+    #[test]
+    fn format_run_status_multiple_runs() {
+        let run1 = z_autopilot::state::WorkflowRun::new("wf1", "proj-a", "step1");
+        let run2 = z_autopilot::state::WorkflowRun::new("wf2", "proj-b", "step2");
+        let runs = vec![&run1, &run2];
+        let output = format_run_status(&runs);
+        assert!(output.contains("proj-a"));
+        assert!(output.contains("proj-b"));
+        assert!(output.contains("wf1"));
+        assert!(output.contains("wf2"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Autopilot commands
+// ---------------------------------------------------------------------------
+
+/// Dispatch `z autopilot [subcommand] [args]`.
+fn cmd_autopilot_dispatch(sub: Option<&str>, args: &[String]) -> z_core::error::Result<()> {
+    match sub {
+        None | Some("help") => {
+            println!("usage: z autopilot <subcommand>");
+            println!();
+            println!("subcommands:");
+            println!("  list [project]   — list available workflows (built-in + per-repo custom)");
+            println!("  status [project] — show persisted workflow run states");
+            Ok(())
+        }
+        Some("list") => {
+            let project_name = args.get(1).map(|s| s.as_str());
+            let project_path: Option<std::path::PathBuf> = if let Some(name) = project_name {
+                let store = KdlProjectStore::new();
+                store.get_project(name).ok().map(|p| p.path)
+            } else {
+                None
+            };
+            cmd_autopilot_list(project_path.as_deref())
+        }
+        Some("status") => {
+            let project_filter = args.get(1).map(|s| s.as_str());
+            cmd_autopilot_status(project_filter)
+        }
+        Some(unknown) => {
+            eprintln!("unknown autopilot subcommand: {:?}", unknown);
+            eprintln!("usage: z autopilot [list|status]");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// List all available autopilot workflows: built-in + per-repo custom workflows
+/// for the given project path (if provided).
+pub fn cmd_autopilot_list(project_path: Option<&std::path::Path>) -> z_core::error::Result<()> {
+    let mut all_workflows: Vec<AutopilotWorkflow> = builtin_workflows()
+        .map_err(|e| z_core::error::ZError::Io(format!("load built-in workflows: {e}")))?;
+
+    // Append per-repo custom workflows when a project path is given.
+    if let Some(path) = project_path {
+        let repo_config_path = path.join(".config").join("z.kdl");
+        if let Ok(content) = fs::read_to_string(&repo_config_path) {
+            let custom = z_autopilot::dsl::parse_autopilot_workflows(&content)
+                .unwrap_or_default();
+            all_workflows.extend(custom);
+        }
+    }
+
+    println!("{}", format_workflow_list(&all_workflows));
+    Ok(())
+}
+
+/// Show persisted workflow run states, optionally filtered to a project.
+pub fn cmd_autopilot_status(project_filter: Option<&str>) -> z_core::error::Result<()> {
+    let state_dir = autopilot_state_dir();
+    let runs = list_runs(&state_dir)?;
+
+    let filtered: Vec<&WorkflowRun> = runs.iter()
+        .filter(|r| project_filter.map_or(true, |p| r.project == p))
+        .collect();
+
+    println!("{}", format_run_status(&filtered));
+    Ok(())
+}
+
+/// Returns the directory where autopilot run state is persisted.
+fn autopilot_state_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("z")
+        .join("autopilot")
+}
+
+/// Format a list of workflows for display.
+pub fn format_workflow_list(workflows: &[AutopilotWorkflow]) -> String {
+    if workflows.is_empty() {
+        return "No workflows available.".to_string();
+    }
+    let mut out = String::new();
+    out.push_str("Available workflows:\n");
+    for wf in workflows {
+        let desc = wf.description.as_deref().unwrap_or("");
+        let trigger = wf.trigger.as_str();
+        out.push_str(&format!("  {:30}  trigger: {:25}  {}\n", wf.name, trigger, desc));
+    }
+    out
+}
+
+/// Format a list of workflow run states for display.
+pub fn format_run_status(runs: &[&WorkflowRun]) -> String {
+    if runs.is_empty() {
+        return "No active or completed workflow runs.".to_string();
+    }
+    let mut out = String::new();
+    out.push_str("Workflow runs:\n");
+    for run in runs {
+        let status = match run.status {
+            WorkflowStatus::Running => "running  ",
+            WorkflowStatus::Completed => "completed",
+            WorkflowStatus::Failed => "failed   ",
+            WorkflowStatus::Stuck => "stuck    ",
+        };
+        let step = run.current_step.as_deref().unwrap_or("-");
+        out.push_str(&format!(
+            "  {}  {}  {:20}  step: {}\n",
+            run.project, status, run.workflow_name, step
+        ));
+    }
+    out
 }
 
 fn cmd_list() -> z_core::error::Result<()> {

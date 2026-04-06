@@ -11,3 +11,4 @@ path = "src/main.rs"
 [dependencies]
 z-core.workspace = true
 z-tui.workspace = true
+z-autopilot.workspace = true
