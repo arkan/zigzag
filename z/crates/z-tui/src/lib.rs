@@ -120,7 +120,12 @@ pub enum Panel {
     Sessions,
 }
 
-/// Action returned by `run_tui` once the user commits to something.
+/// Action returned by `run_tui` once the user commits to something that
+/// requires leaving the alternate screen (e.g. opening a Zellij session).
+///
+/// Actions that can be resolved without leaving the TUI (add/edit/delete
+/// project, kill session, prune) are handled in-place via [`TuiCallbacks`]
+/// and never appear here.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TuiAction {
     /// User pressed `q` or `Ctrl-C`.
@@ -134,31 +139,23 @@ pub enum TuiAction {
     },
     /// User pressed `n` — create a new session for the selected project on a named branch.
     New { project: String, branch: String },
-    /// User pressed `d` — delete the selected session.
-    Delete { session: String },
-    /// User selected a workflow in the autopilot modal.
-    Autopilot { project: String, workflow: String },
-    /// User submitted the Add Project form.
-    AddProject {
-        path: String,
-        name: String,
-        host: Option<String>,
-        token: Option<String>,
-    },
     /// User pressed `e` — open per-repo config in $EDITOR.
     EditPerRepoConfig { project_path: std::path::PathBuf },
-    /// User submitted the Edit Project form.
-    EditProject {
-        original_name: String,
-        path: String,
-        name: String,
-        host: Option<String>,
-        token: Option<String>,
-    },
-    /// User confirmed deletion of a project in the delete modal.
-    DeleteProject { project: String },
     /// User pressed `Alt+g` — open lazygit in the selected session.
     LazyGit { project: String, session: String },
+}
+
+/// All callbacks the TUI can invoke to mutate external state without leaving
+/// the alternate screen.
+pub struct TuiCallbacks<'a> {
+    pub prune_fn: &'a dyn Fn(bool) -> io::Result<String>,
+    pub log_fn: &'a dyn Fn(usize) -> io::Result<Vec<String>>,
+    pub swap_fn: &'a dyn Fn(usize, usize) -> io::Result<()>,
+    pub kill_session_fn: &'a dyn Fn(&str) -> io::Result<()>,
+    pub add_project_fn: &'a dyn Fn(&str, &str, Option<&str>, Option<&str>) -> io::Result<()>,
+    pub edit_project_fn: &'a dyn Fn(&str, &str, &str, Option<&str>, Option<&str>) -> io::Result<()>,
+    pub delete_project_fn: &'a dyn Fn(&str) -> io::Result<()>,
+    pub reload_fn: &'a dyn Fn() -> io::Result<(Vec<ProjectEntry>, HashSet<String>)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +271,7 @@ enum ModalOutcome {
     },
     DeleteConfirmed { project: String },
     SessionDeleteConfirmed { session: String },
-    WorkflowSelected { project: String, workflow: String },
+    WorkflowSelected { #[allow(dead_code)] project: String, #[allow(dead_code)] workflow: String },
     NewBranch { project: String, branch: String },
 }
 
@@ -1362,9 +1359,7 @@ pub fn run_tui(
     notifications: HashSet<String>,
     initial_project: Option<usize>,
     status_message: Option<String>,
-    prune_fn: impl Fn(bool) -> io::Result<String>,
-    log_fn: impl Fn(usize) -> io::Result<Vec<String>>,
-    swap_fn: impl Fn(usize, usize) -> io::Result<()>,
+    callbacks: TuiCallbacks<'_>,
     forge_client: Box<dyn z_core::traits::ForgeClient + Send + Sync>,
     refresher: Box<dyn SessionRefresher>,
     theme: z_core::theme::Theme,
@@ -1385,7 +1380,7 @@ pub fn run_tui(
     // Kick off the first preview fetch immediately.
     state.trigger_preview_load();
 
-    let result = event_loop(&mut terminal, &mut state, &prune_fn, &log_fn, &swap_fn);
+    let result = event_loop(&mut terminal, &mut state, &callbacks);
 
     // Always restore the terminal, even if the event loop returned an error.
     let _ = disable_raw_mode();
@@ -1402,9 +1397,7 @@ pub fn run_tui(
 fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     state: &mut TuiState,
-    prune_fn: &dyn Fn(bool) -> io::Result<String>,
-    log_fn: &dyn Fn(usize) -> io::Result<Vec<String>>,
-    swap_fn: &dyn Fn(usize, usize) -> io::Result<()>,
+    cb: &TuiCallbacks<'_>,
 ) -> io::Result<TuiAction> {
     loop {
         // Check if async git preview data has arrived.
@@ -1436,29 +1429,46 @@ fn event_loop<B: Backend>(
                     }
                     ModalOutcome::Submit { path, name, host, token } => {
                         state.modal = None;
-                        return Ok(TuiAction::AddProject { path, name, host, token });
+                        apply_add_project(
+                            state,
+                            cb.add_project_fn,
+                            cb.reload_fn,
+                            &path, &name,
+                            host.as_deref(), token.as_deref(),
+                        );
                     }
                     ModalOutcome::SubmitEdit { original_name, path, name, host, token } => {
                         state.modal = None;
-                        return Ok(TuiAction::EditProject {
-                            original_name,
-                            path,
-                            name,
-                            host,
-                            token,
-                        });
+                        apply_edit_project(
+                            state,
+                            cb.edit_project_fn,
+                            cb.reload_fn,
+                            &original_name, &path, &name,
+                            host.as_deref(), token.as_deref(),
+                        );
                     }
                     ModalOutcome::DeleteConfirmed { project } => {
                         state.modal = None;
-                        return Ok(TuiAction::DeleteProject { project });
+                        apply_delete_project(
+                            state,
+                            cb.delete_project_fn,
+                            cb.reload_fn,
+                            &project,
+                        );
                     }
                     ModalOutcome::SessionDeleteConfirmed { session } => {
                         state.modal = None;
-                        return Ok(TuiAction::Delete { session });
+                        apply_delete_session(
+                            state,
+                            cb.kill_session_fn,
+                            cb.reload_fn,
+                            &session,
+                        );
                     }
-                    ModalOutcome::WorkflowSelected { project, workflow } => {
+                    ModalOutcome::WorkflowSelected { project: _, workflow: _ } => {
+                        // Autopilot workflow selection — currently a no-op
+                        // (actual execution handled by `z autopilot run`).
                         state.modal = None;
-                        return Ok(TuiAction::Autopilot { project, workflow });
                     }
                     ModalOutcome::NewBranch { project, branch } => {
                         state.modal = None;
@@ -1574,12 +1584,12 @@ fn event_loop<B: Backend>(
 
                     KeyCode::Char('p') => {
                         // Prune: skip worktrees with uncommitted changes.
-                        apply_prune(state, prune_fn, false);
+                        apply_prune(state, cb.prune_fn, false);
                     }
 
                     KeyCode::Char('P') => {
                         // Force prune: remove worktrees even with uncommitted changes.
-                        apply_prune(state, prune_fn, true);
+                        apply_prune(state, cb.prune_fn, true);
                     }
 
                     KeyCode::Char('a') => {
@@ -1621,7 +1631,12 @@ fn event_loop<B: Backend>(
                             .get(state.selected_session)
                             .map(|s| s.name.clone());
                         if let Some(session) = session_name {
-                            return Ok(TuiAction::Delete { session });
+                            apply_delete_session(
+                                state,
+                                cb.kill_session_fn,
+                                cb.reload_fn,
+                                &session,
+                            );
                         }
                     }
 
@@ -1664,7 +1679,7 @@ fn event_loop<B: Backend>(
                     }
 
                     KeyCode::Char('l') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                        match log_fn(200) {
+                        match (cb.log_fn)(200) {
                             Ok(lines) => {
                                 let scroll_offset = lines.len().saturating_sub(1);
                                 state.modal = Some(Modal::LogViewer { lines, scroll_offset });
@@ -1695,7 +1710,7 @@ fn event_loop<B: Backend>(
                         if state.selected_project > 0 {
                             let a = state.selected_project;
                             let b = a - 1;
-                            if swap_fn(b, a).is_ok() {
+                            if (cb.swap_fn)(b, a).is_ok() {
                                 state.entries.swap(b, a);
                                 state.selected_project = b;
                             }
@@ -1706,7 +1721,7 @@ fn event_loop<B: Backend>(
                         if state.selected_project < last {
                             let a = state.selected_project;
                             let b = a + 1;
-                            if swap_fn(a, b).is_ok() {
+                            if (cb.swap_fn)(a, b).is_ok() {
                                 state.entries.swap(a, b);
                                 state.selected_project = b;
                             }
@@ -1726,6 +1741,127 @@ fn event_loop<B: Backend>(
 // ---------------------------------------------------------------------------
 // In-place action helpers
 // ---------------------------------------------------------------------------
+
+/// Edit a project in-place and reload the TUI state.
+///
+/// Called directly from the event loop, so the TUI never leaves the alternate
+/// screen — no flicker, no re-entry.
+fn apply_edit_project(
+    state: &mut TuiState,
+    edit_project_fn: &dyn Fn(&str, &str, &str, Option<&str>, Option<&str>) -> io::Result<()>,
+    reload_fn: &dyn Fn() -> io::Result<(Vec<ProjectEntry>, HashSet<String>)>,
+    original_name: &str,
+    path: &str,
+    name: &str,
+    host: Option<&str>,
+    token: Option<&str>,
+) {
+    match edit_project_fn(original_name, path, name, host, token) {
+        Ok(()) => {
+            state.status_message = Some(format!("Project {} saved.", name));
+            if let Ok((entries, notifications)) = reload_fn() {
+                state.entries = entries;
+                state.notifications = notifications;
+            }
+        }
+        Err(e) => {
+            state.status_message = Some(format!("Error: {e}"));
+        }
+    }
+}
+
+/// Add a project in-place and reload the TUI state.
+///
+/// Called directly from the event loop, so the TUI never leaves the alternate
+/// screen — no flicker, no re-entry.
+fn apply_add_project(
+    state: &mut TuiState,
+    add_project_fn: &dyn Fn(&str, &str, Option<&str>, Option<&str>) -> io::Result<()>,
+    reload_fn: &dyn Fn() -> io::Result<(Vec<ProjectEntry>, HashSet<String>)>,
+    path: &str,
+    name: &str,
+    host: Option<&str>,
+    token: Option<&str>,
+) {
+    match add_project_fn(path, name, host, token) {
+        Ok(()) => {
+            state.status_message = Some(format!("Project {} added.", name));
+            if let Ok((entries, notifications)) = reload_fn() {
+                state.entries = entries;
+                state.notifications = notifications;
+                // Move cursor to the newly added project.
+                if let Some(idx) = state.entries.iter().position(|e| e.project.name == name) {
+                    state.selected_project = idx;
+                }
+            }
+        }
+        Err(e) => {
+            state.status_message = Some(format!("Error: {e}"));
+        }
+    }
+}
+
+/// Delete a project in-place and reload the TUI state.
+///
+/// Called directly from the event loop, so the TUI never leaves the alternate
+/// screen — no flicker, no re-entry.  After a successful deletion the cursor
+/// is clamped to remain within the (now shorter) project list.
+fn apply_delete_project(
+    state: &mut TuiState,
+    delete_project_fn: &dyn Fn(&str) -> io::Result<()>,
+    reload_fn: &dyn Fn() -> io::Result<(Vec<ProjectEntry>, HashSet<String>)>,
+    project: &str,
+) {
+    match delete_project_fn(project) {
+        Ok(()) => {
+            state.status_message = Some(format!("Project {} deleted.", project));
+            if let Ok((entries, notifications)) = reload_fn() {
+                state.entries = entries;
+                state.notifications = notifications;
+                // Clamp cursor to valid range.
+                if !state.entries.is_empty() {
+                    state.selected_project = state.selected_project.min(state.entries.len() - 1);
+                } else {
+                    state.selected_project = 0;
+                }
+            }
+        }
+        Err(e) => {
+            state.status_message = Some(format!("Error: {e}"));
+        }
+    }
+}
+
+/// Kill a session in-place and reload the TUI state.
+///
+/// Called directly from the event loop, so the TUI never leaves the alternate
+/// screen — no flicker, no re-entry.
+fn apply_delete_session(
+    state: &mut TuiState,
+    kill_session_fn: &dyn Fn(&str) -> io::Result<()>,
+    reload_fn: &dyn Fn() -> io::Result<(Vec<ProjectEntry>, HashSet<String>)>,
+    session: &str,
+) {
+    match kill_session_fn(session) {
+        Ok(()) => {
+            state.status_message = Some(format!("Session {} killed.", session));
+            if let Ok((entries, notifications)) = reload_fn() {
+                state.entries = entries;
+                state.notifications = notifications;
+                // Clamp selected_session to the new sessions count.
+                let session_count = state.filtered_sessions().len();
+                if session_count == 0 {
+                    state.selected_session = 0;
+                } else {
+                    state.selected_session = state.selected_session.min(session_count - 1);
+                }
+            }
+        }
+        Err(e) => {
+            state.status_message = Some(format!("Error: {e}"));
+        }
+    }
+}
 
 /// Run the prune closure and store the result (or error) as a status message.
 ///
@@ -4318,17 +4454,6 @@ mod tests {
         assert!(out.contains("Required") || out.contains("Add Project"), "modal rendered");
     }
 
-    #[test]
-    fn tui_action_add_project_variant_exists() {
-        let action = TuiAction::AddProject {
-            path: "/code/app".to_string(),
-            name: "app".to_string(),
-            host: None,
-            token: None,
-        };
-        assert!(matches!(action, TuiAction::AddProject { .. }));
-    }
-
     // ── expand_tilde_path edge cases ──────────────────────────────────────
 
     #[test]
@@ -4607,18 +4732,6 @@ mod tests {
             }
             _ => panic!("expected SubmitEdit outcome"),
         }
-    }
-
-    #[test]
-    fn tui_action_edit_project_variant_exists() {
-        let action = TuiAction::EditProject {
-            original_name: "old".to_string(),
-            path: "/code/app".to_string(),
-            name: "new".to_string(),
-            host: None,
-            token: None,
-        };
-        assert!(matches!(action, TuiAction::EditProject { .. }));
     }
 
     #[test]
@@ -6629,5 +6742,290 @@ mod tests {
         let style = corner.style();
         // Focused panel border = Dracula purple + bold
         assert_eq!(style.fg, Some(Color::Rgb(189, 147, 249)), "focused border fg should be Dracula purple");
+    }
+
+    // ── apply_delete_session (in-place session delete) tests ─────────────────
+
+    /// Helper: returns a reload closure that produces a fixed set of entries.
+    fn make_reload_fn(entries: Vec<ProjectEntry>) -> impl Fn() -> io::Result<(Vec<ProjectEntry>, HashSet<String>)> {
+        move || Ok((entries.clone(), HashSet::new()))
+    }
+
+    #[test]
+    fn apply_delete_session_sets_status_message_on_success() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let reload_entries = make_entries();
+        apply_delete_session(
+            &mut state,
+            &|_| Ok(()),
+            &make_reload_fn(reload_entries),
+            "myapp:feat/login",
+        );
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("Session myapp:feat/login killed."),
+        );
+    }
+
+    #[test]
+    fn apply_delete_session_clamps_selected_session() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        // Select session index 1 (feat/login).
+        state.focused_panel = Panel::Sessions;
+        state.selected_session = 1;
+        // After kill, reload returns entries where myapp has only 1 session.
+        let mut reloaded = make_entries();
+        reloaded[0].sessions = vec![Session::new("myapp", "main")];
+        apply_delete_session(
+            &mut state,
+            &|_| Ok(()),
+            &make_reload_fn(reloaded),
+            "myapp:feat/login",
+        );
+        assert_eq!(
+            state.selected_session, 0,
+            "selected_session should clamp to last valid index after deletion"
+        );
+    }
+
+    #[test]
+    fn apply_delete_session_reloads_state() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        // Reload returns only one project (simulating the session being gone).
+        let reloaded = vec![make_entries()[0].clone()];
+        apply_delete_session(
+            &mut state,
+            &|_| Ok(()),
+            &make_reload_fn(reloaded),
+            "myapp:feat/login",
+        );
+        assert_eq!(state.entries.len(), 1, "state should reflect reloaded entries");
+    }
+
+    #[test]
+    fn apply_delete_session_shows_error_as_status_message() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        apply_delete_session(
+            &mut state,
+            &|_| Err(io::Error::new(io::ErrorKind::Other, "session not found")),
+            &make_reload_fn(make_entries()),
+            "myapp:feat/login",
+        );
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("Error: session not found"),
+            "apply_delete_session should display errors inline"
+        );
+    }
+
+    // ── apply_delete_project (in-place project delete) tests ──────────────
+
+    #[test]
+    fn apply_delete_project_sets_status_message_on_success() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        // After deletion, reload returns entries without "myapp".
+        let remaining: Vec<_> = make_entries().into_iter().filter(|e| e.project.name != "myapp").collect();
+        apply_delete_project(
+            &mut state,
+            &|_| Ok(()),
+            &make_reload_fn(remaining),
+            "myapp",
+        );
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("Project myapp deleted."),
+        );
+    }
+
+    #[test]
+    fn apply_delete_project_reloads_state() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let remaining: Vec<_> = make_entries().into_iter().filter(|e| e.project.name != "myapp").collect();
+        let expected_len = remaining.len();
+        apply_delete_project(
+            &mut state,
+            &|_| Ok(()),
+            &make_reload_fn(remaining),
+            "myapp",
+        );
+        assert_eq!(state.entries.len(), expected_len);
+    }
+
+    #[test]
+    fn apply_delete_project_cursor_moves_to_nearest_neighbor() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        // Select the last project (index 2 = "prod-api").
+        state.selected_project = 2;
+        // Delete it — reload returns only first two.
+        let remaining: Vec<_> = make_entries().into_iter().filter(|e| e.project.name != "prod-api").collect();
+        apply_delete_project(
+            &mut state,
+            &|_| Ok(()),
+            &make_reload_fn(remaining),
+            "prod-api",
+        );
+        // Cursor should clamp to last valid index (1).
+        assert!(
+            state.selected_project <= 1,
+            "cursor should clamp to valid range after deleting last project"
+        );
+    }
+
+    #[test]
+    fn apply_delete_project_shows_error_as_status_message() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let original_count = state.entries.len();
+        apply_delete_project(
+            &mut state,
+            &|_| Err(io::Error::new(io::ErrorKind::Other, "permission denied")),
+            &make_reload_fn(vec![]),
+            "myapp",
+        );
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("Error: permission denied"),
+        );
+        assert_eq!(state.entries.len(), original_count, "should not reload on error");
+    }
+
+    // ── apply_add_project (in-place project add) tests ────────────────────
+
+    #[test]
+    fn apply_add_project_sets_status_message_on_success() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let mut reloaded = make_entries();
+        reloaded.push(ProjectEntry {
+            project: make_project("new-proj", false),
+            sessions: vec![],
+            worktree_count: 0,
+            workflows: vec![],
+        });
+        apply_add_project(
+            &mut state,
+            &|_, _, _, _| Ok(()),
+            &make_reload_fn(reloaded),
+            "/tmp/new-proj", "new-proj", None, None,
+        );
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("Project new-proj added."),
+        );
+    }
+
+    #[test]
+    fn apply_add_project_reloads_state() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let mut reloaded = make_entries();
+        reloaded.push(ProjectEntry {
+            project: make_project("new-proj", false),
+            sessions: vec![],
+            worktree_count: 0,
+            workflows: vec![],
+        });
+        apply_add_project(
+            &mut state,
+            &|_, _, _, _| Ok(()),
+            &make_reload_fn(reloaded),
+            "/tmp/new-proj", "new-proj", None, None,
+        );
+        assert_eq!(state.entries.len(), 4, "state should contain the new project after reload");
+    }
+
+    // ── apply_edit_project (in-place project edit) tests ──────────────────
+
+    #[test]
+    fn apply_edit_project_sets_status_message_on_success() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        apply_edit_project(
+            &mut state,
+            &|_, _, _, _, _| Ok(()),
+            &make_reload_fn(make_entries()),
+            "myapp", "/new/path", "myapp-renamed", None, None,
+        );
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("Project myapp-renamed saved."),
+        );
+    }
+
+    #[test]
+    fn apply_edit_project_reloads_state() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        // Reload returns only 2 entries (simulating a rename that changed the list).
+        let reloaded = vec![make_entries()[0].clone(), make_entries()[1].clone()];
+        apply_edit_project(
+            &mut state,
+            &|_, _, _, _, _| Ok(()),
+            &make_reload_fn(reloaded),
+            "myapp", "/new/path", "myapp", None, None,
+        );
+        assert_eq!(state.entries.len(), 2);
+    }
+
+    #[test]
+    fn apply_edit_project_shows_error_as_status_message() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let original_count = state.entries.len();
+        apply_edit_project(
+            &mut state,
+            &|_, _, _, _, _| Err(io::Error::new(io::ErrorKind::Other, "write failed")),
+            &make_reload_fn(vec![]),
+            "myapp", "/path", "myapp", None, None,
+        );
+        assert_eq!(state.status_message.as_deref(), Some("Error: write failed"));
+        assert_eq!(state.entries.len(), original_count, "should not reload on error");
+    }
+
+    // ── apply_add_project continued ─────────────────────────────────────────
+
+    #[test]
+    fn apply_add_project_selects_new_project() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let mut reloaded = make_entries();
+        reloaded.push(ProjectEntry {
+            project: make_project("new-proj", false),
+            sessions: vec![],
+            worktree_count: 0,
+            workflows: vec![],
+        });
+        apply_add_project(
+            &mut state,
+            &|_, _, _, _| Ok(()),
+            &make_reload_fn(reloaded),
+            "/tmp/new-proj", "new-proj", None, None,
+        );
+        assert_eq!(
+            state.selected_project, 3,
+            "cursor should move to the newly added project"
+        );
+    }
+
+    #[test]
+    fn apply_add_project_shows_error_as_status_message() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let original_count = state.entries.len();
+        apply_add_project(
+            &mut state,
+            &|_, _, _, _| Err(io::Error::new(io::ErrorKind::Other, "duplicate name")),
+            &make_reload_fn(vec![]),
+            "/tmp/x", "x", None, None,
+        );
+        assert_eq!(state.status_message.as_deref(), Some("Error: duplicate name"));
+        assert_eq!(state.entries.len(), original_count, "should not reload on error");
+    }
+
+    // ── apply_delete_session continued ──────────────────────────────────────
+
+    #[test]
+    fn apply_delete_session_does_not_reload_on_error() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let original_count = state.entries.len();
+        apply_delete_session(
+            &mut state,
+            &|_| Err(io::Error::new(io::ErrorKind::Other, "fail")),
+            &make_reload_fn(vec![]), // reload would produce empty list
+            "myapp:feat/login",
+        );
+        assert_eq!(state.entries.len(), original_count, "should not reload on error");
     }
 }

@@ -177,7 +177,7 @@ fn run() {
 /// Launch the interactive TUI and execute whatever action the user chooses.
 /// Loops back into the TUI after adding a project so the user stays in context.
 fn cmd_tui() -> z_core::error::Result<()> {
-    let mut store = KdlProjectStore::new();
+    let store = KdlProjectStore::new();
     let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
     let global = load_global_config();
 
@@ -189,14 +189,17 @@ fn cmd_tui() -> z_core::error::Result<()> {
     // Track the name of the most recently added project for auto-selection.
     let mut initial_project: Option<String> = None;
     let mut status_message: Option<String> = None;
-    let logger = log::FileLogger::new();
 
     // Load built-in workflows once; they are the same for every project.
     let builtin: Vec<AutopilotWorkflow> = builtin_workflows().unwrap_or_default();
 
-    loop {
+    /// Build a fresh list of project entries with sessions, worktrees, and workflows.
+    fn build_entries(
+        store: &KdlProjectStore,
+        session_mgr: &ZellijSessionManager,
+        builtin: &[AutopilotWorkflow],
+    ) -> z_core::error::Result<Vec<ProjectEntry>> {
         let projects = store.list_projects()?;
-
         let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
         for project in &projects {
             let sessions = session_mgr.list_sessions(&project.name)?;
@@ -205,8 +208,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 .map(|wts| wts.len())
                 .unwrap_or(0);
 
-            // Combine built-in workflows with any per-repo custom workflows.
-            let mut all_workflows: Vec<AutopilotWorkflow> = builtin.clone();
+            let mut all_workflows: Vec<AutopilotWorkflow> = builtin.to_vec();
             let repo_config_path = project.path.join(".config").join("z.kdl");
             if let Ok(content) = fs::read_to_string(&repo_config_path) {
                 if let Ok(custom) = z_autopilot::dsl::parse_autopilot_workflows(&content) {
@@ -225,6 +227,11 @@ fn cmd_tui() -> z_core::error::Result<()> {
 
             entries.push(ProjectEntry { project: project.clone(), sessions, worktree_count, workflows });
         }
+        Ok(entries)
+    }
+
+    loop {
+        let entries = build_entries(&store, &session_mgr, &builtin)?;
 
         // Load pending notifications so the TUI can display 🔔 badges.
         let notifications: HashSet<String> =
@@ -236,23 +243,83 @@ fn cmd_tui() -> z_core::error::Result<()> {
             .and_then(|name| entries.iter().position(|e| e.project.name == name));
 
         let theme = z_core::theme::Theme::from_name(global.theme);
+
+        let callbacks = z_tui::TuiCallbacks {
+            prune_fn: &|force| prune_summary(force).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string())),
+            log_fn: &|max_lines| {
+                let l = log::FileLogger::new();
+                let entries = l.read_recent(max_lines);
+                Ok(entries.iter().map(|e| e.format()).collect())
+            },
+            swap_fn: &|a, b| {
+                let mut s = config_store::KdlProjectStore::new();
+                s.swap_projects(a, b)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+            },
+            kill_session_fn: &|session_name| {
+                let (project_name, branch) =
+                    parse_session_name(session_name).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, format!(
+                            "invalid session name {:?}: expected project:branch",
+                            session_name
+                        ))
+                    })?;
+                let sess = z_core::domain::Session {
+                    name: session_name.to_string(),
+                    project: project_name,
+                    branch,
+                };
+                (ZellijSessionManager { bin_path: resolve_bin_path() })
+                    .kill_session(&sess)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+            },
+            add_project_fn: &|path, name, host, token| {
+                let project = z_core::domain::Project {
+                    name: name.to_string(),
+                    path: std::path::PathBuf::from(path),
+                    host: host.map(String::from),
+                    token: token.map(String::from),
+                };
+                let mut s = config_store::KdlProjectStore::new();
+                s.add_project(&project)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+            },
+            edit_project_fn: &|original_name, path, name, host, token| {
+                let mut s = config_store::KdlProjectStore::new();
+                s.remove_project(original_name)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                let project = z_core::domain::Project {
+                    name: name.to_string(),
+                    path: std::path::PathBuf::from(path),
+                    host: host.map(String::from),
+                    token: token.map(String::from),
+                };
+                s.add_project(&project)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+            },
+            delete_project_fn: &|name| {
+                let mut s = config_store::KdlProjectStore::new();
+                s.remove_project(name)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+            },
+            reload_fn: &|| {
+                let s = config_store::KdlProjectStore::new();
+                let sm = ZellijSessionManager { bin_path: resolve_bin_path() };
+                let entries = build_entries(&s, &sm, &builtin)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                let notifications: HashSet<String> =
+                    z_core::notification::sessions_with_notifications().into_iter().collect();
+                Ok((entries, notifications))
+            },
+        };
+
         let action = z_tui::run_tui(
             entries,
             navigation.clone(),
             notifications,
             initial_idx,
             status_message.take(),
-            |force| prune_summary(force).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string())),
-            |max_lines| {
-                let l = log::FileLogger::new();
-                let entries = l.read_recent(max_lines);
-                Ok(entries.iter().map(|e| e.format()).collect())
-            },
-            |a, b| {
-                let mut s = config_store::KdlProjectStore::new();
-                s.swap_projects(a, b)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
-            },
+            callbacks,
             Box::new(forge::GhForgeClient),
             Box::new(ZellijSessionRefresher),
             theme,
@@ -262,36 +329,17 @@ fn cmd_tui() -> z_core::error::Result<()> {
         match action {
             TuiAction::Quit => return Ok(()),
 
-            TuiAction::AddProject { path, name, host, token } => {
-                let project = z_core::domain::Project {
-                    name: name.clone(),
-                    path: std::path::PathBuf::from(path),
-                    host,
-                    token,
-                };
-                store.add_project(&project)?;
-                log::log_info(&logger, &format!("project {} added", name));
-                initial_project = Some(name);
-            }
-
             TuiAction::Open { project, session } => {
-                // Resolve the session name: explicit when opened from Sessions
-                // panel, default to "main" when opened from Projects panel.
                 let session_name = session.clone().unwrap_or_else(|| {
                     z_core::domain::Session::new(&project, "main").name
                 });
                 let _ = z_core::notification::clear_notifications(&session_name);
-                // Extract branch from "project:branch" session name, or open default.
                 let branch_owned: Option<String> = session
                     .as_deref()
                     .and_then(|s| parse_session_name(s))
                     .map(|(_, b)| b);
                 cmd_open(&project, branch_owned.as_deref())?;
-                // Clear again after detach — notifications may have arrived
-                // while the user was inside the session.
                 let _ = z_core::notification::clear_notifications(&session_name);
-                // Loop back to re-enter the TUI after the session ends,
-                // with the same project re-selected.
                 initial_project = Some(project);
             }
 
@@ -300,74 +348,15 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 let _ = z_core::notification::clear_notifications(&session_name);
                 cmd_open(&project, Some(&branch))?;
                 let _ = z_core::notification::clear_notifications(&session_name);
-                // Loop back to re-enter the TUI after the session ends,
-                // with the same project re-selected.
                 initial_project = Some(project);
-            }
-
-            TuiAction::Delete { session } => {
-                // Kill the Zellij session and loop back to the TUI.
-                // Worktree cleanup is handled separately via prune.
-                let (project_name, _branch) =
-                    parse_session_name(&session).ok_or_else(|| {
-                        z_core::error::ZError::Session(format!(
-                            "invalid session name {:?}: expected project:branch",
-                            session
-                        ))
-                    })?;
-                let sess = z_core::domain::Session {
-                    name: session.clone(),
-                    project: project_name.clone(),
-                    branch: _branch,
-                };
-                match (ZellijSessionManager { bin_path: resolve_bin_path() }).kill_session(&sess) {
-                    Ok(()) => {
-                        log::log_info(&logger, &format!("session {} killed", session));
-                        status_message = Some(format!("Session {} killed.", session));
-                    }
-                    Err(e) => {
-                        log::log_error(&logger, &format!("session kill failed: {}", e));
-                        status_message = Some(format!("Error: {}", e));
-                    }
-                }
-                initial_project = Some(project_name);
-            }
-
-            TuiAction::Autopilot { project, workflow: _ } => {
-                // Workflow selected — keep the selected project highlighted and
-                // loop back into the TUI. Actual workflow execution is handled
-                // by the `z autopilot run` subcommand (future work).
-                initial_project = Some(project);
-                // continue the loop
             }
 
             TuiAction::EditPerRepoConfig { project_path } => {
-                // Edit the config, then loop back to re-enter the TUI.
                 cmd_edit_per_repo_config(&project_path)?;
-                // continue the loop → re-enter the TUI
-            }
-
-            TuiAction::EditProject { original_name, path, name, host, token } => {
-                // Remove the old entry by original name, then add the (possibly
-                // renamed / updated) project. Using remove+add preserves all
-                // surrounding KDL comments while updating the block in-place.
-                store.remove_project(&original_name)?;
-                let project = z_core::domain::Project {
-                    name: name.clone(),
-                    path: std::path::PathBuf::from(path),
-                    host,
-                    token,
-                };
-                store.add_project(&project)?;
-                initial_project = Some(name);
-                // Loop back to re-enter TUI with the edited project selected.
             }
 
             TuiAction::LazyGit { project, session } => {
-                // Clear notifications before attaching.
                 let _ = z_core::notification::clear_notifications(&session);
-                // Attach to the existing Zellij session — lazygit is available
-                // inside via the Alt+G keybind defined in the layout.
                 let sess = z_core::domain::Session {
                     name: session.clone(),
                     project: project.clone(),
@@ -385,25 +374,6 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     }
                 }
                 initial_project = Some(project);
-            }
-
-            TuiAction::DeleteProject { project } => {
-                // Determine nearest-neighbor name before removal so the TUI
-                // can auto-select it after the project list reloads.
-                let neighbor = {
-                    let all = store.list_projects().unwrap_or_default();
-                    let idx = all.iter().position(|p| p.name == project).unwrap_or(0);
-                    let remaining: Vec<_> = all.iter().filter(|p| p.name != project).collect();
-                    if remaining.is_empty() {
-                        None
-                    } else {
-                        let neighbor_idx = idx.min(remaining.len() - 1);
-                        remaining.get(neighbor_idx).map(|p| p.name.clone())
-                    }
-                };
-                store.remove_project(&project)?;
-                log::log_info(&logger, &format!("project {} deleted", project));
-                initial_project = neighbor;
             }
         }
     }
