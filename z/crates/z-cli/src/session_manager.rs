@@ -29,7 +29,10 @@ fn strip_ansi(s: &str) -> String {
 static LAYOUT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A `SessionManager` that shells out to `zellij` to manage sessions.
-pub struct ZellijSessionManager;
+pub struct ZellijSessionManager {
+    /// Absolute path to the `z` binary, used in generated Zellij keybinds.
+    pub bin_path: String,
+}
 
 impl SessionManager for ZellijSessionManager {
     fn list_sessions(&self, project: &str) -> Result<Vec<Session>> {
@@ -55,7 +58,7 @@ impl SessionManager for ZellijSessionManager {
         // otherwise Zellij rejects the create with "already exists, but is dead".
         delete_dead_session(&session.name);
 
-        let kdl = z_core::layout::generate_layout_kdl(&layout);
+        let kdl = z_core::layout::generate_layout_kdl(&layout, &self.bin_path);
         let layout_path = write_temp_layout(&kdl)?;
         // Use `-n` (--new-session-with-layout) instead of `-l` (--layout):
         // `-l` with `--session` tries to add tabs to an *existing* session,
@@ -376,7 +379,7 @@ mod tests {
     fn write_temp_layout_default_layout_roundtrip() {
         use z_core::layout::{default_layout, generate_layout_kdl};
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         let path = write_temp_layout(&kdl).expect("write_temp_layout should succeed");
         let read_back = std::fs::read_to_string(&path).expect("temp file should be readable");
         assert!(read_back.contains("tab name=\"claude\""));
