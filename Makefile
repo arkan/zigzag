@@ -3,7 +3,7 @@ AUTH_VOLUME := sandcastle-claude-auth
 
 .DEFAULT_GOAL := help
 
-.PHONY: help docker login auth-status sandcastle
+.PHONY: help install docker login auth-status sandcastle
 
 help:
 	@echo "Usage: make <target>"
@@ -12,7 +12,11 @@ help:
 	@echo "  sandcastle    Build Docker image and run Sandcastle"
 	@echo "  login         Authenticate Claude Code in container (Claude Max/Pro)"
 	@echo "  auth-status   Check authentication status"
+	@echo "  install       Install z binary via cargo"
 	@echo "  docker        Build Docker image only"
+
+install:
+	cargo install --path z/crates/z-cli
 
 docker:
 	docker build -t $(IMAGE) .sandcastle/

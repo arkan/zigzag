@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use z_core::config::parse_projects_kdl;
+use z_core::config::{parse_projects_kdl, swap_project_nodes};
 use z_core::domain::Project;
 use z_core::error::{Result, ZError};
 use z_core::traits::{ProjectStore, ProjectStoreWriter};
@@ -186,6 +186,16 @@ impl ProjectStoreWriter for KdlProjectStore {
 
         let new_content = remove_project_from_kdl(&content, name)
             .ok_or_else(|| ZError::ProjectNotFound(name.to_string()))?;
+
+        fs::write(&self.projects_path, new_content).map_err(|e| ZError::Io(e.to_string()))?;
+        Ok(())
+    }
+
+    fn swap_projects(&mut self, a: usize, b: usize) -> Result<()> {
+        let content = fs::read_to_string(&self.projects_path)
+            .map_err(|e| ZError::Io(e.to_string()))?;
+
+        let new_content = swap_project_nodes(&content, a, b)?;
 
         fs::write(&self.projects_path, new_content).map_err(|e| ZError::Io(e.to_string()))?;
         Ok(())

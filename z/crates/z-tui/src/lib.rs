@@ -1291,6 +1291,7 @@ pub fn run_tui(
     status_message: Option<String>,
     prune_fn: impl Fn(bool) -> io::Result<String>,
     log_fn: impl Fn(usize) -> io::Result<Vec<String>>,
+    swap_fn: impl Fn(usize, usize) -> io::Result<()>,
     forge_client: Box<dyn z_core::traits::ForgeClient + Send + Sync>,
     theme: z_core::theme::Theme,
 ) -> io::Result<TuiAction> {
@@ -1310,7 +1311,7 @@ pub fn run_tui(
     // Kick off the first preview fetch immediately.
     state.trigger_preview_load();
 
-    let result = event_loop(&mut terminal, &mut state, &prune_fn, &log_fn);
+    let result = event_loop(&mut terminal, &mut state, &prune_fn, &log_fn, &swap_fn);
 
     // Always restore the terminal, even if the event loop returned an error.
     let _ = disable_raw_mode();
@@ -1329,6 +1330,7 @@ fn event_loop<B: Backend>(
     state: &mut TuiState,
     prune_fn: &dyn Fn(bool) -> io::Result<String>,
     log_fn: &dyn Fn(usize) -> io::Result<Vec<String>>,
+    swap_fn: &dyn Fn(usize, usize) -> io::Result<()>,
 ) -> io::Result<TuiAction> {
     loop {
         // Check if async git preview data has arrived.
@@ -1606,6 +1608,29 @@ fn event_loop<B: Backend>(
                                 return Ok(TuiAction::LazyGit { project, session });
                             } else {
                                 state.status_message = Some("No active session to open lazygit in.".to_string());
+                            }
+                        }
+                    }
+
+                    // ── Project reorder: K = move up, J = move down ───
+                    KeyCode::Char('K') if state.focused_panel == Panel::Projects => {
+                        if state.selected_project > 0 {
+                            let a = state.selected_project;
+                            let b = a - 1;
+                            if swap_fn(b, a).is_ok() {
+                                state.entries.swap(b, a);
+                                state.selected_project = b;
+                            }
+                        }
+                    }
+                    KeyCode::Char('J') if state.focused_panel == Panel::Projects => {
+                        let last = state.entries.len().saturating_sub(1);
+                        if state.selected_project < last {
+                            let a = state.selected_project;
+                            let b = a + 1;
+                            if swap_fn(a, b).is_ok() {
+                                state.entries.swap(a, b);
+                                state.selected_project = b;
                             }
                         }
                     }

@@ -39,6 +39,8 @@ fn keybinds_block(bin_path: &str) -> String {
                 Run \"lazygit\" {{\n\
                     floating true\n\
                     close_on_exit true\n\
+                    width \"100%\"\n\
+                    height \"100%\"\n\
                 }}\n\
             }}\n\
         }}\n\
