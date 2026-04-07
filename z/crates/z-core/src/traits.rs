@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::domain::{CiStatus, Layout, NotifyLevel, PullRequest, Project, Session, Worktree};
 use crate::error::Result;
 use crate::theme::Theme;
@@ -35,4 +37,9 @@ pub trait ForgeClient {
 
 pub trait Notifier {
     fn notify(&self, message: &str, level: NotifyLevel) -> Result<()>;
+}
+
+pub trait SessionRefresher: Send + Sync {
+    fn fetch_all_sessions(&self, projects: &[Project]) -> Vec<(String, Vec<Session>)>;
+    fn fetch_notifications(&self) -> HashSet<String>;
 }
