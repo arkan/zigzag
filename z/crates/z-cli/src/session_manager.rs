@@ -51,14 +51,14 @@ impl SessionManager for ZellijSessionManager {
         }
     }
 
-    fn create_session(&self, project: &str, branch: &str, layout: Layout) -> Result<Session> {
+    fn create_session(&self, project: &str, branch: &str, layout: Layout, theme: &z_core::theme::Theme) -> Result<Session> {
         let session = Session::new(project, branch);
 
         // Clean up any dead (EXITED) session with the same name first,
         // otherwise Zellij rejects the create with "already exists, but is dead".
         delete_dead_session(&session.name);
 
-        let kdl = z_core::layout::generate_layout_kdl(&layout, &self.bin_path);
+        let kdl = z_core::layout::generate_layout_kdl(&layout, &self.bin_path, theme);
         let layout_path = write_temp_layout(&kdl)?;
         // Use `-n` (--new-session-with-layout) instead of `-l` (--layout):
         // `-l` with `--session` tries to add tabs to an *existing* session,
@@ -379,7 +379,8 @@ mod tests {
     fn write_temp_layout_default_layout_roundtrip() {
         use z_core::layout::{default_layout, generate_layout_kdl};
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
+        let theme = z_core::theme::Theme::default();
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &theme);
         let path = write_temp_layout(&kdl).expect("write_temp_layout should succeed");
         let read_back = std::fs::read_to_string(&path).expect("temp file should be readable");
         assert!(read_back.contains("tab name=\"claude\""));

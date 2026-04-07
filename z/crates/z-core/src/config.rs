@@ -6,6 +6,7 @@ use kdl::{KdlDocument, KdlNode};
 use crate::domain::{Layout, Pane, Project, Tab};
 use crate::error::{Result, ZError};
 use crate::layout::default_layout;
+use crate::theme::ThemeName;
 
 /// Global configuration from `~/.config/z/config.kdl`.
 #[derive(Debug, Default, Clone)]
@@ -16,6 +17,8 @@ pub struct GlobalConfig {
     pub notifications: NotificationsConfig,
     /// Tool name → minimum version requirement string (e.g. `">=0.44.0"`).
     pub deps: HashMap<String, String>,
+    /// TUI color theme.
+    pub theme: ThemeName,
 }
 
 /// Per-repo configuration from `.config/z.kdl` in the project root.
@@ -209,6 +212,17 @@ pub fn parse_global_config_kdl(content: &str) -> Result<GlobalConfig> {
                                     .map(|s| s.to_string());
                             }
                         }
+                    }
+                }
+                "theme" => {
+                    if let Some(name_str) = node
+                        .entries()
+                        .first()
+                        .and_then(|e| e.value().as_string())
+                    {
+                        config.theme = ThemeName::from_str(name_str).ok_or_else(|| {
+                            ZError::ConfigParse(format!("unknown theme: {name_str:?}"))
+                        })?;
                     }
                 }
                 "notifications" => {
@@ -826,6 +840,47 @@ project "dup" {
         assert_eq!(projects.len(), 2);
         assert_eq!(projects[0].path, PathBuf::from("/code/dup1"));
         assert_eq!(projects[1].path, PathBuf::from("/code/dup2"));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_global_config_kdl — theme field
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_global_config_with_theme_dracula() {
+        let kdl = r#"
+config {
+    theme "dracula"
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert_eq!(cfg.theme, ThemeName::Dracula);
+    }
+
+    #[test]
+    fn parse_global_config_without_theme_defaults_to_dracula() {
+        let kdl = r#"
+config {
+    keybindings {
+        navigation "vim"
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert_eq!(cfg.theme, ThemeName::Dracula);
+    }
+
+    #[test]
+    fn parse_global_config_unknown_theme_is_error() {
+        let kdl = r#"
+config {
+    theme "nord"
+}
+"#;
+        assert!(matches!(
+            parse_global_config_kdl(kdl).unwrap_err(),
+            ZError::ConfigParse(_)
+        ));
     }
 
     // -----------------------------------------------------------------------
