@@ -1,5 +1,6 @@
 mod config_store;
 mod depcheck_impl;
+mod forge;
 mod log;
 mod notify;
 mod prune;
@@ -32,6 +33,15 @@ use crate::session_manager::{
 use crate::worktree_manager::WtWorktreeManager;
 
 use z_tui::{Navigation, ProjectEntry, TuiAction, WorkflowInfo};
+
+/// Resolve the absolute path to the current `z` binary.
+/// Falls back to `"z"` (assumes PATH) if `current_exe()` fails.
+fn resolve_bin_path() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))
+        .unwrap_or_else(|| "z".to_string())
+}
 
 fn main() {
     let checker = ProcessDepChecker;
@@ -167,7 +177,7 @@ fn run() {
 /// Loops back into the TUI after adding a project so the user stays in context.
 fn cmd_tui() -> z_core::error::Result<()> {
     let mut store = KdlProjectStore::new();
-    let session_mgr = ZellijSessionManager;
+    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
     let global = load_global_config();
 
     let navigation = match global.navigation.as_deref() {
@@ -236,6 +246,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 let entries = l.read_recent(max_lines);
                 Ok(entries.iter().map(|e| e.format()).collect())
             },
+            Box::new(forge::GhForgeClient),
         )
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
@@ -294,7 +305,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     project: project_name.clone(),
                     branch: _branch,
                 };
-                match ZellijSessionManager.kill_session(&sess) {
+                match (ZellijSessionManager { bin_path: resolve_bin_path() }).kill_session(&sess) {
                     Ok(()) => {
                         log::log_info(&logger, &format!("session {} killed", session));
                         status_message = Some(format!("Session {} killed.", session));
@@ -430,7 +441,7 @@ fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> z_core::error::Re
 
 fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<()> {
     let store = KdlProjectStore::new();
-    let session_mgr = ZellijSessionManager;
+    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
 
     // Resolve project — returns ProjectNotFound if not in config.
     let project = store.get_project(project_name)?;
@@ -533,7 +544,7 @@ fn cmd_open_remote(
 ///
 /// `session_name` — if `None`, detects the current session from `ZELLIJ_SESSION_NAME`.
 fn cmd_close(session_name: Option<&str>) -> z_core::error::Result<()> {
-    let session_mgr = ZellijSessionManager;
+    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
 
     let name = match session_name {
         Some(n) if !n.is_empty() => n.to_string(),
@@ -565,7 +576,7 @@ fn cmd_close(session_name: Option<&str>) -> z_core::error::Result<()> {
 /// For remote projects (those with a `host` field), delegates session killing
 /// and worktree removal to the remote machine via SSH.
 fn cmd_delete(session_name: &str) -> z_core::error::Result<()> {
-    let session_mgr = ZellijSessionManager;
+    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
 
     let (project_name, branch) =
         parse_session_name(session_name).ok_or_else(|| {
@@ -675,7 +686,7 @@ fn remove_worktree(branch: &str) -> z_core::error::Result<()> {
 /// Passes `--dry-run` to preview what would be cleaned without acting.
 fn cmd_prune(dry_run: bool) -> z_core::error::Result<()> {
     let store = KdlProjectStore::new();
-    let session_mgr = ZellijSessionManager;
+    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
 
     let projects = store.list_projects()?;
 
@@ -765,7 +776,7 @@ fn cmd_prune(dry_run: bool) -> z_core::error::Result<()> {
 /// Returns a one-line summary string to display in the status bar.
 fn prune_summary(force: bool) -> z_core::error::Result<String> {
     let store = KdlProjectStore::new();
-    let session_mgr = ZellijSessionManager;
+    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
 
     let projects = store.list_projects()?;
 
@@ -870,7 +881,7 @@ fn cmd_switch() -> z_core::error::Result<()> {
     }
 
     // Prevent multiple switch pickers from opening simultaneously.
-    let lock_path = format!("/tmp/z-switch-{}.lock", std::process::id());
+    let _lock_path = format!("/tmp/z-switch-{}.lock", std::process::id());
     let global_lock = "/tmp/z-switch.lock";
     if std::path::Path::new(global_lock).exists() {
         // Another instance is already running — exit silently so the
@@ -1408,7 +1419,7 @@ pub fn format_run_status(runs: &[&WorkflowRun]) -> String {
 
 fn cmd_list() -> z_core::error::Result<()> {
     let store = KdlProjectStore::new();
-    let session_mgr = ZellijSessionManager;
+    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
 
     let projects = store.list_projects()?;
 

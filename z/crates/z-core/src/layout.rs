@@ -13,26 +13,32 @@ const DEFAULT_TAB_TEMPLATE: &str = "\
         }\n\
     }\n";
 
-/// Keybind block injected into every generated layout.
+/// Generate the keybind block for a given binary path.
 /// Binds `Ctrl+k` to session switcher and `Ctrl+l` to log viewer,
 /// both running in floating panes that close on exit.
-const KEYBINDS_BLOCK: &str = "\
-    keybinds {\n\
-        shared {\n\
-            bind \"Ctrl k\" {\n\
-                Run \"/Users/arkan/Code/z/z/target/debug/z\" \"switch\" {\n\
+fn keybinds_block(bin_path: &str) -> String {
+    format!(
+        "\
+    keybinds {{\n\
+        shared {{\n\
+            bind \"Ctrl k\" {{\n\
+                Run \"{}\" \"switch\" {{\n\
                     floating true\n\
                     close_on_exit true\n\
-                }\n\
-            }\n\
-            bind \"Ctrl l\" {\n\
-                Run \"/Users/arkan/Code/z/z/target/debug/z\" \"logs-viewer\" {\n\
+                }}\n\
+            }}\n\
+            bind \"Ctrl l\" {{\n\
+                Run \"{}\" \"logs-viewer\" {{\n\
                     floating true\n\
                     close_on_exit true\n\
-                }\n\
-            }\n\
-        }\n\
-    }\n";
+                }}\n\
+            }}\n\
+        }}\n\
+    }}\n",
+        escape_kdl_string(bin_path),
+        escape_kdl_string(bin_path),
+    )
+}
 
 /// Generate a Zellij KDL layout string from a `Layout`.
 ///
@@ -52,7 +58,7 @@ const KEYBINDS_BLOCK: &str = "\
 ///     }
 /// }
 /// ```
-pub fn generate_layout_kdl(layout: &Layout) -> String {
+pub fn generate_layout_kdl(layout: &Layout, bin_path: &str) -> String {
     let mut out = if let Some(ref cwd) = layout.cwd {
         format!("layout cwd=\"{}\" {{\n", escape_kdl_string(&cwd.to_string_lossy()))
     } else {
@@ -63,7 +69,7 @@ pub fn generate_layout_kdl(layout: &Layout) -> String {
         out.push_str(&generate_tab_kdl(tab));
     }
     out.push_str("}\n");
-    out.push_str(KEYBINDS_BLOCK);
+    out.push_str(&keybinds_block(bin_path));
     out
 }
 
@@ -133,7 +139,7 @@ mod tests {
     #[test]
     fn generate_kdl_empty_layout() {
         let layout = Layout { tabs: vec![], cwd: None };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.starts_with("layout {\n"));
         assert!(kdl.ends_with("}\n"));
         assert!(kdl.contains("default_tab_template"));
@@ -145,7 +151,7 @@ mod tests {
             tabs: vec![],
             cwd: Some(std::path::PathBuf::from("/home/user/projects/myapp-feat-login")),
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.starts_with("layout cwd=\"/home/user/projects/myapp-feat-login\" {\n"));
         assert!(kdl.ends_with("}\n"));
         assert!(kdl.contains("default_tab_template"));
@@ -157,7 +163,7 @@ mod tests {
             tabs: vec![],
             cwd: Some(std::path::PathBuf::from(r#"/home/user/my "project""#)),
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.starts_with("layout cwd=\"/home/user/my \\\"project\\\"\""));
     }
 
@@ -173,7 +179,7 @@ mod tests {
             }],
             cwd: None,
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.starts_with("layout {\n"));
         assert!(kdl.contains("tab name=\"shell\""));
         assert!(kdl.contains("        pane\n"));
@@ -192,7 +198,7 @@ mod tests {
             }],
             cwd: None,
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.contains("pane command=\"claude\""));
         assert!(kdl.contains("tab name=\"claude\""));
     }
@@ -209,7 +215,7 @@ mod tests {
             }],
             cwd: None,
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.contains("pane command=\"nvim\" args=\"--headless\""));
     }
 
@@ -226,7 +232,7 @@ mod tests {
     #[test]
     fn generate_kdl_default_layout_kdl_output() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.starts_with("layout {\n"));
         assert!(kdl.contains("tab name=\"claude\""));
         assert!(kdl.contains("pane command=\"claude\""));
@@ -241,7 +247,7 @@ mod tests {
     #[test]
     fn generate_kdl_multiple_tabs() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         let claude_pos = kdl.find("tab name=\"claude\"").unwrap();
         let shell_pos = kdl.find("tab name=\"shell\"").unwrap();
         // claude tab appears before shell tab
@@ -257,7 +263,7 @@ mod tests {
             }],
             cwd: None,
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.starts_with("layout {\n"));
         assert!(kdl.contains("tab name=\"empty\""));
         assert!(kdl.ends_with("}\n"));
@@ -275,7 +281,7 @@ mod tests {
             }],
             cwd: None,
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.contains(r#"tab name="my \"tab\"""#));
     }
 
@@ -291,7 +297,7 @@ mod tests {
             }],
             cwd: None,
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.contains(r#"pane command="C:\\bin\\tool""#));
     }
 
@@ -307,7 +313,7 @@ mod tests {
             }],
             cwd: None,
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.contains(r#"args="hello \"world\"""#));
     }
 
@@ -329,7 +335,7 @@ mod tests {
             }],
             cwd: None,
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.contains("pane command=\"htop\""));
         assert!(kdl.contains("        pane\n"));
     }
@@ -346,7 +352,7 @@ mod tests {
             }],
             cwd: None,
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.contains(r#"pane command="nvim" args="-u" "NONE" "file.txt""#));
     }
 
@@ -362,7 +368,7 @@ mod tests {
             }],
             cwd: Some(std::path::PathBuf::from("/home/user/myapp-feat")),
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.starts_with("layout cwd=\"/home/user/myapp-feat\" {\n"));
         assert!(kdl.contains("tab name=\"shell\""));
         assert!(kdl.ends_with("}\n"));
@@ -372,7 +378,7 @@ mod tests {
     fn generate_kdl_default_layout_with_cwd() {
         let mut layout = default_layout();
         layout.cwd = Some(std::path::PathBuf::from("/worktree/path"));
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.starts_with("layout cwd=\"/worktree/path\""));
         assert!(kdl.contains("tab name=\"claude\""));
         assert!(kdl.contains("pane command=\"claude\""));
@@ -382,7 +388,7 @@ mod tests {
     #[test]
     fn generate_kdl_includes_default_tab_template_with_tab_bar_and_status_bar() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(
             kdl.contains("default_tab_template"),
             "layout must include default_tab_template block"
@@ -404,7 +410,7 @@ mod tests {
     #[test]
     fn generate_kdl_tab_template_appears_before_tabs() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         let template_pos = kdl.find("default_tab_template").unwrap();
         let first_tab_pos = kdl.find("tab name=").unwrap();
         assert!(
@@ -426,7 +432,7 @@ mod tests {
     #[test]
     fn generate_kdl_includes_keybinds_block() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.contains("keybinds {"), "layout must include keybinds block");
         assert!(kdl.contains("shared {"), "keybinds must include shared block");
         assert!(kdl.contains("bind \"Ctrl k\""), "keybinds must bind Ctrl k");
@@ -436,9 +442,27 @@ mod tests {
     }
 
     #[test]
+    fn generate_kdl_keybinds_use_provided_bin_path() {
+        let layout = default_layout();
+        let kdl = generate_layout_kdl(&layout, "/opt/z/bin/z");
+        assert!(
+            kdl.contains("Run \"/opt/z/bin/z\" \"switch\""),
+            "switch keybind must use provided bin_path"
+        );
+        assert!(
+            kdl.contains("Run \"/opt/z/bin/z\" \"logs-viewer\""),
+            "logs-viewer keybind must use provided bin_path"
+        );
+        assert!(
+            !kdl.contains("/Users/arkan"),
+            "must not contain hardcoded dev path"
+        );
+    }
+
+    #[test]
     fn generate_kdl_keybinds_present_in_empty_layout() {
         let layout = Layout { tabs: vec![], cwd: None };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.contains("keybinds {"));
         assert!(kdl.contains("bind \"Ctrl k\""));
     }
@@ -452,7 +476,7 @@ mod tests {
             }],
             cwd: Some(std::path::PathBuf::from("/some/path")),
         };
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         assert!(kdl.contains("keybinds {"));
         assert!(kdl.contains("bind \"Ctrl k\""));
         assert!(kdl.contains("tab name=\"work\""));
@@ -461,7 +485,7 @@ mod tests {
     #[test]
     fn generate_kdl_keybinds_appears_after_tab_template() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         let template_pos = kdl.find("default_tab_template").unwrap();
         let keybinds_pos = kdl.find("keybinds {").unwrap();
         assert!(
@@ -473,7 +497,7 @@ mod tests {
     #[test]
     fn generate_kdl_keybinds_appears_after_layout_block() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z");
         let layout_close = kdl.find("}\n").unwrap();
         let keybinds_pos = kdl.find("keybinds {").unwrap();
         assert!(
