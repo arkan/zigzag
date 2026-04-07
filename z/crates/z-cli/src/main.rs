@@ -29,6 +29,7 @@ use crate::depcheck_impl::ProcessDepChecker;
 use crate::notify::DispatchNotifier;
 use crate::session_manager::{
     list_all_z_sessions_with_ages, parse_session_name, ZellijSessionManager,
+    ZellijSessionRefresher,
 };
 use crate::worktree_manager::WtWorktreeManager;
 
@@ -253,6 +254,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
             },
             Box::new(forge::GhForgeClient),
+            Box::new(ZellijSessionRefresher),
             theme,
         )
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
@@ -273,16 +275,21 @@ fn cmd_tui() -> z_core::error::Result<()> {
             }
 
             TuiAction::Open { project, session } => {
-                // Clear notifications for the session being opened.
-                if let Some(ref s) = session {
-                    let _ = z_core::notification::clear_notifications(s);
-                }
+                // Resolve the session name: explicit when opened from Sessions
+                // panel, default to "main" when opened from Projects panel.
+                let session_name = session.clone().unwrap_or_else(|| {
+                    z_core::domain::Session::new(&project, "main").name
+                });
+                let _ = z_core::notification::clear_notifications(&session_name);
                 // Extract branch from "project:branch" session name, or open default.
                 let branch_owned: Option<String> = session
                     .as_deref()
                     .and_then(|s| parse_session_name(s))
                     .map(|(_, b)| b);
                 cmd_open(&project, branch_owned.as_deref())?;
+                // Clear again after detach — notifications may have arrived
+                // while the user was inside the session.
+                let _ = z_core::notification::clear_notifications(&session_name);
                 // Loop back to re-enter the TUI after the session ends,
                 // with the same project re-selected.
                 initial_project = Some(project);
@@ -292,6 +299,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 let session_name = z_core::domain::Session::new(&project, &branch).name;
                 let _ = z_core::notification::clear_notifications(&session_name);
                 cmd_open(&project, Some(&branch))?;
+                let _ = z_core::notification::clear_notifications(&session_name);
                 // Loop back to re-enter the TUI after the session ends,
                 // with the same project re-selected.
                 initial_project = Some(project);
@@ -356,6 +364,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
             }
 
             TuiAction::LazyGit { project, session } => {
+                // Clear notifications before attaching.
+                let _ = z_core::notification::clear_notifications(&session);
                 // Attach to the existing Zellij session — lazygit is available
                 // inside via the Alt+G keybind defined in the layout.
                 let sess = z_core::domain::Session {
@@ -367,7 +377,9 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 };
                 let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
                 match session_mgr.attach_session(&sess) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        let _ = z_core::notification::clear_notifications(&session);
+                    }
                     Err(e) => {
                         status_message = Some(format!("Failed to attach session: {e}"));
                     }

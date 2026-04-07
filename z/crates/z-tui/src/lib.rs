@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::io;
 use std::sync::{mpsc, Arc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // Fuzzy matching
@@ -50,7 +50,10 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
+pub mod refresh;
+
 use z_core::domain::{CiStatus, PrState, PullRequest, Project, Session};
+use z_core::traits::SessionRefresher;
 use z_core::theme::{Rgb, ThemeStyle};
 
 // ---------------------------------------------------------------------------
@@ -361,6 +364,12 @@ pub struct TuiState {
     pub status_message: Option<String>,
     /// Color theme applied to the entire TUI.
     pub theme: z_core::theme::Theme,
+    /// Session refresher used to poll sessions/notifications in background.
+    pub refresher: Arc<dyn SessionRefresher>,
+    /// Receiver for the in-flight session refresh, if any.
+    pub(crate) refresh_rx: Option<mpsc::Receiver<refresh::RefreshData>>,
+    /// Timestamp of the last refresh spawn.
+    pub(crate) last_refresh: Instant,
 }
 
 impl TuiState {
@@ -368,6 +377,7 @@ impl TuiState {
         entries: Vec<ProjectEntry>,
         navigation: Navigation,
         forge_client: Arc<dyn z_core::traits::ForgeClient + Send + Sync>,
+        refresher: Arc<dyn SessionRefresher>,
     ) -> Self {
         Self {
             entries,
@@ -386,6 +396,9 @@ impl TuiState {
             modal: None,
             status_message: None,
             theme: z_core::theme::Theme::default(),
+            refresher,
+            refresh_rx: None,
+            last_refresh: Instant::now(),
         }
     }
 
@@ -614,6 +627,66 @@ impl TuiState {
                 Err(e) => PreviewData::Error(e),
             };
             self.preview_rx = None;
+        }
+    }
+
+    /// Spawn a background session refresh if 5 seconds have elapsed and no
+    /// refresh is already in-flight.
+    pub fn trigger_refresh(&mut self) {
+        const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+        if self.refresh_rx.is_some() || self.last_refresh.elapsed() < REFRESH_INTERVAL {
+            return;
+        }
+
+        let refresher = Arc::clone(&self.refresher);
+        let projects: Vec<Project> = self.entries.iter().map(|e| e.project.clone()).collect();
+        let (tx, rx) = mpsc::channel();
+        self.refresh_rx = Some(rx);
+        self.last_refresh = Instant::now();
+
+        std::thread::spawn(move || {
+            let sessions = refresher.fetch_all_sessions(&projects);
+            let notifications = refresher.fetch_notifications();
+            let _ = tx.send(refresh::RefreshData {
+                sessions,
+                notifications,
+            });
+        });
+    }
+
+    /// Poll the in-flight session refresh channel; merge results if arrived.
+    /// Skips applying results while a modal is open to avoid disrupting forms.
+    pub fn poll_refresh(&mut self) {
+        let data = match &self.refresh_rx {
+            Some(rx) => match rx.try_recv() {
+                Ok(data) => Some(data),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.refresh_rx = None;
+                    None
+                }
+            },
+            None => return,
+        };
+
+        if let Some(data) = data {
+            self.refresh_rx = None;
+
+            // Defer merge while a modal is open.
+            if self.modal.is_some() {
+                return;
+            }
+
+            let result = refresh::merge_refresh(
+                &mut self.entries,
+                &mut self.notifications,
+                data,
+                self.selected_project,
+                self.selected_session,
+            );
+            self.selected_project = result.selected_project;
+            self.selected_session = result.selected_session;
         }
     }
 }
@@ -1293,6 +1366,7 @@ pub fn run_tui(
     log_fn: impl Fn(usize) -> io::Result<Vec<String>>,
     swap_fn: impl Fn(usize, usize) -> io::Result<()>,
     forge_client: Box<dyn z_core::traits::ForgeClient + Send + Sync>,
+    refresher: Box<dyn SessionRefresher>,
     theme: z_core::theme::Theme,
 ) -> io::Result<TuiAction> {
     enable_raw_mode()?;
@@ -1301,7 +1375,7 @@ pub fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut state = TuiState::new(entries, navigation, Arc::from(forge_client));
+    let mut state = TuiState::new(entries, navigation, Arc::from(forge_client), Arc::from(refresher));
     state.theme = theme;
     state.notifications = notifications;
     state.status_message = status_message;
@@ -1337,6 +1411,10 @@ fn event_loop<B: Backend>(
         state.poll_preview();
         // Check if async forge/Zellij data has arrived.
         state.poll_forge();
+        // Check if session/notification refresh data has arrived.
+        state.poll_refresh();
+        // Spawn a new session refresh if the interval has elapsed.
+        state.trigger_refresh();
 
         terminal.draw(|f| render(f, state))?;
 
@@ -2623,6 +2701,20 @@ mod tests {
         Arc::new(MockForgeClient)
     }
 
+    struct MockSessionRefresher;
+    impl SessionRefresher for MockSessionRefresher {
+        fn fetch_all_sessions(&self, _: &[Project]) -> Vec<(String, Vec<Session>)> {
+            Vec::new()
+        }
+        fn fetch_notifications(&self) -> HashSet<String> {
+            HashSet::new()
+        }
+    }
+
+    fn mock_refresher() -> Arc<dyn SessionRefresher> {
+        Arc::new(MockSessionRefresher)
+    }
+
     fn make_project(name: &str, remote: bool) -> Project {
         Project {
             name: name.to_string(),
@@ -2722,7 +2814,7 @@ mod tests {
 
     #[test]
     fn renders_projects_panel_header() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 80, 24);
         assert!(out.contains("PROJECTS"), "should render PROJECTS panel header");
         assert!(out.contains("SESSIONS"), "should render SESSIONS panel header");
@@ -2730,7 +2822,7 @@ mod tests {
 
     #[test]
     fn renders_all_project_names() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 80, 24);
         assert!(out.contains("myapp"), "should show 'myapp'");
         assert!(out.contains("hermes"), "should show 'hermes'");
@@ -2739,7 +2831,7 @@ mod tests {
 
     #[test]
     fn renders_active_session_indicator() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 80, 24);
         // myapp has sessions → should have the ● bullet (U+25CF)
         assert!(out.contains('\u{25cf}'), "should show active session indicator ●");
@@ -2747,7 +2839,7 @@ mod tests {
 
     #[test]
     fn renders_remote_project_icon() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 80, 24);
         // prod-api is remote → should have 🌐 (U+1F310)
         assert!(out.contains('\u{1f310}'), "should show remote project icon 🌐");
@@ -2755,7 +2847,7 @@ mod tests {
 
     #[test]
     fn renders_sessions_for_selected_project() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 80, 24);
         // myapp is selected; its sessions should appear in the right panel
         assert!(out.contains("myapp:main"), "should show 'myapp:main' session");
@@ -2767,7 +2859,7 @@ mod tests {
 
     #[test]
     fn renders_status_bar_hints() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 120, 24);
         assert!(out.contains("[o]"), "should show [o] hint");
         assert!(out.contains("[q]"), "should show [q] hint");
@@ -2778,7 +2870,7 @@ mod tests {
 
     #[test]
     fn e_key_returns_edit_per_repo_config_action() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // First project is "myapp" at /home/user/myapp
         assert!(state.selected_entry().is_some(), "should have a selected entry");
         let expected_path = std::path::PathBuf::from("/home/user/myapp");
@@ -2798,14 +2890,14 @@ mod tests {
 
     #[test]
     fn e_key_no_projects_does_nothing() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         // With no entries, selected_entry() returns None — no action should be emitted.
         assert!(state.selected_entry().is_none(), "empty state should have no selected entry");
     }
 
     #[test]
     fn renders_status_bar_project_info() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 80, 24);
         // Status bar shows selected project name
         assert!(out.contains("myapp"), "status bar should mention selected project");
@@ -2814,7 +2906,7 @@ mod tests {
 
     #[test]
     fn renders_empty_state_without_panic() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 80, 24);
         assert!(out.contains("PROJECTS"), "should still render PROJECTS panel");
         assert!(out.contains("SESSIONS"), "should still render SESSIONS panel");
@@ -2822,7 +2914,7 @@ mod tests {
 
     #[test]
     fn renders_search_query_in_header() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_mode = true;
         state.search_query = "my".to_string();
         let out = render_to_string(&state, 80, 24);
@@ -2833,14 +2925,14 @@ mod tests {
 
     #[test]
     fn renders_preview_pane_header() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("PREVIEW"), "should render PREVIEW panel header");
     }
 
     #[test]
     fn renders_preview_loading_indicator() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // Initial state is Loading
         let out = render_to_string(&state, 80, 30);
         assert!(
@@ -2851,7 +2943,7 @@ mod tests {
 
     #[test]
     fn renders_preview_ready_with_branch_and_tracking() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.preview_data = PreviewData::Ready(make_git_info());
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("feat"), "should show branch name");
@@ -2864,7 +2956,7 @@ mod tests {
 
     #[test]
     fn renders_preview_dirty_status() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.preview_data = PreviewData::Ready(make_git_info()); // is_dirty = true
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("dirty"), "should show dirty working tree status");
@@ -2872,7 +2964,7 @@ mod tests {
 
     #[test]
     fn renders_preview_clean_status() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.preview_data = PreviewData::Ready(GitInfo {
             branch: "main".to_string(),
             ahead: 0,
@@ -2889,7 +2981,7 @@ mod tests {
 
     #[test]
     fn renders_preview_commit_list() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.preview_data = PreviewData::Ready(make_git_info());
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("a1b2c3"), "should show commit hash");
@@ -2898,7 +2990,7 @@ mod tests {
 
     #[test]
     fn renders_preview_recent_commits_label() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.preview_data = PreviewData::Ready(make_git_info());
         let out = render_to_string(&state, 80, 30);
         assert!(
@@ -2909,7 +3001,7 @@ mod tests {
 
     #[test]
     fn renders_preview_error_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.preview_data = PreviewData::Error("not a git repository".to_string());
         let out = render_to_string(&state, 80, 30);
         assert!(
@@ -2920,7 +3012,7 @@ mod tests {
 
     #[test]
     fn renders_preview_no_tracking_when_zero_ahead_behind() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.preview_data = PreviewData::Ready(GitInfo {
             branch: "main".to_string(),
             ahead: 0,
@@ -2943,7 +3035,7 @@ mod tests {
 
     #[test]
     fn initial_preview_state_is_loading() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         assert!(
             matches!(state.preview_data, PreviewData::Loading),
             "initial preview_data should be Loading"
@@ -2952,13 +3044,13 @@ mod tests {
 
     #[test]
     fn initial_preview_key_is_empty() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         assert_eq!(state.preview_key, "");
     }
 
     #[test]
     fn trigger_preview_load_sets_key() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.trigger_preview_load();
         assert!(!state.preview_key.is_empty(), "preview_key should be set after trigger");
         assert!(
@@ -2969,7 +3061,7 @@ mod tests {
 
     #[test]
     fn trigger_preview_load_sets_loading_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // Overwrite with Ready so we can confirm it reverts to Loading on change
         state.preview_data = PreviewData::Ready(make_git_info());
         state.preview_key = "different:key".to_string();
@@ -2982,7 +3074,7 @@ mod tests {
 
     #[test]
     fn trigger_preview_load_noop_when_key_unchanged() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.trigger_preview_load(); // sets key + spawns thread
         let key_after_first = state.preview_key.clone();
         state.preview_data = PreviewData::Ready(make_git_info()); // simulate data arrived
@@ -2996,7 +3088,7 @@ mod tests {
 
     #[test]
     fn trigger_preview_load_noop_on_empty_entries() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         state.trigger_preview_load(); // should not panic
         assert_eq!(state.preview_key, "");
         assert!(matches!(state.preview_data, PreviewData::Loading));
@@ -3004,7 +3096,7 @@ mod tests {
 
     #[test]
     fn poll_preview_updates_state_from_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let (tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
         state.preview_rx = Some(rx);
         state.preview_data = PreviewData::Loading;
@@ -3022,7 +3114,7 @@ mod tests {
 
     #[test]
     fn poll_preview_handles_error_from_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let (tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
         state.preview_rx = Some(rx);
 
@@ -3037,14 +3129,14 @@ mod tests {
 
     #[test]
     fn poll_preview_noop_when_no_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.preview_rx = None;
         state.poll_preview(); // should not panic
     }
 
     #[test]
     fn poll_preview_handles_disconnected_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let (tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
         state.preview_rx = Some(rx);
         state.preview_data = PreviewData::Loading;
@@ -3062,7 +3154,7 @@ mod tests {
 
     #[test]
     fn poll_preview_noop_when_channel_empty_but_alive() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let (_tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
         state.preview_rx = Some(rx);
         state.preview_data = PreviewData::Loading;
@@ -3079,7 +3171,7 @@ mod tests {
 
     #[test]
     fn preview_key_includes_session_branch_when_sessions_focused() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.focused_panel = Panel::Sessions;
         state.selected_session = 0;
         let key0 = state.current_preview_key().unwrap();
@@ -3094,7 +3186,7 @@ mod tests {
 
     #[test]
     fn preview_key_uses_first_session_when_projects_focused() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.focused_panel = Panel::Projects;
         state.selected_session = 1; // should be ignored — uses first session
         let key = state.current_preview_key().unwrap();
@@ -3103,7 +3195,7 @@ mod tests {
 
     #[test]
     fn preview_key_empty_branch_for_no_sessions() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.selected_project = 1; // hermes has no sessions
         let key = state.current_preview_key().unwrap();
         assert!(key.ends_with(':'), "key should end with ':' when project has no sessions");
@@ -3112,13 +3204,13 @@ mod tests {
     #[test]
     fn renders_preview_at_minimum_terminal_height() {
         // 8 (preview) + 3 (status) + 1 (min main) = 12 minimum
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let _out = render_to_string(&state, 80, 12); // should not panic
     }
 
     #[test]
     fn preview_key_changes_on_project_navigation() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.trigger_preview_load();
         let key1 = state.preview_key.clone();
 
@@ -3134,7 +3226,7 @@ mod tests {
 
     #[test]
     fn navigate_down_increments_selection() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         assert_eq!(state.selected_project, 0);
         state.move_down();
         assert_eq!(state.selected_project, 1);
@@ -3144,14 +3236,14 @@ mod tests {
 
     #[test]
     fn navigate_up_does_not_underflow() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.move_up();
         assert_eq!(state.selected_project, 0, "should stay at 0");
     }
 
     #[test]
     fn navigate_down_stops_at_last_item() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.selected_project = 2;
         state.move_down();
         assert_eq!(state.selected_project, 2, "should not go past last item");
@@ -3159,7 +3251,7 @@ mod tests {
 
     #[test]
     fn switch_panel_toggles_focus() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         assert_eq!(state.focused_panel, Panel::Projects);
         state.switch_panel();
         assert_eq!(state.focused_panel, Panel::Sessions);
@@ -3169,7 +3261,7 @@ mod tests {
 
     #[test]
     fn navigate_sessions_panel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.focused_panel = Panel::Sessions;
         assert_eq!(state.selected_session, 0);
         state.move_down();
@@ -3182,7 +3274,7 @@ mod tests {
 
     #[test]
     fn navigate_sessions_does_not_overflow() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.focused_panel = Panel::Sessions;
         state.selected_session = 1; // last session of myapp
         state.move_down();
@@ -3191,7 +3283,7 @@ mod tests {
 
     #[test]
     fn navigate_sessions_empty_project() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.selected_project = 1; // hermes has no sessions
         state.focused_panel = Panel::Sessions;
         state.move_down();
@@ -3200,7 +3292,7 @@ mod tests {
 
     #[test]
     fn navigate_down_resets_session_cursor() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.focused_panel = Panel::Sessions;
         state.move_down();
         assert_eq!(state.selected_session, 1);
@@ -3212,7 +3304,7 @@ mod tests {
 
     #[test]
     fn search_filters_projects_by_name() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_query = "my".to_string();
         let filtered = state.filtered_projects();
         assert_eq!(filtered.len(), 1);
@@ -3221,7 +3313,7 @@ mod tests {
 
     #[test]
     fn search_is_case_insensitive() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_query = "MYAPP".to_string();
         let filtered = state.filtered_projects();
         assert_eq!(filtered.len(), 1);
@@ -3230,27 +3322,27 @@ mod tests {
 
     #[test]
     fn empty_search_shows_all_projects() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         assert_eq!(state.filtered_projects().len(), 3);
     }
 
     #[test]
     fn search_no_match_returns_empty() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_query = "zzznomatch".to_string();
         assert!(state.filtered_projects().is_empty());
     }
 
     #[test]
     fn selected_entry_returns_correct_project() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.selected_project = 1;
         assert_eq!(state.selected_entry().unwrap().project.name, "hermes");
     }
 
     #[test]
     fn selected_entry_with_filter_returns_filtered_item() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_query = "prod".to_string();
         state.selected_project = 0;
         assert_eq!(
@@ -3261,7 +3353,7 @@ mod tests {
 
     #[test]
     fn selected_entry_empty_list_returns_none() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         assert!(state.selected_entry().is_none());
     }
 
@@ -3269,7 +3361,7 @@ mod tests {
 
     #[test]
     fn search_resets_selected_session() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.focused_panel = Panel::Sessions;
         state.selected_session = 1;
 
@@ -3285,21 +3377,21 @@ mod tests {
 
     #[test]
     fn move_down_on_empty_entries_is_noop() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         state.move_down();
         assert_eq!(state.selected_project, 0);
     }
 
     #[test]
     fn move_up_on_empty_entries_is_noop() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         state.move_up();
         assert_eq!(state.selected_project, 0);
     }
 
     #[test]
     fn switch_panel_on_empty_entries_does_not_panic() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         state.switch_panel();
         assert_eq!(state.focused_panel, Panel::Sessions);
         state.move_down(); // sessions panel, no entry → noop
@@ -3308,14 +3400,14 @@ mod tests {
 
     #[test]
     fn selected_entry_with_out_of_bounds_index_returns_none() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.selected_project = 99; // way past the end
         assert!(state.selected_entry().is_none());
     }
 
     #[test]
     fn search_then_clear_restores_full_list() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_query = "prod".to_string();
         assert_eq!(state.filtered_projects().len(), 1);
         state.search_query.clear();
@@ -3330,7 +3422,7 @@ mod tests {
             worktree_count: 0,
             workflows: vec![],
         }];
-        let mut state = TuiState::new(entries, Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(entries, Navigation::Arrows, mock_forge(), mock_refresher());
         state.move_up();
         assert_eq!(state.selected_project, 0);
         state.move_down();
@@ -3342,7 +3434,7 @@ mod tests {
 
     #[test]
     fn renders_empty_search_no_match_without_panic() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_mode = true;
         state.search_query = "zzz_no_match".to_string();
         let out = render_to_string(&state, 80, 24);
@@ -3351,14 +3443,14 @@ mod tests {
 
     #[test]
     fn renders_narrow_terminal_without_panic() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // Extremely narrow — columns may truncate but should not panic
         let _out = render_to_string(&state, 20, 10);
     }
 
     #[test]
     fn renders_remote_project_status_bar() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.selected_project = 2; // prod-api is remote
         let out = render_to_string(&state, 80, 24);
         assert!(out.contains("remote"), "status bar should say 'remote' for remote project");
@@ -3367,7 +3459,7 @@ mod tests {
 
     #[test]
     fn navigate_project_down_then_up_resets_session() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.focused_panel = Panel::Sessions;
         state.move_down();
         assert_eq!(state.selected_session, 1);
@@ -3446,7 +3538,7 @@ mod tests {
 
     #[test]
     fn fuzzy_search_matches_project_non_contiguous() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // "mpp" → m..pp → matches "myapp"
         state.search_query = "mpp".to_string();
         let filtered = state.filtered_projects();
@@ -3456,7 +3548,7 @@ mod tests {
 
     #[test]
     fn fuzzy_search_includes_project_with_matching_session() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // "feat" doesn't match "myapp" or "hermes" project names,
         // but "myapp:feat-login" session contains "feat"
         state.search_query = "feat".to_string();
@@ -3467,7 +3559,7 @@ mod tests {
 
     #[test]
     fn fuzzy_search_project_name_match_shows_no_sessions_when_none_match() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // "hermes" matches the project name, but hermes has no sessions
         state.search_query = "hermes".to_string();
         state.selected_project = 0;
@@ -3479,7 +3571,7 @@ mod tests {
 
     #[test]
     fn fuzzy_search_project_matched_by_name_hides_nonmatching_sessions() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // "myapp" matches the project name; sessions should still be filtered
         // "myapp:main" fuzzy-matches "myapp" (m-y-a-p-p all present) so it shows
         // "myapp:feat-login" also fuzzy-matches "myapp" (m-y-a-p... has 'p') so both show
@@ -3492,7 +3584,7 @@ mod tests {
 
     #[test]
     fn fuzzy_search_session_name_match_via_project_inclusion() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // "main" matches the "myapp:main" session, so myapp should appear
         state.search_query = "main".to_string();
         let filtered = state.filtered_projects();
@@ -3503,7 +3595,7 @@ mod tests {
 
     #[test]
     fn filtered_sessions_empty_query_returns_all() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // myapp has 2 sessions; no query → all returned
         let sessions = state.filtered_sessions();
         assert_eq!(sessions.len(), 2);
@@ -3511,7 +3603,7 @@ mod tests {
 
     #[test]
     fn filtered_sessions_filters_by_fuzzy_match() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_query = "login".to_string();
         // Only "myapp:feat-login" matches "login"
         let sessions = state.filtered_sessions();
@@ -3521,21 +3613,21 @@ mod tests {
 
     #[test]
     fn filtered_sessions_no_match_returns_empty() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_query = "zzznomatch".to_string();
         assert!(state.filtered_sessions().is_empty());
     }
 
     #[test]
     fn filtered_sessions_empty_project_returns_empty() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.selected_project = 1; // hermes has no sessions
         assert!(state.filtered_sessions().is_empty());
     }
 
     #[test]
     fn navigate_sessions_respects_filter() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // "login" matches only 1 session → moving down is a noop
         state.search_query = "login".to_string();
         state.focused_panel = Panel::Sessions;
@@ -3547,7 +3639,7 @@ mod tests {
     fn navigate_projects_while_in_search_mode() {
         // Verifies that arrow-key navigation works while search mode is active.
         // There are 3 entries; all match an empty query.
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_mode = true;
         assert_eq!(state.selected_project, 0);
         state.move_down();
@@ -3558,7 +3650,7 @@ mod tests {
 
     #[test]
     fn delete_targets_filtered_session_not_unfiltered() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // Filter to only "feat-login"; selected_session = 0 should point to it
         state.search_query = "login".to_string();
         state.selected_session = 0;
@@ -3569,7 +3661,7 @@ mod tests {
 
     #[test]
     fn delete_noop_when_no_sessions_match_filter() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_query = "zzznomatch".to_string();
         state.selected_session = 0;
         // No sessions match → get returns None → delete would be a no-op
@@ -3580,7 +3672,7 @@ mod tests {
 
     #[test]
     fn renders_search_mode_filters_sessions() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_mode = true;
         state.search_query = "login".to_string();
         let out = render_to_string(&state, 80, 24);
@@ -3590,7 +3682,7 @@ mod tests {
 
     #[test]
     fn renders_search_mode_hides_non_matching_sessions() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_mode = true;
         state.search_query = "login".to_string();
         let out = render_to_string(&state, 80, 24);
@@ -3608,7 +3700,7 @@ mod tests {
 
     #[test]
     fn renders_project_matched_by_session_name() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_mode = true;
         state.search_query = "feat".to_string();
         let out = render_to_string(&state, 80, 24);
@@ -3621,7 +3713,7 @@ mod tests {
 
     #[test]
     fn renders_fuzzy_match_non_contiguous() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_mode = true;
         state.search_query = "hms".to_string(); // h..m..s matches "hermes"
         let out = render_to_string(&state, 80, 24);
@@ -3633,7 +3725,7 @@ mod tests {
 
     #[test]
     fn renders_bell_badge_on_session_with_notification() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // myapp:main has a pending notification
         state.notifications.insert("myapp:main".to_string());
         let out = render_to_string(&state, 80, 24);
@@ -3646,7 +3738,7 @@ mod tests {
 
     #[test]
     fn does_not_render_bell_badge_without_notification() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 80, 24);
         assert!(
             !out.contains('\u{1f514}'),
@@ -3656,7 +3748,7 @@ mod tests {
 
     #[test]
     fn renders_bell_only_on_notified_session() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // Only myapp:feat-login has a notification
         state.notifications.insert("myapp:feat-login".to_string());
         let out = render_to_string(&state, 80, 24);
@@ -3667,7 +3759,7 @@ mod tests {
 
     #[test]
     fn notifications_field_default_is_empty() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         assert!(state.notifications.is_empty());
     }
 
@@ -3675,7 +3767,7 @@ mod tests {
 
     #[test]
     fn renders_pr_number_and_open_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(42, PrState::Open));
         state.preview_data = PreviewData::Ready(info);
@@ -3687,7 +3779,7 @@ mod tests {
 
     #[test]
     fn renders_pr_merged_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(7, PrState::Merged));
         state.preview_data = PreviewData::Ready(info);
@@ -3697,7 +3789,7 @@ mod tests {
 
     #[test]
     fn renders_pr_closed_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(3, PrState::Closed));
         state.preview_data = PreviewData::Ready(info);
@@ -3707,7 +3799,7 @@ mod tests {
 
     #[test]
     fn renders_no_pr_line_when_pr_absent() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let info = make_git_info(); // pr: None
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
@@ -3716,7 +3808,7 @@ mod tests {
 
     #[test]
     fn renders_ci_passing_indicator() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(42, PrState::Open));
         info.ci = Some(CiStatus::Passing);
@@ -3729,7 +3821,7 @@ mod tests {
 
     #[test]
     fn renders_ci_failing_indicator() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(1, PrState::Open));
         info.ci = Some(CiStatus::Failing);
@@ -3742,7 +3834,7 @@ mod tests {
 
     #[test]
     fn renders_ci_pending_indicator() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.ci = Some(CiStatus::Pending);
         state.preview_data = PreviewData::Ready(info);
@@ -3752,7 +3844,7 @@ mod tests {
 
     #[test]
     fn renders_no_ci_line_when_ci_unknown_and_no_pr() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.ci = Some(CiStatus::Unknown);
         state.preview_data = PreviewData::Ready(info);
@@ -3763,7 +3855,7 @@ mod tests {
 
     #[test]
     fn renders_zellij_session_info() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.zellij = Some(make_zellij_info());
         state.preview_data = PreviewData::Ready(info);
@@ -3776,7 +3868,7 @@ mod tests {
 
     #[test]
     fn renders_zellij_uptime_only_when_tab_pane_zero() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.zellij = Some(ZellijInfo {
             tab_count: 0,
@@ -3794,7 +3886,7 @@ mod tests {
 
     #[test]
     fn renders_no_zellij_line_when_absent() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let info = make_git_info(); // zellij: None
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
@@ -3803,7 +3895,7 @@ mod tests {
 
     #[test]
     fn renders_full_preview_with_all_info() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(42, PrState::Open));
         info.ci = Some(CiStatus::Passing);
@@ -3822,7 +3914,7 @@ mod tests {
 
     #[test]
     fn poll_forge_merges_pr_into_ready_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.preview_data = PreviewData::Ready(make_git_info());
 
         let (tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
@@ -3851,14 +3943,14 @@ mod tests {
 
     #[test]
     fn poll_forge_noop_when_no_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.forge_rx = None;
         state.poll_forge(); // should not panic
     }
 
     #[test]
     fn poll_forge_noop_when_channel_empty() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.preview_data = PreviewData::Ready(make_git_info());
         let (_tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
         state.forge_rx = Some(rx);
@@ -3870,7 +3962,7 @@ mod tests {
     #[test]
     fn poll_forge_discards_data_if_not_ready() {
         // If git info hasn't arrived yet (still Loading), forge data is discarded
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // preview_data stays Loading (git not yet received)
         let (tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
         state.forge_rx = Some(rx);
@@ -3888,7 +3980,7 @@ mod tests {
 
     #[test]
     fn poll_forge_handles_disconnected_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let (tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
         state.forge_rx = Some(rx);
         drop(tx); // simulate thread panic
@@ -3898,7 +3990,7 @@ mod tests {
 
     #[test]
     fn forge_rx_default_is_none() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         assert!(state.forge_rx.is_none());
     }
 
@@ -3928,7 +4020,7 @@ mod tests {
     #[test]
     fn renders_ci_without_pr_no_orphaned_separator() {
         // When CI is shown but no PR exists, there should be no " | " prefix.
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.ci = Some(CiStatus::Passing);
         // pr remains None
@@ -3940,7 +4032,7 @@ mod tests {
 
     #[test]
     fn renders_pr_without_ci() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(10, PrState::Open));
         // ci remains None
@@ -4185,7 +4277,7 @@ mod tests {
 
     #[test]
     fn modal_opens_on_uppercase_a_key_in_projects_panel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         assert!(state.modal.is_none(), "no modal initially");
         state.focused_panel = Panel::Projects;
         // Simulate pressing 'A' by directly triggering the key handler logic
@@ -4195,7 +4287,7 @@ mod tests {
 
     #[test]
     fn render_modal_add_project_shows_fields() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::AddProject(ProjectForm::new()));
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("Add Project"), "should show modal title");
@@ -4207,7 +4299,7 @@ mod tests {
 
     #[test]
     fn render_modal_shows_hints_line() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::AddProject(ProjectForm::new()));
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("Tab"), "should show Tab hint");
@@ -4217,7 +4309,7 @@ mod tests {
 
     #[test]
     fn render_modal_shows_yellow_warning_on_required_field() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut form = ProjectForm::new();
         form.fields[0].warning = Some("Required".to_string());
         state.modal = Some(Modal::AddProject(form));
@@ -4531,7 +4623,7 @@ mod tests {
 
     #[test]
     fn render_modal_edit_project_shows_title_and_fields() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut form = ProjectForm::new();
         form.fields[0].value = "/code/myapp".to_string();
         form.fields[1].value = "myapp".to_string();
@@ -4545,14 +4637,14 @@ mod tests {
 
     #[test]
     fn e_uppercase_no_projects_does_nothing() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         // With no entries, selected_entry() returns None — 'E' should not open a modal.
         assert!(state.selected_entry().is_none(), "no entries means no modal should open");
     }
 
     #[test]
     fn render_status_bar_shows_edit_project_hint() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 100, 24);
         assert!(out.contains("[E]"), "should show [E] edit project hint");
     }
@@ -4568,7 +4660,7 @@ mod tests {
 
     #[test]
     fn d_key_on_projects_panel_with_project_opens_delete_modal() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.focused_panel = Panel::Projects;
         assert!(state.modal.is_none());
 
@@ -4596,7 +4688,7 @@ mod tests {
 
     #[test]
     fn d_key_with_no_projects_does_not_open_modal() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         state.focused_panel = Panel::Projects;
         // Simulate D key: selected_entry() returns None → no modal
         if let Some(entry) = state.selected_entry() {
@@ -4735,7 +4827,7 @@ mod tests {
 
     #[test]
     fn renders_delete_confirm_modal_shows_project_name() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::DeleteConfirm {
             project_name: "myapp".to_string(),
             session_count: 2,
@@ -4748,7 +4840,7 @@ mod tests {
 
     #[test]
     fn renders_delete_confirm_modal_shows_counts() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::DeleteConfirm {
             project_name: "myapp".to_string(),
             session_count: 2,
@@ -4761,7 +4853,7 @@ mod tests {
 
     #[test]
     fn status_bar_shows_delete_project_hint() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 120, 30);
         assert!(out.contains("[D]el"), "status bar should include [D]el hint");
     }
@@ -4779,7 +4871,7 @@ mod tests {
 
     #[test]
     fn d_key_on_sessions_panel_does_not_open_delete_modal() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.focused_panel = Panel::Sessions;
         // Replicate the guard from the event loop: D only opens modal on Projects panel.
         if state.focused_panel == Panel::Projects {
@@ -4796,7 +4888,7 @@ mod tests {
 
     #[test]
     fn delete_confirm_modal_with_singular_counts() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::DeleteConfirm {
             project_name: "solo".to_string(),
             session_count: 1,
@@ -4812,7 +4904,7 @@ mod tests {
 
     #[test]
     fn delete_confirm_modal_with_zero_counts() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::DeleteConfirm {
             project_name: "empty".to_string(),
             session_count: 0,
@@ -4887,7 +4979,7 @@ mod tests {
 
     #[test]
     fn delete_confirm_modal_renders_on_small_terminal() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::DeleteConfirm {
             project_name: "test".to_string(),
             session_count: 0,
@@ -5128,7 +5220,7 @@ mod tests {
 
     #[test]
     fn apply_prune_sets_status_message_nothing_to_prune() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         assert!(state.status_message.is_none());
         apply_prune(&mut state, &|_| Ok("Nothing to prune.".to_string()), false);
         assert_eq!(
@@ -5140,7 +5232,7 @@ mod tests {
 
     #[test]
     fn apply_prune_sets_status_message_with_counts() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         apply_prune(
             &mut state,
             &|_| Ok("Pruned: 2 session(s) killed, 1 worktree(s) removed.".to_string()),
@@ -5154,7 +5246,7 @@ mod tests {
 
     #[test]
     fn apply_prune_result_visible_in_render() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         apply_prune(&mut state, &|_| Ok("Nothing to prune.".to_string()), false);
         let out = render_to_string(&state, 120, 24);
         assert!(
@@ -5165,7 +5257,7 @@ mod tests {
 
     #[test]
     fn apply_prune_overwrites_previous_status_message() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.status_message = Some("old message".to_string());
         apply_prune(&mut state, &|_| Ok("Nothing to prune.".to_string()), false);
         assert_eq!(state.status_message.as_deref(), Some("Nothing to prune."));
@@ -5173,7 +5265,7 @@ mod tests {
 
     #[test]
     fn apply_prune_shows_error_as_status_message() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         apply_prune(&mut state, &|_| {
             Err(io::Error::new(io::ErrorKind::Other, "session kill failed"))
         }, false);
@@ -5188,7 +5280,7 @@ mod tests {
     fn status_message_persists_after_navigation() {
         // The message set by apply_prune should survive move_down (navigation
         // doesn't clear it — only an explicit keypress-clear mechanism does).
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         apply_prune(&mut state, &|_| Ok("Nothing to prune.".to_string()), false);
         state.move_down();
         assert!(
@@ -5203,7 +5295,7 @@ mod tests {
 
     #[test]
     fn status_message_shown_in_status_bar_when_set() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.status_message = Some("Pruned: 1 session(s) killed, 0 worktree(s) removed.".to_string());
         let out = render_to_string(&state, 120, 24);
         assert!(
@@ -5214,7 +5306,7 @@ mod tests {
 
     #[test]
     fn project_info_shown_when_status_message_is_none() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         assert!(state.status_message.is_none());
         let out = render_to_string(&state, 120, 24);
         assert!(
@@ -5225,7 +5317,7 @@ mod tests {
 
     #[test]
     fn nothing_to_prune_message_shown_inline() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.status_message = Some("Nothing to prune.".to_string());
         let out = render_to_string(&state, 120, 24);
         assert!(
@@ -5236,7 +5328,7 @@ mod tests {
 
     #[test]
     fn status_message_shown_with_empty_entries() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         state.status_message = Some("Nothing to prune.".to_string());
         let out = render_to_string(&state, 120, 24);
         assert!(
@@ -5413,7 +5505,7 @@ mod tests {
 
     #[test]
     fn workflow_selector_renders_workflow_names() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::WorkflowSelector {
             project: "myapp".to_string(),
             workflows: make_workflows(),
@@ -5427,7 +5519,7 @@ mod tests {
 
     #[test]
     fn workflow_selector_renders_project_name_in_title() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::WorkflowSelector {
             project: "myapp".to_string(),
             workflows: make_workflows(),
@@ -5441,7 +5533,7 @@ mod tests {
     fn a_key_with_workflows_opens_workflow_selector() {
         let mut entries = make_entries();
         entries[0].workflows = make_workflows();
-        let mut state = TuiState::new(entries, Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(entries, Navigation::Arrows, mock_forge(), mock_refresher());
         // Simulate the 'a' key handler from event_loop
         if let Some(entry) = state.selected_entry() {
             if !entry.workflows.is_empty() {
@@ -5459,7 +5551,7 @@ mod tests {
     #[test]
     fn a_key_without_workflows_does_not_open_modal() {
         // entries have workflows: vec![] by default from make_entries()
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // Simulate the 'a' key handler from event_loop
         if let Some(entry) = state.selected_entry() {
             if !entry.workflows.is_empty() {
@@ -5543,7 +5635,7 @@ mod tests {
 
     #[test]
     fn o_key_on_projects_panel_returns_open_with_no_session() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // Projects panel is the default focus
         assert_eq!(state.focused_panel, Panel::Projects);
         // Simulate 'o' key logic from event_loop
@@ -5558,7 +5650,7 @@ mod tests {
 
     #[test]
     fn o_key_on_sessions_panel_returns_open_with_session() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.focused_panel = Panel::Sessions;
         state.selected_session = 0;
         // Simulate 'o' key logic from event_loop
@@ -5581,14 +5673,14 @@ mod tests {
 
     #[test]
     fn o_key_with_no_projects_returns_no_action() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         let project_name = state.selected_entry().map(|e| e.project.name.clone());
         assert!(project_name.is_none(), "'o' with no projects should not produce an action");
     }
 
     #[test]
     fn n_key_returns_new_with_selected_project() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // Simulate 'n' key logic from event_loop
         let action_project = state.selected_entry().map(|e| e.project.name.clone());
         assert_eq!(action_project.as_deref(), Some("myapp"),
@@ -5597,7 +5689,7 @@ mod tests {
 
     #[test]
     fn n_key_with_no_projects_returns_no_action() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge());
+        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_refresher());
         let action_project = state.selected_entry().map(|e| e.project.name.clone());
         assert!(action_project.is_none(), "'n' with no projects should not produce an action");
     }
@@ -5607,7 +5699,7 @@ mod tests {
     #[test]
     fn question_mark_opens_help_modal() {
         // Simulate pressing '?' sets modal to Help
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         assert!(state.modal.is_none(), "no modal initially");
         // Simulate the '?' key logic from event_loop
         state.modal = Some(Modal::Help);
@@ -5644,7 +5736,7 @@ mod tests {
 
     #[test]
     fn help_modal_renders_keybindings_section() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::Help);
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("Keybindings"), "help modal should show 'Keybindings' title");
@@ -5655,7 +5747,7 @@ mod tests {
 
     #[test]
     fn help_modal_renders_key_entries() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::Help);
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("Open session"), "help modal should describe 'o' key");
@@ -5666,7 +5758,7 @@ mod tests {
 
     #[test]
     fn help_modal_renders_in_small_terminal() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::Help);
         // Should not panic even when terminal is smaller than the modal's preferred size
         let _out = render_to_string(&state, 30, 10);
@@ -5674,7 +5766,7 @@ mod tests {
 
     #[test]
     fn status_bar_hints_include_help() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 120, 24);
         assert!(out.contains("[?]help"), "status bar should advertise '?' for help");
     }
@@ -5683,7 +5775,7 @@ mod tests {
 
     #[test]
     fn n_key_opens_branch_input_modal() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // Simulate 'n' key in normal mode: should open BranchInput modal
         state.modal = None;
         if let Some(entry) = state.selected_entry() {
@@ -5765,7 +5857,7 @@ mod tests {
 
     #[test]
     fn branch_input_modal_renders() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::BranchInput {
             project: "myapp".to_string(),
             input: "feat-123".to_string(),
@@ -5836,7 +5928,7 @@ mod tests {
 
     #[test]
     fn branch_input_modal_small_terminal_no_panic() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::BranchInput {
             project: "myapp".to_string(),
             input: "feat".to_string(),
@@ -5963,7 +6055,7 @@ mod tests {
 
     #[test]
     fn log_viewer_renders_log_content() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::LogViewer {
             lines: vec![
                 "[2026-04-06] [INFO] session created".to_string(),
@@ -5978,7 +6070,7 @@ mod tests {
 
     #[test]
     fn log_viewer_renders_empty_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::LogViewer {
             lines: vec![],
             scroll_offset: 0,
@@ -5990,7 +6082,7 @@ mod tests {
 
     #[test]
     fn log_viewer_small_terminal_no_panic() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::LogViewer {
             lines: vec!["test line".to_string()],
             scroll_offset: 0,
@@ -6044,7 +6136,7 @@ mod tests {
         // render should clamp it so the viewport shows a full page of lines,
         // not just the single last line.
         let lines: Vec<String> = (0..50).map(|i| format!("[INFO] line {}", i)).collect();
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::LogViewer {
             lines: lines.clone(),
             scroll_offset: 49, // last line index, as set by G or initial open
@@ -6058,7 +6150,7 @@ mod tests {
 
     #[test]
     fn log_viewer_empty_title_shows_zero() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.modal = Some(Modal::LogViewer {
             lines: vec![],
             scroll_offset: 0,
@@ -6508,7 +6600,7 @@ mod tests {
 
     #[test]
     fn theme_selected_project_has_dracula_colors() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // Default theme is Dracula — selected project "myapp" should have
         // purple fg (#bd93f9) and current-line bg (#44475a)
         let backend = TestBackend::new(80, 24);
@@ -6526,7 +6618,7 @@ mod tests {
 
     #[test]
     fn theme_focused_border_has_dracula_purple() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| render(f, &state)).unwrap();

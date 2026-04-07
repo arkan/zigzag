@@ -1,9 +1,11 @@
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use z_core::domain::{Layout, Session};
+use std::collections::HashSet;
+
+use z_core::domain::{Layout, Project, Session};
 use z_core::error::{Result, ZError};
-use z_core::traits::SessionManager;
+use z_core::traits::{SessionManager, SessionRefresher};
 
 /// Strip ANSI escape sequences from a string.
 ///
@@ -120,6 +122,34 @@ impl SessionManager for ZellijSessionManager {
             )));
         }
         Ok(())
+    }
+}
+
+/// A `SessionRefresher` that shells out to `zellij list-sessions` once and
+/// scans `/tmp/z/notifications/` to refresh sessions and notification badges.
+pub struct ZellijSessionRefresher;
+
+impl SessionRefresher for ZellijSessionRefresher {
+    fn fetch_all_sessions(&self, projects: &[Project]) -> Vec<(String, Vec<Session>)> {
+        let output = match Command::new("zellij").arg("list-sessions").output() {
+            Ok(o) => o,
+            Err(_) => return projects.iter().map(|p| (p.name.clone(), Vec::new())).collect(),
+        };
+        let raw = String::from_utf8_lossy(&output.stdout);
+        let stdout = strip_ansi(&raw);
+        projects
+            .iter()
+            .map(|p| {
+                let sessions = parse_zellij_sessions(&stdout, &p.name);
+                (p.name.clone(), sessions)
+            })
+            .collect()
+    }
+
+    fn fetch_notifications(&self) -> HashSet<String> {
+        z_core::notification::sessions_with_notifications()
+            .into_iter()
+            .collect()
     }
 }
 
