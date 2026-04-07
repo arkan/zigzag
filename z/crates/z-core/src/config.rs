@@ -179,6 +179,36 @@ fn expand_tilde(path: &str) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
+// projects.kdl reordering
+// ---------------------------------------------------------------------------
+
+/// Swap two project nodes by index in a KDL document string.
+/// Preserves all formatting, comments, and whitespace via KDL round-trip.
+pub fn swap_project_nodes(content: &str, a: usize, b: usize) -> Result<String> {
+    let mut doc: KdlDocument = content
+        .parse()
+        .map_err(|e| ZError::ConfigParse(format!("{}", e)))?;
+
+    let project_indices: Vec<usize> = doc
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.name().value() == "project")
+        .map(|(i, _)| i)
+        .collect();
+
+    let doc_a = *project_indices
+        .get(a)
+        .ok_or_else(|| ZError::ConfigParse(format!("project index {} out of bounds", a)))?;
+    let doc_b = *project_indices
+        .get(b)
+        .ok_or_else(|| ZError::ConfigParse(format!("project index {} out of bounds", b)))?;
+
+    doc.nodes_mut().swap(doc_a, doc_b);
+    Ok(doc.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // config.kdl parsing
 // ---------------------------------------------------------------------------
 
@@ -1246,5 +1276,88 @@ deploy {
         // Should not panic even when there's no claude pane
         apply_claude_args(&mut layout, &["--resume".to_string()]);
         assert!(layout.tabs[0].panes[0].args.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // swap_project_nodes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn swap_project_nodes_preserves_formatting() {
+        let kdl = r#"project "alpha" {
+    path "/code/alpha"
+    host "https://example.com"
+}
+project "beta" {
+    path "/code/beta"
+}
+"#;
+        let result = swap_project_nodes(kdl, 0, 1).unwrap();
+        // Alpha block should still have its host line with original formatting
+        assert!(result.contains("    host \"https://example.com\""));
+        // Verify the swap happened
+        let projects = parse_projects_kdl(&result).unwrap();
+        assert_eq!(projects[0].name, "beta");
+        assert_eq!(projects[1].name, "alpha");
+        assert_eq!(projects[1].host.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn swap_project_nodes_out_of_bounds() {
+        let kdl = r#"project "alpha" {
+    path "/code/alpha"
+}
+project "beta" {
+    path "/code/beta"
+}
+"#;
+        let err = swap_project_nodes(kdl, 0, 5).unwrap_err();
+        assert!(matches!(err, ZError::ConfigParse(_)));
+    }
+
+    #[test]
+    fn swap_project_nodes_single_project() {
+        let kdl = r#"project "only" {
+    path "/code/only"
+}
+"#;
+        let err = swap_project_nodes(kdl, 0, 1).unwrap_err();
+        assert!(matches!(err, ZError::ConfigParse(_)));
+    }
+
+    #[test]
+    fn swap_project_nodes_preserves_comments() {
+        let kdl = r#"// header
+project "alpha" {
+    path "/code/alpha"
+}
+// between projects
+project "beta" {
+    path "/code/beta"
+}
+// footer
+"#;
+        let result = swap_project_nodes(kdl, 0, 1).unwrap();
+        assert!(result.contains("// header"), "header comment preserved");
+        assert!(result.contains("// between projects"), "middle comment preserved");
+        assert!(result.contains("// footer"), "footer comment preserved");
+        let projects = parse_projects_kdl(&result).unwrap();
+        assert_eq!(projects[0].name, "beta");
+        assert_eq!(projects[1].name, "alpha");
+    }
+
+    #[test]
+    fn swap_project_nodes_adjacent() {
+        let kdl = r#"project "alpha" {
+    path "/code/alpha"
+}
+project "beta" {
+    path "/code/beta"
+}
+"#;
+        let result = swap_project_nodes(kdl, 0, 1).unwrap();
+        let projects = parse_projects_kdl(&result).unwrap();
+        assert_eq!(projects[0].name, "beta");
+        assert_eq!(projects[1].name, "alpha");
     }
 }

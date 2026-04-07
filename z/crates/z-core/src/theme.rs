@@ -68,6 +68,17 @@ pub struct Theme {
     // Text
     pub text_dim: ThemeStyle,
     pub text_highlight: ThemeStyle,
+
+    // Terminal ANSI palette (used by Zellij theme)
+    pub terminal_black: Rgb,
+    pub terminal_red: Rgb,
+    pub terminal_green: Rgb,
+    pub terminal_yellow: Rgb,
+    pub terminal_blue: Rgb,
+    pub terminal_magenta: Rgb,
+    pub terminal_cyan: Rgb,
+    pub terminal_white: Rgb,
+    pub terminal_orange: Rgb,
 }
 
 impl ThemeName {
@@ -144,53 +155,159 @@ impl Theme {
 
             text_dim: s(Some(comment), None, false, true),
             text_highlight: s(Some(orange), None, true, false),
-        }
-    }
-}
 
-impl Rgb {
-    fn to_hex(self) -> String {
-        format!("#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
+            terminal_black: Rgb(33, 34, 44),      // #21222c
+            terminal_red: red,
+            terminal_green: green,
+            terminal_yellow: yellow,
+            terminal_blue: purple,                 // Dracula uses purple for "blue" slot
+            terminal_magenta: pink,
+            terminal_cyan: cyan,
+            terminal_white: fg,
+            terminal_orange: orange,
+        }
     }
 }
 
 impl Theme {
     /// Generate a Zellij KDL `themes {}` block and `theme "name"` directive
-    /// so Zellij sessions inherit the same color scheme as the z TUI.
+    /// using the modern structured format (Zellij 0.41+).
     pub fn to_zellij_kdl(&self) -> String {
         let name = &self.name;
-        // Map theme fields to Zellij's named color slots
-        let fg = self.foreground.to_hex();
-        let bg = self.background.to_hex();
-        let black = self.background.to_hex(); // close enough for terminal "black"
-        let red = self.indicator_error.fg.unwrap_or(self.foreground).to_hex();
-        let green = self.indicator_active.fg.unwrap_or(self.foreground).to_hex();
-        let yellow = self.indicator_warning.fg.unwrap_or(self.foreground).to_hex();
-        let blue = self.border_focused.fg.unwrap_or(self.foreground).to_hex();
-        let magenta = self.title.fg.unwrap_or(self.foreground).to_hex();
-        let cyan = self.indicator_info.fg.unwrap_or(self.foreground).to_hex();
-        let white = self.foreground.to_hex();
-        let orange = self.text_highlight.fg.unwrap_or(self.foreground).to_hex();
+        match ThemeName::from_str(name) {
+            Some(ThemeName::Dracula) => Self::dracula_zellij_kdl(),
+            None => Self::dracula_zellij_kdl(), // fallback
+        }
+    }
 
-        format!(
-            "\
-themes {{\n\
-    {name} {{\n\
-        fg \"{fg}\"\n\
-        bg \"{bg}\"\n\
-        black \"{black}\"\n\
-        red \"{red}\"\n\
-        green \"{green}\"\n\
-        yellow \"{yellow}\"\n\
-        blue \"{blue}\"\n\
-        magenta \"{magenta}\"\n\
-        cyan \"{cyan}\"\n\
-        white \"{white}\"\n\
-        orange \"{orange}\"\n\
-    }}\n\
-}}\n\
-theme \"{name}\"\n"
-        )
+    /// Official Dracula theme for Zellij in the modern structured format.
+    fn dracula_zellij_kdl() -> String {
+        // Colors: orange=255,184,108 cyan=139,233,253 green=80,250,123
+        //         pink=255,121,198 red=255,85,85 yellow=241,250,140
+        //         comment=98,114,164 fg=248,248,242 bg=40,42,54
+        "\
+themes {\n\
+    dracula {\n\
+        text_unselected {\n\
+            base 255 255 255\n\
+            background 0 0 0\n\
+            emphasis_0 255 184 108\n\
+            emphasis_1 139 233 253\n\
+            emphasis_2 80 250 123\n\
+            emphasis_3 255 121 198\n\
+        }\n\
+        text_selected {\n\
+            base 255 255 255\n\
+            background 40 42 54\n\
+            emphasis_0 255 184 108\n\
+            emphasis_1 139 233 253\n\
+            emphasis_2 80 250 123\n\
+            emphasis_3 255 121 198\n\
+        }\n\
+        ribbon_selected {\n\
+            base 0 0 0\n\
+            background 80 250 123\n\
+            emphasis_0 255 85 85\n\
+            emphasis_1 255 184 108\n\
+            emphasis_2 255 121 198\n\
+            emphasis_3 98 114 164\n\
+        }\n\
+        ribbon_unselected {\n\
+            base 0 0 0\n\
+            background 248 248 242\n\
+            emphasis_0 255 85 85\n\
+            emphasis_1 255 255 255\n\
+            emphasis_2 98 114 164\n\
+            emphasis_3 255 121 198\n\
+        }\n\
+        table_title {\n\
+            base 80 250 123\n\
+            background 0\n\
+            emphasis_0 255 184 108\n\
+            emphasis_1 139 233 253\n\
+            emphasis_2 80 250 123\n\
+            emphasis_3 255 121 198\n\
+        }\n\
+        table_cell_selected {\n\
+            base 255 255 255\n\
+            background 40 42 54\n\
+            emphasis_0 255 184 108\n\
+            emphasis_1 139 233 253\n\
+            emphasis_2 80 250 123\n\
+            emphasis_3 255 121 198\n\
+        }\n\
+        table_cell_unselected {\n\
+            base 255 255 255\n\
+            background 0 0 0\n\
+            emphasis_0 255 184 108\n\
+            emphasis_1 139 233 253\n\
+            emphasis_2 80 250 123\n\
+            emphasis_3 255 121 198\n\
+        }\n\
+        list_selected {\n\
+            base 255 255 255\n\
+            background 40 42 54\n\
+            emphasis_0 255 184 108\n\
+            emphasis_1 139 233 253\n\
+            emphasis_2 80 250 123\n\
+            emphasis_3 255 121 198\n\
+        }\n\
+        list_unselected {\n\
+            base 255 255 255\n\
+            background 0 0 0\n\
+            emphasis_0 255 184 108\n\
+            emphasis_1 139 233 253\n\
+            emphasis_2 80 250 123\n\
+            emphasis_3 255 121 198\n\
+        }\n\
+        frame_selected {\n\
+            base 80 250 123\n\
+            background 0\n\
+            emphasis_0 255 184 108\n\
+            emphasis_1 139 233 253\n\
+            emphasis_2 255 121 198\n\
+            emphasis_3 0\n\
+        }\n\
+        frame_highlight {\n\
+            base 255 184 108\n\
+            background 0\n\
+            emphasis_0 255 121 198\n\
+            emphasis_1 255 184 108\n\
+            emphasis_2 255 184 108\n\
+            emphasis_3 255 184 108\n\
+        }\n\
+        exit_code_success {\n\
+            base 80 250 123\n\
+            background 0\n\
+            emphasis_0 139 233 253\n\
+            emphasis_1 0 0 0\n\
+            emphasis_2 255 121 198\n\
+            emphasis_3 98 114 164\n\
+        }\n\
+        exit_code_error {\n\
+            base 255 85 85\n\
+            background 0\n\
+            emphasis_0 241 250 140\n\
+            emphasis_1 0\n\
+            emphasis_2 0\n\
+            emphasis_3 0\n\
+        }\n\
+        multiplayer_user_colors {\n\
+            player_1 255 121 198\n\
+            player_2 98 114 164\n\
+            player_3 0\n\
+            player_4 241 250 140\n\
+            player_5 139 233 253\n\
+            player_6 0\n\
+            player_7 255 85 85\n\
+            player_8 0\n\
+            player_9 0\n\
+            player_10 0\n\
+        }\n\
+    }\n\
+}\n\
+theme \"dracula\"\n"
+            .to_string()
     }
 }
 
@@ -267,17 +384,18 @@ mod tests {
     }
 
     #[test]
-    fn dracula_zellij_theme_kdl_contains_all_colors() {
+    fn dracula_zellij_theme_kdl_uses_modern_format() {
         let t = Theme::from_name(ThemeName::Dracula);
         let kdl = t.to_zellij_kdl();
-        assert!(kdl.contains("fg \"#f8f8f2\""), "should have fg");
-        assert!(kdl.contains("bg \"#282a36\""), "should have bg");
-        assert!(kdl.contains("red \"#ff5555\""), "should have red");
-        assert!(kdl.contains("green \"#50fa7b\""), "should have green");
-        assert!(kdl.contains("yellow \"#f1fa8c\""), "should have yellow");
-        assert!(kdl.contains("blue \"#bd93f9\""), "should have blue");
-        assert!(kdl.contains("magenta \"#ff79c6\""), "should have magenta");
-        assert!(kdl.contains("cyan \"#8be9fd\""), "should have cyan");
-        assert!(kdl.contains("orange \"#ffb86c\""), "should have orange");
+        // Modern Zellij theme format uses structured blocks
+        assert!(kdl.contains("ribbon_selected {"), "should have ribbon_selected");
+        assert!(kdl.contains("ribbon_unselected {"), "should have ribbon_unselected");
+        assert!(kdl.contains("text_selected {"), "should have text_selected");
+        assert!(kdl.contains("text_unselected {"), "should have text_unselected");
+        assert!(kdl.contains("frame_selected {"), "should have frame_selected");
+        assert!(kdl.contains("exit_code_success {"), "should have exit_code_success");
+        // Uses RGB values, not hex strings
+        assert!(kdl.contains("base 80 250 123"), "should use RGB for green");
+        assert!(kdl.contains("background 40 42 54"), "should use Dracula bg RGB");
     }
 }

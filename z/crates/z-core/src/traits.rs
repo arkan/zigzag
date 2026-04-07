@@ -11,6 +11,7 @@ pub trait ProjectStoreWriter {
     fn add_project(&mut self, project: &Project) -> Result<()>;
     fn update_project(&mut self, project: &Project) -> Result<()>;
     fn remove_project(&mut self, name: &str) -> Result<()>;
+    fn swap_projects(&mut self, a: usize, b: usize) -> Result<()>;
 }
 
 pub trait SessionManager {

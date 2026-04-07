@@ -247,6 +247,11 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 let entries = l.read_recent(max_lines);
                 Ok(entries.iter().map(|e| e.format()).collect())
             },
+            |a, b| {
+                let mut s = config_store::KdlProjectStore::new();
+                s.swap_projects(a, b)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+            },
             Box::new(forge::GhForgeClient),
             theme,
         )
