@@ -15,29 +15,34 @@ const DEFAULT_TAB_TEMPLATE: &str = "\
     }\n";
 
 /// Generate the keybind block for a given binary path.
-/// Binds `Ctrl+k` to session switcher and `Ctrl+l` to log viewer,
-/// both running in floating panes that close on exit.
+/// Binds `Alt+k` to session switcher, `Alt+l` to log viewer, and
+/// `Alt+g` to lazygit — all running in floating panes that close on exit.
 fn keybinds_block(bin_path: &str) -> String {
+    let bin = escape_kdl_string(bin_path);
     format!(
         "\
     keybinds {{\n\
         shared {{\n\
-            bind \"Ctrl k\" {{\n\
-                Run \"{}\" \"switch\" {{\n\
+            bind \"Alt k\" {{\n\
+                Run \"{bin}\" \"switch\" {{\n\
                     floating true\n\
                     close_on_exit true\n\
                 }}\n\
             }}\n\
-            bind \"Ctrl l\" {{\n\
-                Run \"{}\" \"logs-viewer\" {{\n\
+            bind \"Alt l\" {{\n\
+                Run \"{bin}\" \"logs-viewer\" {{\n\
+                    floating true\n\
+                    close_on_exit true\n\
+                }}\n\
+            }}\n\
+            bind \"Alt g\" {{\n\
+                Run \"lazygit\" {{\n\
                     floating true\n\
                     close_on_exit true\n\
                 }}\n\
             }}\n\
         }}\n\
     }}\n",
-        escape_kdl_string(bin_path),
-        escape_kdl_string(bin_path),
     )
 }
 
@@ -437,8 +442,11 @@ mod tests {
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains("keybinds {"), "layout must include keybinds block");
         assert!(kdl.contains("shared {"), "keybinds must include shared block");
-        assert!(kdl.contains("bind \"Ctrl k\""), "keybinds must bind Ctrl k");
+        assert!(kdl.contains("bind \"Alt k\""), "keybinds must bind Alt k");
+        assert!(kdl.contains("bind \"Alt l\""), "keybinds must bind Alt l");
+        assert!(kdl.contains("bind \"Alt g\""), "keybinds must bind Alt g");
         assert!(kdl.contains("\"switch\""), "binding must run z switch");
+        assert!(kdl.contains("\"lazygit\""), "binding must run lazygit");
         assert!(kdl.contains("floating true"), "binding must set floating true");
         assert!(kdl.contains("close_on_exit true"), "binding must set close_on_exit true");
     }
@@ -466,7 +474,7 @@ mod tests {
         let layout = Layout { tabs: vec![], cwd: None };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains("keybinds {"));
-        assert!(kdl.contains("bind \"Ctrl k\""));
+        assert!(kdl.contains("bind \"Alt k\""));
     }
 
     #[test]
@@ -480,7 +488,7 @@ mod tests {
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains("keybinds {"));
-        assert!(kdl.contains("bind \"Ctrl k\""));
+        assert!(kdl.contains("bind \"Alt k\""));
         assert!(kdl.contains("tab name=\"work\""));
     }
 

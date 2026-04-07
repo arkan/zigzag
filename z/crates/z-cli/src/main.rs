@@ -350,6 +350,26 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 // Loop back to re-enter TUI with the edited project selected.
             }
 
+            TuiAction::LazyGit { project, session } => {
+                // Attach to the existing Zellij session — lazygit is available
+                // inside via the Alt+G keybind defined in the layout.
+                let sess = z_core::domain::Session {
+                    name: session.clone(),
+                    project: project.clone(),
+                    branch: parse_session_name(&session)
+                        .map(|(_, b)| b)
+                        .unwrap_or_default(),
+                };
+                let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
+                match session_mgr.attach_session(&sess) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        status_message = Some(format!("Failed to attach session: {e}"));
+                    }
+                }
+                initial_project = Some(project);
+            }
+
             TuiAction::DeleteProject { project } => {
                 // Determine nearest-neighbor name before removal so the TUI
                 // can auto-select it after the project list reloads.

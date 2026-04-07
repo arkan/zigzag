@@ -154,6 +154,8 @@ pub enum TuiAction {
     },
     /// User confirmed deletion of a project in the delete modal.
     DeleteProject { project: String },
+    /// User pressed `Alt+g` — open lazygit in the selected session.
+    LazyGit { project: String, session: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -1581,7 +1583,7 @@ fn event_loop<B: Backend>(
                         state.modal = Some(Modal::Help);
                     }
 
-                    KeyCode::Char('l') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                    KeyCode::Char('l') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
                         match log_fn(200) {
                             Ok(lines) => {
                                 let scroll_offset = lines.len().saturating_sub(1);
@@ -1589,6 +1591,21 @@ fn event_loop<B: Backend>(
                             }
                             Err(e) => {
                                 state.status_message = Some(format!("Failed to read logs: {e}"));
+                            }
+                        }
+                    }
+
+                    KeyCode::Char('g') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+                        if let Some(entry) = state.selected_entry() {
+                            let project = entry.project.name.clone();
+                            // Find a selected session to attach to.
+                            if let Some(session) = state.filtered_sessions()
+                                .get(state.selected_session)
+                                .map(|s| s.name.clone())
+                            {
+                                return Ok(TuiAction::LazyGit { project, session });
+                            } else {
+                                state.status_message = Some("No active session to open lazygit in.".to_string());
                             }
                         }
                     }
@@ -2058,7 +2075,7 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
         Line::from(Span::styled("   Ctrl+O \u{2192} D      Detach (return to z)", normal)),
         Line::from(Span::styled("   Ctrl+Q           Quit session (return to z)", normal)),
         Line::from(Span::styled(" \u{2500}".repeat((inner.width.saturating_sub(1) / 2) as usize), dim)),
-        Line::from(Span::styled("   Ctrl+l  logs   ?  this help   q  quit z", dim)),
+        Line::from(Span::styled("   Alt+l  logs   Alt+g  lazygit   ?  help   q  quit", dim)),
     ];
 
     let paragraph = Paragraph::new(Text::from(lines))
