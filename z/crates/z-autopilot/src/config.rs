@@ -1,6 +1,6 @@
+use crate::dsl::{parse_autopilot_workflows, require_bool_arg, AutopilotWorkflow};
 use kdl::KdlDocument;
-use z_core::error::{ZError, Result};
-use crate::dsl::{AutopilotWorkflow, parse_autopilot_workflows, require_bool_arg};
+use z_core::error::{Result, ZError};
 
 /// Project-level autopilot configuration.
 ///
@@ -47,9 +47,9 @@ impl Default for RepoAutopilotConfig {
 /// Named `autopilot "name" { ... }` blocks are ignored here — use
 /// `parse_autopilot_workflows` (from `dsl`) to load those.
 fn parse_autopilot_config_block(content: &str) -> Result<AutopilotConfig> {
-    let doc: KdlDocument = content.parse().map_err(|e| {
-        ZError::ConfigParse(format!("KDL parse error: {e}"))
-    })?;
+    let doc: KdlDocument = content
+        .parse()
+        .map_err(|e| ZError::ConfigParse(format!("KDL parse error: {e}")))?;
 
     let mut config = AutopilotConfig::default();
 
@@ -336,7 +336,7 @@ autopilot "simple" {
     // ---------------------------------------------------------------------------
 
     fn make_workflow(auto_push: Option<bool>, review: Option<bool>) -> AutopilotWorkflow {
-        use crate::dsl::{Trigger, Step, StepAction};
+        use crate::dsl::{Step, StepAction, Trigger};
         AutopilotWorkflow {
             name: "test".into(),
             description: None,

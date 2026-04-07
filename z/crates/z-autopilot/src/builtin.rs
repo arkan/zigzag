@@ -3,8 +3,8 @@
 //! These are the 6 production workflows defined in docs/SPECS.md §9.3.
 //! Each is parsed and validated at load time via [`builtin_workflows`].
 
-use z_core::error::Result;
 use crate::dsl::{parse_autopilot_workflow, validate_workflow, AutopilotWorkflow};
+use z_core::error::Result;
 
 // ── KDL sources ─────────────────────────────────────────────────────────────
 
@@ -223,8 +223,14 @@ mod tests {
         let names: Vec<&str> = wfs.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(
             names,
-            ["pr-ci-fix", "pr-review-fix", "pr-merge-when-ready",
-             "dependabot-auto", "deploy-watch", "deploy-sync"]
+            [
+                "pr-ci-fix",
+                "pr-review-fix",
+                "pr-merge-when-ready",
+                "dependabot-auto",
+                "deploy-watch",
+                "deploy-sync"
+            ]
         );
     }
 
@@ -242,7 +248,12 @@ mod tests {
         let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
         let step = &wf.steps[0];
         assert_eq!(step.name, "monitor-ci");
-        assert_eq!(step.action, StepAction::Run { command: "gh run watch --exit-status".into() });
+        assert_eq!(
+            step.action,
+            StepAction::Run {
+                command: "gh run watch --exit-status".into()
+            }
+        );
         assert_eq!(step.on_failure.as_deref(), Some("fix-ci"));
         assert_eq!(step.on_success.as_deref(), Some("notify-done"));
         assert!(step.on_complete.is_none());
@@ -297,8 +308,14 @@ mod tests {
         let wf = parse_autopilot_workflow(PR_REVIEW_FIX_KDL).unwrap();
         let step = &wf.steps[0];
         if let StepAction::Run { command } = &step.action {
-            assert!(command.contains("claude"), "fix-comments must invoke claude");
-            assert!(command.contains("gh pr view"), "fix-comments must fetch PR reviews");
+            assert!(
+                command.contains("claude"),
+                "fix-comments must invoke claude"
+            );
+            assert!(
+                command.contains("gh pr view"),
+                "fix-comments must fetch PR reviews"
+            );
         } else {
             panic!("fix-comments must be a run step");
         }
@@ -334,8 +351,14 @@ mod tests {
         let step = &wf.steps[1];
         assert_eq!(step.name, "merge");
         if let StepAction::Run { command } = &step.action {
-            assert!(command.contains("--squash"), "merge must use squash");
-            assert!(command.contains("--delete-branch"), "merge must delete branch");
+            assert!(
+                command.contains("--squash"),
+                "merge must use squash"
+            );
+            assert!(
+                command.contains("--delete-branch"),
+                "merge must delete branch"
+            );
         } else {
             panic!("merge must be a run step");
         }
@@ -444,7 +467,12 @@ mod tests {
         let wf = parse_autopilot_workflow(DEPLOY_SYNC_KDL).unwrap();
         let step = &wf.steps[2];
         assert_eq!(step.name, "confirm-deploy");
-        assert_eq!(step.action, StepAction::Confirm { prompt: "Deploy these changes?".into() });
+        assert_eq!(
+            step.action,
+            StepAction::Confirm {
+                prompt: "Deploy these changes?".into()
+            }
+        );
         assert_eq!(step.on_accept.as_deref(), Some("deploy"));
         assert_eq!(step.on_reject.as_deref(), Some("notify-skipped"));
     }
@@ -468,7 +496,7 @@ mod tests {
 
     #[test]
     fn test_builtin_workflows_trigger_matching() {
-        use crate::trigger::{TriggerEvent, matching_workflows};
+        use crate::trigger::{matching_workflows, TriggerEvent};
         let wfs = builtin_workflows().unwrap();
 
         // post-push matches pr-ci-fix
@@ -504,26 +532,27 @@ mod tests {
 
     #[test]
     fn test_manual_trigger_matches_none_of_builtins() {
-        use crate::trigger::{TriggerEvent, matching_workflows};
+        use crate::trigger::{matching_workflows, TriggerEvent};
         let wfs = builtin_workflows().unwrap();
         // A manual event for an unknown name should match no builtin (none use manual trigger).
-        let matches = matching_workflows(&wfs, &TriggerEvent::Manual { workflow_name: "no-such-workflow".into() });
+        let matches = matching_workflows(
+            &wfs,
+            &TriggerEvent::Manual {
+                workflow_name: "no-such-workflow".into(),
+            },
+        );
         assert_eq!(matches.len(), 0, "no builtin workflow has manual trigger");
     }
 
     // ── integration: state machine steps ────────────────────────────────────
 
     fn make_run(wf: &AutopilotWorkflow) -> crate::state::WorkflowRun {
-        crate::state::WorkflowRun::new(
-            &wf.name,
-            "test-project",
-            wf.steps[0].name.as_str(),
-        )
+        crate::state::WorkflowRun::new(&wf.name, "test-project", wf.steps[0].name.as_str())
     }
 
     #[test]
     fn test_pr_ci_fix_step_transitions_via_state_machine() {
-        use crate::state::{WorkflowStatus, StepResult, advance};
+        use crate::state::{advance, StepResult, WorkflowStatus};
         let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
         let mut run = make_run(&wf);
 
@@ -539,7 +568,7 @@ mod tests {
 
     #[test]
     fn test_pr_ci_fix_retry_loop_via_state_machine() {
-        use crate::state::{StepResult, advance};
+        use crate::state::{advance, StepResult};
         let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
         let mut run = make_run(&wf);
 
@@ -554,7 +583,7 @@ mod tests {
 
     #[test]
     fn test_pr_ci_fix_max_retries_exhausted() {
-        use crate::state::{StepResult, advance};
+        use crate::state::{advance, StepResult};
         let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
         let mut run = make_run(&wf);
 
@@ -571,7 +600,7 @@ mod tests {
 
     #[test]
     fn test_deploy_sync_confirm_reject_path() {
-        use crate::state::{WorkflowStatus, StepResult, advance};
+        use crate::state::{advance, StepResult, WorkflowStatus};
         let wf = parse_autopilot_workflow(DEPLOY_SYNC_KDL).unwrap();
         let mut run = make_run(&wf);
 
