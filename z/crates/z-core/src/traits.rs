@@ -1,5 +1,6 @@
 use crate::domain::{CiStatus, Layout, NotifyLevel, PullRequest, Project, Session, Worktree};
 use crate::error::Result;
+use crate::theme::Theme;
 
 pub trait ProjectStore {
     fn list_projects(&self) -> Result<Vec<Project>>;
@@ -14,7 +15,7 @@ pub trait ProjectStoreWriter {
 
 pub trait SessionManager {
     fn list_sessions(&self, project: &str) -> Result<Vec<Session>>;
-    fn create_session(&self, project: &str, branch: &str, layout: Layout) -> Result<Session>;
+    fn create_session(&self, project: &str, branch: &str, layout: Layout, theme: &Theme) -> Result<Session>;
     fn attach_session(&self, session: &Session) -> Result<()>;
     fn detach_session(&self, session: &Session) -> Result<()>;
     fn kill_session(&self, session: &Session) -> Result<()>;

@@ -234,6 +234,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
             .as_deref()
             .and_then(|name| entries.iter().position(|e| e.project.name == name));
 
+        let theme = z_core::theme::Theme::from_name(global.theme);
         let action = z_tui::run_tui(
             entries,
             navigation.clone(),
@@ -247,6 +248,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 Ok(entries.iter().map(|e| e.format()).collect())
             },
             Box::new(forge::GhForgeClient),
+            theme,
         )
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
@@ -492,7 +494,8 @@ fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<(
     let per_repo = load_per_repo_config(&project.path);
     let mut layout = effective_layout(&global, &per_repo);
     layout.cwd = Some(cwd);
-    session_mgr.create_session(&project.name, effective_branch, layout)?;
+    let theme = z_core::theme::Theme::from_name(global.theme);
+    session_mgr.create_session(&project.name, effective_branch, layout, &theme)?;
     log::log_info(&logger, &format!("session {} created", target_session.name));
 
     Ok(())

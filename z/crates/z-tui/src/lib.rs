@@ -51,6 +51,32 @@ use ratatui::{
     Frame, Terminal,
 };
 use z_core::domain::{CiStatus, PrState, PullRequest, Project, Session};
+use z_core::theme::{Rgb, ThemeStyle};
+
+// ---------------------------------------------------------------------------
+// Theme → ratatui style conversion
+// ---------------------------------------------------------------------------
+
+fn rgb_to_color(rgb: Rgb) -> Color {
+    Color::Rgb(rgb.0, rgb.1, rgb.2)
+}
+
+fn theme_style_to_style(ts: &ThemeStyle) -> Style {
+    let mut s = Style::default();
+    if let Some(fg) = ts.fg {
+        s = s.fg(rgb_to_color(fg));
+    }
+    if let Some(bg) = ts.bg {
+        s = s.bg(rgb_to_color(bg));
+    }
+    if ts.bold {
+        s = s.add_modifier(Modifier::BOLD);
+    }
+    if ts.dim {
+        s = s.add_modifier(Modifier::DIM);
+    }
+    s
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -331,6 +357,8 @@ pub struct TuiState {
     /// One-shot status message to display in the status bar (e.g. prune result).
     /// Shown instead of project info; cleared on the next render by the caller.
     pub status_message: Option<String>,
+    /// Color theme applied to the entire TUI.
+    pub theme: z_core::theme::Theme,
 }
 
 impl TuiState {
@@ -355,6 +383,7 @@ impl TuiState {
             notifications: HashSet::new(),
             modal: None,
             status_message: None,
+            theme: z_core::theme::Theme::default(),
         }
     }
 
@@ -1261,6 +1290,7 @@ pub fn run_tui(
     prune_fn: impl Fn(bool) -> io::Result<String>,
     log_fn: impl Fn(usize) -> io::Result<Vec<String>>,
     forge_client: Box<dyn z_core::traits::ForgeClient + Send + Sync>,
+    theme: z_core::theme::Theme,
 ) -> io::Result<TuiAction> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1269,6 +1299,7 @@ pub fn run_tui(
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = TuiState::new(entries, navigation, Arc::from(forge_client));
+    state.theme = theme;
     state.notifications = notifications;
     state.status_message = status_message;
     if let Some(idx) = initial_project {
@@ -1595,6 +1626,12 @@ fn apply_prune(state: &mut TuiState, prune_fn: &dyn Fn(bool) -> io::Result<Strin
 pub fn render(f: &mut Frame, state: &TuiState) {
     let area = f.area();
 
+    // Fill the entire area with the theme background
+    let bg_style = Style::default()
+        .bg(rgb_to_color(state.theme.background))
+        .fg(rgb_to_color(state.theme.foreground));
+    f.render_widget(Block::default().style(bg_style), area);
+
     // Vertical split: main panels | preview pane | status bar
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -1653,19 +1690,29 @@ fn render_projects(f: &mut Frame, area: Rect, state: &TuiState) {
         " PROJECTS ".to_string()
     };
 
+    let theme = &state.theme;
+    let border_style = if focused {
+        theme_style_to_style(&theme.border_focused)
+    } else {
+        theme_style_to_style(&theme.border_unfocused)
+    };
+    let highlight = if focused {
+        theme_style_to_style(&theme.item_selected_focused)
+    } else {
+        theme_style_to_style(&theme.item_selected_unfocused)
+    };
+
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(if focused {
-                    Style::default().add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                })
+                .border_style(border_style)
+                .title_style(theme_style_to_style(&theme.title))
                 .title(title),
         )
-        .highlight_symbol("\u{25b8} ")
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+        .style(theme_style_to_style(&theme.item_normal))
+        .highlight_symbol(&theme.highlight_symbol)
+        .highlight_style(highlight);
 
     f.render_stateful_widget(list, area, &mut list_state);
 }
@@ -1692,19 +1739,29 @@ fn render_sessions(f: &mut Frame, area: Rect, state: &TuiState) {
         list_state.select(Some(state.selected_session));
     }
 
+    let theme = &state.theme;
+    let border_style = if focused {
+        theme_style_to_style(&theme.border_focused)
+    } else {
+        theme_style_to_style(&theme.border_unfocused)
+    };
+    let highlight = if focused {
+        theme_style_to_style(&theme.item_selected_focused)
+    } else {
+        theme_style_to_style(&theme.item_selected_unfocused)
+    };
+
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(if focused {
-                    Style::default().add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                })
+                .border_style(border_style)
+                .title_style(theme_style_to_style(&theme.title))
                 .title(" SESSIONS "),
         )
-        .highlight_symbol("\u{25b8} ")
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+        .style(theme_style_to_style(&theme.item_normal))
+        .highlight_symbol(&theme.highlight_symbol)
+        .highlight_style(highlight);
 
     f.render_stateful_widget(list, area, &mut list_state);
 }
@@ -1775,8 +1832,16 @@ fn render_preview(f: &mut Frame, area: Rect, state: &TuiState) {
         }
     };
 
+    let theme = &state.theme;
     let paragraph = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).title(" PREVIEW "));
+        .style(theme_style_to_style(&theme.preview_text))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme_style_to_style(&theme.border_unfocused))
+                .title_style(theme_style_to_style(&theme.title))
+                .title(" PREVIEW "),
+        );
     f.render_widget(paragraph, area);
 }
 
@@ -1797,8 +1862,16 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
     let hints = " [o]pen [n]ew [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [?]help [q]uit";
     let content = format!("{}\n{}", first_line, hints);
 
+    let theme = &state.theme;
     let paragraph = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).title(" STATUS "));
+        .style(theme_style_to_style(&theme.status_text))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme_style_to_style(&theme.border_unfocused))
+                .title_style(theme_style_to_style(&theme.title))
+                .title(" STATUS "),
+        );
     f.render_widget(paragraph, area);
 }
 
@@ -1807,9 +1880,9 @@ fn render_delete_confirm_modal(
     project_name: &str,
     session_count: usize,
     worktree_count: usize,
+    theme: &z_core::theme::Theme,
 ) {
     let area = f.area();
-    // 3 info lines + 1 blank + 1 separator + 1 hint + 2 borders = 8; round to 9 for padding
     let modal_width = 62u16;
     let modal_height = 9u16;
     let rect = modal_rect(modal_width, modal_height, area);
@@ -1819,45 +1892,44 @@ fn render_delete_confirm_modal(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Delete Project ")
-        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+        .border_style(theme_style_to_style(&theme.indicator_error).add_modifier(Modifier::BOLD));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
     let session_word = if session_count == 1 { "session" } else { "sessions" };
     let worktree_word = if worktree_count == 1 { "worktree" } else { "worktrees" };
 
+    let modal_fg = theme_style_to_style(&theme.item_normal);
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
             format!(" Delete project: {}", project_name),
-            Style::default().add_modifier(Modifier::BOLD),
+            theme_style_to_style(&theme.text_highlight),
         )),
         Line::from(Span::styled(
             format!(" Active {}: {}", session_word, session_count),
-            Style::default(),
+            modal_fg,
         )),
         Line::from(Span::styled(
             format!(" Git {}: {}", worktree_word, worktree_count),
-            Style::default(),
+            modal_fg,
         )),
         Line::from(""),
     ];
 
-    // Separator
+    let dim = theme_style_to_style(&theme.text_dim);
     let sep_width = inner.width.saturating_sub(1) as usize;
-    lines.push(Line::from(Span::styled(
-        "\u{2500}".repeat(sep_width),
-        Style::default().add_modifier(Modifier::DIM),
-    )));
+    lines.push(Line::from(Span::styled("\u{2500}".repeat(sep_width), dim)));
     lines.push(Line::from(Span::styled(
         " Enter/y: confirm  Esc/n: cancel  (only removes KDL entry)",
-        Style::default().add_modifier(Modifier::DIM),
+        dim,
     )));
 
-    let paragraph = Paragraph::new(Text::from(lines));
+    let paragraph = Paragraph::new(Text::from(lines))
+        .style(Style::default().bg(rgb_to_color(theme.modal_background)));
     f.render_widget(paragraph, inner);
 }
 
-fn render_delete_session_confirm_modal(f: &mut Frame, session: &str) {
+fn render_delete_session_confirm_modal(f: &mut Frame, session: &str, theme: &z_core::theme::Theme) {
     let area = f.area();
     let modal_width = 56u16;
     let modal_height = 7u16;
@@ -1868,23 +1940,24 @@ fn render_delete_session_confirm_modal(f: &mut Frame, session: &str) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Delete Session ")
-        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+        .border_style(theme_style_to_style(&theme.indicator_error).add_modifier(Modifier::BOLD));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    let dim = Style::default().add_modifier(Modifier::DIM);
+    let dim = theme_style_to_style(&theme.text_dim);
     let sep_width = inner.width.saturating_sub(1) as usize;
     let lines: Vec<Line> = vec![
         Line::from(Span::styled(
             format!(" Kill session: {}", session),
-            Style::default().add_modifier(Modifier::BOLD),
+            theme_style_to_style(&theme.text_highlight),
         )),
         Line::from(""),
         Line::from(Span::styled("\u{2500}".repeat(sep_width), dim)),
         Line::from(Span::styled(" Enter/y: confirm  Esc/n: cancel", dim)),
     ];
 
-    let paragraph = Paragraph::new(Text::from(lines));
+    let paragraph = Paragraph::new(Text::from(lines))
+        .style(Style::default().bg(rgb_to_color(theme.modal_background)));
     f.render_widget(paragraph, inner);
 }
 
@@ -1893,9 +1966,9 @@ fn render_workflow_selector_modal(
     project: &str,
     workflows: &[WorkflowInfo],
     selected: usize,
+    theme: &z_core::theme::Theme,
 ) {
     let area = f.area();
-    // Height: 1 line per workflow + 1 separator + 1 hint + 2 borders, min 7
     let modal_height = (workflows.len() as u16 + 4).max(7).min(area.height);
     let modal_width = 72u16;
     let rect = modal_rect(modal_width, modal_height, area);
@@ -1905,7 +1978,8 @@ fn render_workflow_selector_modal(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" Autopilot: {} ", project))
-        .border_style(Style::default().add_modifier(Modifier::BOLD));
+        .title_style(theme_style_to_style(&theme.modal_title))
+        .border_style(theme_style_to_style(&theme.modal_border));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
@@ -1921,31 +1995,28 @@ fn render_workflow_selector_modal(
         };
         let text = format!("{}{:28}  {}{}", cursor, wf.name, wf.trigger, desc);
         let style = if is_selected {
-            Style::default().add_modifier(Modifier::BOLD)
+            theme_style_to_style(&theme.item_selected_focused)
         } else {
-            Style::default()
+            theme_style_to_style(&theme.item_normal)
         };
         lines.push(Line::from(Span::styled(text, style)));
     }
 
-    // Separator
+    let dim = theme_style_to_style(&theme.text_dim);
     let sep_width = inner.width.saturating_sub(1) as usize;
-    lines.push(Line::from(Span::styled(
-        "\u{2500}".repeat(sep_width),
-        Style::default().add_modifier(Modifier::DIM),
-    )));
+    lines.push(Line::from(Span::styled("\u{2500}".repeat(sep_width), dim)));
     lines.push(Line::from(Span::styled(
         " \u{2191}/\u{2193}: select  Enter: run  Esc: cancel",
-        Style::default().add_modifier(Modifier::DIM),
+        dim,
     )));
 
-    let paragraph = Paragraph::new(Text::from(lines));
+    let paragraph = Paragraph::new(Text::from(lines))
+        .style(Style::default().bg(rgb_to_color(theme.modal_background)));
     f.render_widget(paragraph, inner);
 }
 
-fn render_help_modal(f: &mut Frame) {
+fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
     let area = f.area();
-    // 3 section headers + 16 keybinding rows + 2 blank + 1 sep + 1 hint = 23 content + 2 borders = 25
     let modal_height = 25u16;
     let modal_width = 56u16;
     let rect = modal_rect(modal_width, modal_height, area);
@@ -1955,68 +2026,72 @@ fn render_help_modal(f: &mut Frame) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Keybindings ")
-        .border_style(Style::default().add_modifier(Modifier::BOLD));
+        .title_style(theme_style_to_style(&theme.modal_title))
+        .border_style(theme_style_to_style(&theme.modal_border));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    let heading = Style::default().add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED);
-    let dim = Style::default().add_modifier(Modifier::DIM);
+    let heading = theme_style_to_style(&theme.text_highlight).add_modifier(Modifier::UNDERLINED);
+    let dim = theme_style_to_style(&theme.text_dim);
+    let normal = theme_style_to_style(&theme.item_normal);
 
     let lines: Vec<Line> = vec![
         Line::from(Span::styled(" Navigation", heading)),
-        Line::from("   \u{2191}/\u{2193} or k/j    Navigate list"),
-        Line::from("   \u{2190}/\u{2192} or h/l    Switch panel"),
-        Line::from("   Tab              Switch panel"),
-        Line::from("   /                Fuzzy search"),
-        Line::from("   Esc              Back / cancel"),
+        Line::from(Span::styled("   \u{2191}/\u{2193} or k/j    Navigate list", normal)),
+        Line::from(Span::styled("   \u{2190}/\u{2192} or h/l    Switch panel", normal)),
+        Line::from(Span::styled("   Tab              Switch panel", normal)),
+        Line::from(Span::styled("   /                Fuzzy search", normal)),
+        Line::from(Span::styled("   Esc              Back / cancel", normal)),
         Line::from(""),
         Line::from(Span::styled(" Actions", heading)),
-        Line::from("   o / Enter        Open session"),
-        Line::from("   n                New session on main branch"),
-        Line::from("   d                Delete session"),
-        Line::from("   A                Add project"),
-        Line::from("   E                Edit project"),
-        Line::from("   D                Delete project"),
-        Line::from("   p                Prune orphaned sessions"),
-        Line::from("   a                Autopilot workflows"),
-        Line::from("   e                Edit per-repo config"),
+        Line::from(Span::styled("   o / Enter        Open session", normal)),
+        Line::from(Span::styled("   n                New session on main branch", normal)),
+        Line::from(Span::styled("   d                Delete session", normal)),
+        Line::from(Span::styled("   A                Add project", normal)),
+        Line::from(Span::styled("   E                Edit project", normal)),
+        Line::from(Span::styled("   D                Delete project", normal)),
+        Line::from(Span::styled("   p                Prune orphaned sessions", normal)),
+        Line::from(Span::styled("   a                Autopilot workflows", normal)),
+        Line::from(Span::styled("   e                Edit per-repo config", normal)),
         Line::from(""),
         Line::from(Span::styled(" Session", heading)),
-        Line::from("   Ctrl+O \u{2192} D      Detach (return to z)"),
-        Line::from("   Ctrl+Q           Quit session (return to z)"),
+        Line::from(Span::styled("   Ctrl+O \u{2192} D      Detach (return to z)", normal)),
+        Line::from(Span::styled("   Ctrl+Q           Quit session (return to z)", normal)),
         Line::from(Span::styled(" \u{2500}".repeat((inner.width.saturating_sub(1) / 2) as usize), dim)),
         Line::from(Span::styled("   Ctrl+l  logs   ?  this help   q  quit z", dim)),
     ];
 
-    let paragraph = Paragraph::new(Text::from(lines));
+    let paragraph = Paragraph::new(Text::from(lines))
+        .style(Style::default().bg(rgb_to_color(theme.modal_background)));
     f.render_widget(paragraph, inner);
 }
 
 fn render_modal(f: &mut Frame, state: &TuiState) {
+    let theme = &state.theme;
     let (form, title) = match &state.modal {
         None => return,
         Some(Modal::DeleteConfirm { project_name, session_count, worktree_count }) => {
-            render_delete_confirm_modal(f, project_name, *session_count, *worktree_count);
+            render_delete_confirm_modal(f, project_name, *session_count, *worktree_count, theme);
             return;
         }
         Some(Modal::DeleteSessionConfirm { session }) => {
-            render_delete_session_confirm_modal(f, session);
+            render_delete_session_confirm_modal(f, session, theme);
             return;
         }
         Some(Modal::WorkflowSelector { project, workflows, selected }) => {
-            render_workflow_selector_modal(f, project, workflows, *selected);
+            render_workflow_selector_modal(f, project, workflows, *selected, theme);
             return;
         }
         Some(Modal::Help) => {
-            render_help_modal(f);
+            render_help_modal(f, theme);
             return;
         }
         Some(Modal::BranchInput { project, input }) => {
-            render_branch_input_modal(f, project, input);
+            render_branch_input_modal(f, project, input, theme);
             return;
         }
         Some(Modal::LogViewer { lines, scroll_offset }) => {
-            render_log_viewer_modal(f, lines, *scroll_offset);
+            render_log_viewer_modal(f, lines, *scroll_offset, theme);
             return;
         }
         Some(Modal::AddProject(form)) => (form, " Add Project "),
@@ -2024,115 +2099,102 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
     };
 
     let area = f.area();
-    // Modal: 62 wide (60 content + 2 borders), height = 4 fields × 3 rows + 2 hints/sep + 2 borders
     let modal_height = (form.fields.len() as u16) * 3 + 4;
     let modal_width = 62u16;
     let rect = modal_rect(modal_width, modal_height, area);
 
-    // Clear area under the modal
     f.render_widget(Clear, rect);
 
-    // Outer block
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::default().add_modifier(Modifier::BOLD));
+        .title_style(theme_style_to_style(&theme.modal_title))
+        .border_style(theme_style_to_style(&theme.modal_border));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    // Build text content as styled lines
     let mut lines: Vec<Line> = Vec::new();
 
     for (i, field) in form.fields.iter().enumerate() {
         let active = i == form.active_field;
         let opt_hint = if field.required { "" } else { " (opt)" };
 
-        // Label line
         let label_text = format!(" {}{}:", field.label, opt_hint);
         let label_style = if active {
-            Style::default().add_modifier(Modifier::BOLD)
+            theme_style_to_style(&theme.text_highlight)
         } else {
-            Style::default()
+            theme_style_to_style(&theme.item_normal)
         };
         lines.push(Line::from(Span::styled(label_text, label_style)));
 
-        // Value line — active field shows a cursor block
         let value_text = if active {
-            format!(" \u{25b6} {}█", field.value)
+            format!(" \u{25b6} {}\u{2588}", field.value)
         } else {
             format!("   {}", field.value)
         };
         let value_style = if active {
-            Style::default().add_modifier(Modifier::BOLD)
+            theme_style_to_style(&theme.item_selected_focused)
         } else {
-            Style::default()
+            theme_style_to_style(&theme.item_normal)
         };
         lines.push(Line::from(Span::styled(value_text, value_style)));
 
-        // Warning / spacer line
         if let Some(warn) = &field.warning {
             lines.push(Line::from(Span::styled(
                 format!(" \u{26a0} {}", warn),
-                Style::default().fg(Color::Yellow),
+                theme_style_to_style(&theme.indicator_warning),
             )));
         } else {
             lines.push(Line::from(""));
         }
     }
 
-    // Separator
+    let dim = theme_style_to_style(&theme.text_dim);
     let sep_width = inner.width.saturating_sub(1) as usize;
-    lines.push(Line::from(Span::styled(
-        "\u{2500}".repeat(sep_width),
-        Style::default().add_modifier(Modifier::DIM),
-    )));
-    // Hints
+    lines.push(Line::from(Span::styled("\u{2500}".repeat(sep_width), dim)));
     lines.push(Line::from(Span::styled(
         " Tab: complete path / next  S-Tab: prev  Enter: save  Esc: cancel",
-        Style::default().add_modifier(Modifier::DIM),
+        dim,
     )));
 
-    let paragraph = Paragraph::new(Text::from(lines));
+    let paragraph = Paragraph::new(Text::from(lines))
+        .style(Style::default().bg(rgb_to_color(theme.modal_background)));
     f.render_widget(paragraph, inner);
 }
 
-fn render_branch_input_modal(f: &mut Frame, project: &str, input: &str) {
+fn render_branch_input_modal(f: &mut Frame, project: &str, input: &str, theme: &z_core::theme::Theme) {
     let area = f.area();
-    // Modal: 52 wide, 7 tall (title row + label + value + blank + sep + hint + 2 borders)
     let rect = modal_rect(52, 7, area);
 
     f.render_widget(Clear, rect);
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" New Session — {} ", project))
-        .border_style(Style::default().add_modifier(Modifier::BOLD));
+        .title(format!(" New Session \u{2014} {} ", project))
+        .title_style(theme_style_to_style(&theme.modal_title))
+        .border_style(theme_style_to_style(&theme.modal_border));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
+    let dim = theme_style_to_style(&theme.text_dim);
     let sep_width = inner.width.saturating_sub(1) as usize;
     let lines = vec![
-        Line::from(Span::styled(" Branch name:", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(" Branch name:", theme_style_to_style(&theme.text_highlight))),
         Line::from(Span::styled(
-            format!(" \u{25b6} {}█", input),
-            Style::default().add_modifier(Modifier::BOLD),
+            format!(" \u{25b6} {}\u{2588}", input),
+            theme_style_to_style(&theme.item_selected_focused),
         )),
         Line::from(""),
-        Line::from(Span::styled(
-            "\u{2500}".repeat(sep_width),
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-        Line::from(Span::styled(
-            " Enter: create  Esc: cancel",
-            Style::default().add_modifier(Modifier::DIM),
-        )),
+        Line::from(Span::styled("\u{2500}".repeat(sep_width), dim)),
+        Line::from(Span::styled(" Enter: create  Esc: cancel", dim)),
     ];
 
-    let paragraph = Paragraph::new(Text::from(lines));
+    let paragraph = Paragraph::new(Text::from(lines))
+        .style(Style::default().bg(rgb_to_color(theme.modal_background)));
     f.render_widget(paragraph, inner);
 }
 
-fn render_log_viewer_modal(f: &mut Frame, lines: &[String], scroll_offset: usize) {
+fn render_log_viewer_modal(f: &mut Frame, lines: &[String], scroll_offset: usize, theme: &z_core::theme::Theme) {
     let area = f.area();
     let modal_width = area.width.saturating_sub(4).min(120);
     let modal_height = area.height.saturating_sub(4).min(40);
@@ -2140,31 +2202,31 @@ fn render_log_viewer_modal(f: &mut Frame, lines: &[String], scroll_offset: usize
 
     f.render_widget(Clear, rect);
 
-    // Compute inner rect early so we can clamp scroll_offset before the title.
     let block_template = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().add_modifier(Modifier::BOLD));
+        .title_style(theme_style_to_style(&theme.modal_title))
+        .border_style(theme_style_to_style(&theme.modal_border));
     let inner = block_template.inner(rect);
 
     if lines.is_empty() {
-        let title = " Logs (0) — Esc close ";
+        let title = " Logs (0) \u{2014} Esc close ";
         let block = block_template.title(title);
         f.render_widget(block, rect);
         let paragraph = Paragraph::new(Text::from(vec![
-            Line::from(Span::styled(" No logs yet.", Style::default().add_modifier(Modifier::DIM))),
-        ]));
+            Line::from(Span::styled(" No logs yet.", theme_style_to_style(&theme.text_dim))),
+        ]))
+        .style(Style::default().bg(rgb_to_color(theme.modal_background)));
         f.render_widget(paragraph, inner);
         return;
     }
 
     let visible_height = inner.height as usize;
-    // Clamp so the viewport is full when scrolled to the bottom.
     let max_start = lines.len().saturating_sub(visible_height);
     let start = scroll_offset.min(max_start);
     let end = (start + visible_height).min(lines.len());
 
     let title = format!(
-        " Logs ({}/{}) — j/k scroll, G end, g top, Esc close ",
+        " Logs ({}/{}) \u{2014} j/k scroll, G end, g top, Esc close ",
         start + 1,
         lines.len()
     );
@@ -2175,17 +2237,18 @@ fn render_log_viewer_modal(f: &mut Frame, lines: &[String], scroll_offset: usize
         .iter()
         .map(|line| {
             let style = if line.contains("[ERROR]") {
-                Style::default().fg(Color::Red)
+                theme_style_to_style(&theme.log_error)
             } else if line.contains("[WARNING]") {
-                Style::default().fg(Color::Yellow)
+                theme_style_to_style(&theme.log_warning)
             } else {
-                Style::default().fg(Color::DarkGray)
+                theme_style_to_style(&theme.log_default)
             };
             Line::styled(line.as_str(), style)
         })
         .collect();
 
-    let paragraph = Paragraph::new(Text::from(display_lines));
+    let paragraph = Paragraph::new(Text::from(display_lines))
+        .style(Style::default().bg(rgb_to_color(theme.modal_background)));
     f.render_widget(paragraph, inner);
 }
 
@@ -2279,11 +2342,17 @@ impl SwitchPickerState {
 }
 
 /// Render the session switch picker into the frame.
-fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
+fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core::theme::Theme) {
     let area = f.area();
+
+    // Fill background
+    let bg_style = Style::default()
+        .bg(rgb_to_color(theme.background))
+        .fg(rgb_to_color(theme.foreground));
+    f.render_widget(Block::default().style(bg_style), area);
+
     let modal_width = area.width.saturating_sub(4).min(60).max(40.min(area.width));
     let content_rows = state.sessions.len().min(20) as u16;
-    // 2 borders + list rows + 1 footer
     let modal_height = content_rows.saturating_add(3).min(area.height);
     let rect = modal_rect(modal_width, modal_height, area);
 
@@ -2292,7 +2361,8 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Switch Session ")
-        .border_style(Style::default().add_modifier(Modifier::BOLD));
+        .title_style(theme_style_to_style(&theme.modal_title))
+        .border_style(theme_style_to_style(&theme.modal_border));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
@@ -2300,17 +2370,13 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
         return;
     }
 
-    // Split inner area: list on top, footer on bottom
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    // Build list items.
-    // Use fixed-width right columns: badge (6 display cols) + age (4 display cols).
-    // Compute all display widths in terminal columns, not byte lengths.
     let inner_width = modal_width.saturating_sub(2) as usize;
-    let right_cols = 10; // 6 (badge) + 4 (age)
+    let right_cols = 10;
     let items: Vec<ListItem> = state
         .sessions
         .iter()
@@ -2327,12 +2393,10 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
                 .unwrap_or("");
             let notif_count = state.notification_counts.get(i).copied().unwrap_or(0);
 
-            // Right-aligned age, 4 chars wide.
             let age_col = format!("{:>4}", age_str);
-            // Badge: "🔔 N" padded to 6 display cols, or 6 spaces if none.
             let (badge_col, _badge_display_len) = if notif_count > 0 {
                 let digits = notif_count.to_string();
-                let display_len = 2 + 1 + digits.len(); // 🔔=2cols + space + digits
+                let display_len = 2 + 1 + digits.len();
                 let pad = 6usize.saturating_sub(display_len);
                 (format!("\u{1f514} {}{}", digits, " ".repeat(pad)), 6)
             } else {
@@ -2346,11 +2410,11 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
                 left
             };
             let style = if i == state.selected {
-                Style::default().add_modifier(Modifier::REVERSED)
+                theme_style_to_style(&theme.item_selected_focused)
             } else if is_current {
-                Style::default().fg(Color::Green)
+                theme_style_to_style(&theme.indicator_active)
             } else {
-                Style::default()
+                theme_style_to_style(&theme.item_normal)
             };
             ListItem::new(label).style(style)
         })
@@ -2362,10 +2426,9 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
     let list = List::new(items);
     f.render_stateful_widget(list, chunks[0], &mut list_state);
 
-    // Footer hints
     let footer = Paragraph::new(Line::from(Span::styled(
         " j/k navigate  Enter switch  Esc close",
-        Style::default().add_modifier(Modifier::DIM),
+        theme_style_to_style(&theme.text_dim),
     )));
     f.render_widget(footer, chunks[1]);
 }
@@ -2373,9 +2436,10 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState) {
 fn switch_picker_event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     state: &mut SwitchPickerState,
+    theme: &z_core::theme::Theme,
 ) -> io::Result<Option<String>> {
     loop {
-        terminal.draw(|f| render_switch_picker(f, state))?;
+        terminal.draw(|f| render_switch_picker(f, state, theme))?;
 
         if !event::poll(Duration::from_millis(100))? {
             continue;
@@ -2433,7 +2497,8 @@ pub fn run_switch_picker(
     let mut state =
         SwitchPickerState::with_notifications(sessions, ages, notification_counts, current_session);
 
-    let result = switch_picker_event_loop(&mut terminal, &mut state);
+    let theme = z_core::theme::Theme::default();
+    let result = switch_picker_event_loop(&mut terminal, &mut state, &theme);
 
     let _ = disable_raw_mode();
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
@@ -2459,9 +2524,10 @@ pub fn run_log_viewer(lines: Vec<String>) -> io::Result<()> {
     let mut modal = Modal::LogViewer { lines, scroll_offset };
 
     let result = loop {
+        let theme = z_core::theme::Theme::default();
         terminal.draw(|f| {
             if let Modal::LogViewer { ref lines, scroll_offset } = modal {
-                render_log_viewer_modal(f, lines, scroll_offset);
+                render_log_viewer_modal(f, lines, scroll_offset, &theme);
             }
         })?;
 
@@ -5992,7 +6058,8 @@ mod tests {
     ) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render_switch_picker(f, state)).unwrap();
+        let theme = z_core::theme::Theme::default();
+        terminal.draw(|f| render_switch_picker(f, state, &theme)).unwrap();
         let buf = terminal.backend().buffer().clone();
         let mut out = String::new();
         for row in 0..height {
@@ -6373,5 +6440,60 @@ mod tests {
         assert!(out.contains("1h"), "should render age for alpha");
         assert!(out.contains("3d"), "should render age for gamma");
         assert!(out.contains("beta:dev"), "should render beta name without age");
+    }
+
+    // ── Theme style tests (TestBackend) ──────────────────────────────────
+
+    /// Find the buffer cell that starts rendering text `needle` and return
+    /// the style of that cell.
+    fn find_cell_style(
+        buf: &ratatui::buffer::Buffer,
+        needle: &str,
+    ) -> Option<Style> {
+        let area = buf.area;
+        for row in area.y..area.y + area.height {
+            let mut line = String::new();
+            for col in area.x..area.x + area.width {
+                line.push_str(buf.cell((col, row)).map(|c| c.symbol()).unwrap_or(" "));
+            }
+            if let Some(col_offset) = line.find(needle) {
+                let cell = buf.cell((col_offset as u16, row))?;
+                return Some(cell.style());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn theme_selected_project_has_dracula_colors() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        // Default theme is Dracula — selected project "myapp" should have
+        // purple fg (#bd93f9) and current-line bg (#44475a)
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // The highlight symbol "▸" precedes the selected item
+        let style = find_cell_style(&buf, "\u{25b8}").expect("should find highlight symbol");
+        // Verify Dracula purple fg
+        assert_eq!(style.fg, Some(Color::Rgb(189, 147, 249)), "selected item fg should be Dracula purple");
+        // Verify Dracula current-line bg
+        assert_eq!(style.bg, Some(Color::Rgb(68, 71, 90)), "selected item bg should be Dracula current-line");
+    }
+
+    #[test]
+    fn theme_focused_border_has_dracula_purple() {
+        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge());
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Top-left corner of PROJECTS panel is the border character at (0,0)
+        let corner = buf.cell((0u16, 0u16)).expect("should have corner cell");
+        let style = corner.style();
+        // Focused panel border = Dracula purple + bold
+        assert_eq!(style.fg, Some(Color::Rgb(189, 147, 249)), "focused border fg should be Dracula purple");
     }
 }

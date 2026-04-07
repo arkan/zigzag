@@ -5,4 +5,5 @@ pub mod error;
 pub mod layout;
 pub mod log;
 pub mod notification;
+pub mod theme;
 pub mod traits;
