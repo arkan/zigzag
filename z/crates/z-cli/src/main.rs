@@ -122,17 +122,19 @@ fn run() {
             }
         }
         Some("notify") => {
-            // Usage: z notify <session> <message> [--level info|warning|error]
-            let session = args.get(1).map(|s| s.as_str()).unwrap_or("");
-            let message = args.get(2).map(|s| s.as_str()).unwrap_or("");
-            if session.is_empty() || message.is_empty() {
-                eprintln!("usage: z notify <session> <message> [--level info|warning|error]");
-                std::process::exit(1);
-            }
-            let level = parse_notify_level(args.iter().skip(3));
-            if let Err(e) = cmd_notify(session, message, level) {
-                eprintln!("error: {}", e);
-                std::process::exit(1);
+            // Usage: z notify [session] <message> [--level info|warning|error]
+            let env_session = std::env::var("ZELLIJ_SESSION_NAME").ok();
+            match resolve_notify_args(&args[1..], env_session.as_deref()) {
+                Ok((session, message, level)) => {
+                    if let Err(e) = cmd_notify(&session, &message, level) {
+                        eprintln!("error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
             }
         }
         Some("autopilot") => {
@@ -982,6 +984,47 @@ fn parse_notify_level<'a>(mut args: impl Iterator<Item = &'a String>) -> NotifyL
     NotifyLevel::Info
 }
 
+/// Parse notify arguments and resolve the session.
+///
+/// `args` — everything after the `notify` subcommand.
+/// `env_session` — value of `ZELLIJ_SESSION_NAME`, if set.
+///
+/// Returns `(session, message, level)` or an error string.
+fn resolve_notify_args(
+    args: &[String],
+    env_session: Option<&str>,
+) -> Result<(String, String, NotifyLevel), String> {
+    // Collect positional arguments (everything that isn't --level or its value).
+    let mut positional = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--level" {
+            i += 2; // skip flag + value
+        } else {
+            positional.push(args[i].as_str());
+            i += 1;
+        }
+    }
+
+    let (session, message) = match positional.len() {
+        2 => (positional[0].to_string(), positional[1].to_string()),
+        1 => {
+            let s = env_session.ok_or_else(|| {
+                "no session specified and ZELLIJ_SESSION_NAME is not set".to_string()
+            })?;
+            (s.to_string(), positional[0].to_string())
+        }
+        _ => {
+            return Err(
+                "usage: z notify [session] <message> [--level info|warning|error]".to_string(),
+            );
+        }
+    };
+
+    let level = parse_notify_level(args.iter());
+    Ok((session, message, level))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1083,6 +1126,69 @@ mod tests {
     fn parse_notify_level_flag_without_value_defaults_to_info() {
         let args: Vec<String> = vec!["--level".to_string()];
         assert_eq!(parse_notify_level(args.iter()), NotifyLevel::Info);
+    }
+
+    // ── resolve_notify_args tests ────────────────────────────────────────
+
+    #[test]
+    fn resolve_notify_args_two_positional_returns_session_and_message() {
+        let args = vec!["my-session".into(), "hello world".into()];
+        let (session, message, level) = resolve_notify_args(&args, None).unwrap();
+        assert_eq!(session, "my-session");
+        assert_eq!(message, "hello world");
+        assert_eq!(level, NotifyLevel::Info);
+    }
+
+    #[test]
+    fn resolve_notify_args_one_positional_with_env_uses_env_session() {
+        let args = vec!["hello world".into()];
+        let (session, message, level) =
+            resolve_notify_args(&args, Some("env-session")).unwrap();
+        assert_eq!(session, "env-session");
+        assert_eq!(message, "hello world");
+        assert_eq!(level, NotifyLevel::Info);
+    }
+
+    #[test]
+    fn resolve_notify_args_one_positional_no_env_returns_error() {
+        let args = vec!["hello world".into()];
+        let err = resolve_notify_args(&args, None).unwrap_err();
+        assert!(err.contains("ZELLIJ_SESSION_NAME"), "error should mention env var: {err}");
+    }
+
+    #[test]
+    fn resolve_notify_args_no_args_returns_usage_error() {
+        let args: Vec<String> = vec![];
+        let err = resolve_notify_args(&args, Some("env-session")).unwrap_err();
+        assert!(err.contains("usage:"), "error should show usage: {err}");
+    }
+
+    #[test]
+    fn resolve_notify_args_two_positional_with_level() {
+        let args: Vec<String> = vec![
+            "my-session".into(),
+            "deploy done".into(),
+            "--level".into(),
+            "warning".into(),
+        ];
+        let (session, message, level) = resolve_notify_args(&args, None).unwrap();
+        assert_eq!(session, "my-session");
+        assert_eq!(message, "deploy done");
+        assert_eq!(level, NotifyLevel::Warning);
+    }
+
+    #[test]
+    fn resolve_notify_args_one_positional_with_level_and_env() {
+        let args: Vec<String> = vec![
+            "deploy done".into(),
+            "--level".into(),
+            "error".into(),
+        ];
+        let (session, message, level) =
+            resolve_notify_args(&args, Some("env-session")).unwrap();
+        assert_eq!(session, "env-session");
+        assert_eq!(message, "deploy done");
+        assert_eq!(level, NotifyLevel::Error);
     }
 
     // ── format_workflow_list tests ────────────────────────────────────────────
