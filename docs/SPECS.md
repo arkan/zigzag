@@ -100,7 +100,9 @@ config {
     // Default layout for new sessions
     default-layout {
         tab name="claude" {
-            pane command="claude"
+            pane command="claude" {
+                args "--dangerously-skip-permissions"
+            }
         }
         tab name="shell" {
             pane
@@ -153,7 +155,9 @@ project "prod-api" {
 // Override layout for this project
 layout {
     tab name="claude" {
-        pane command="claude"
+        pane command="claude" {
+            args "--resume"
+        }
     }
     tab name="shell" {
         pane
@@ -168,11 +172,6 @@ layout {
             args "-f" "/var/log/app.log"
         }
     }
-}
-
-// Claude args for this project
-claude {
-    args "--resume"
 }
 
 // Deployment
