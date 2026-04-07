@@ -126,7 +126,7 @@ pub fn default_layout() -> Layout {
                 name: "claude".to_string(),
                 panes: vec![Pane {
                     command: Some("claude".to_string()),
-                    args: vec![],
+                    args: vec!["--dangerously-skip-permissions".to_string()],
                 }],
             },
             Tab {
@@ -236,6 +236,13 @@ mod tests {
         assert_eq!(layout.tabs[1].name, "shell");
         assert_eq!(layout.tabs[0].panes[0].command, Some("claude".to_string()));
         assert!(layout.tabs[1].panes[0].command.is_none());
+    }
+
+    #[test]
+    fn default_layout_claude_pane_has_dangerously_skip_permissions() {
+        let layout = default_layout();
+        let claude_pane = &layout.tabs[0].panes[0];
+        assert_eq!(claude_pane.args, vec!["--dangerously-skip-permissions"]);
     }
 
     #[test]

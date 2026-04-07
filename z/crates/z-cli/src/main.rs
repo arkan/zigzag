@@ -415,10 +415,15 @@ fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> z_core::error::Re
 // Per-repo z configuration
 // Available options are shown below (all optional).
 
-// layout \"compact\"    // override the default layout: \"default\" | \"compact\" | \"minimal\"
-
-// claude {
-//   args \"--model\" \"claude-3-7-sonnet-20250219\"   // extra CLI args passed to claude
+// layout {
+//   tab name=\"claude\" {
+//     pane command=\"claude\" {
+//       args \"--dangerously-skip-permissions\"
+//     }
+//   }
+//   tab name=\"shell\" {
+//     pane
+//   }
 // }
 
 // deploy {
