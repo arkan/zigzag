@@ -19,6 +19,8 @@ pub struct GlobalConfig {
     pub deps: HashMap<String, String>,
     /// TUI color theme.
     pub theme: ThemeName,
+    /// Extra arguments passed to the `claude` command globally (e.g. `["--dangerously-skip-permissions"]`).
+    pub claude_args: Vec<String>,
 }
 
 /// Per-repo configuration from `.config/z.kdl` in the project root.
@@ -261,6 +263,9 @@ pub fn parse_global_config_kdl(content: &str) -> Result<GlobalConfig> {
                 "deps" => {
                     config.deps = parse_deps_node(node)?;
                 }
+                "claude" => {
+                    config.claude_args = parse_claude_node(node);
+                }
                 _ => {}
             }
         }
@@ -496,6 +501,8 @@ pub fn effective_layout(global: &GlobalConfig, per_repo: &PerRepoConfig) -> Layo
 
     if !per_repo.claude_args.is_empty() {
         apply_claude_args(&mut layout, &per_repo.claude_args);
+    } else if !global.claude_args.is_empty() {
+        apply_claude_args(&mut layout, &global.claude_args);
     }
 
     layout
