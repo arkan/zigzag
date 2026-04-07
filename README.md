@@ -49,6 +49,19 @@
 ### Install
 
 ```bash
+# One-liner (latest release)
+curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | bash
+
+# Specific version
+curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | Z_VERSION=v0.2.1 bash
+
+# Custom install directory (default: ~/.local/bin)
+curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | Z_INSTALL_DIR=/usr/local/bin bash
+```
+
+Or build from source:
+
+```bash
 # From the repository
 make install
 
