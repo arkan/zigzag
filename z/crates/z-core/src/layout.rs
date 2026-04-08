@@ -108,7 +108,7 @@ fn generate_pane_kdl(pane: &Pane) -> String {
                 .collect::<Vec<_>>()
                 .join(" ");
             format!(
-                "        pane command=\"{}\" args={}\n",
+                "        pane command=\"{}\" {{\n            args {}\n        }}\n",
                 escape_kdl_string(cmd),
                 args_str
             )
@@ -225,7 +225,7 @@ mod tests {
             cwd: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
-        assert!(kdl.contains("pane command=\"nvim\" args=\"--headless\""));
+        assert!(kdl.contains("pane command=\"nvim\" {\n            args \"--headless\"\n        }"));
     }
 
     #[test]
@@ -330,7 +330,7 @@ mod tests {
             cwd: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
-        assert!(kdl.contains(r#"args="hello \"world\"""#));
+        assert!(kdl.contains("args \"hello \\\"world\\\"\""));
     }
 
     #[test]
@@ -369,7 +369,7 @@ mod tests {
             cwd: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
-        assert!(kdl.contains(r#"pane command="nvim" args="-u" "NONE" "file.txt""#));
+        assert!(kdl.contains("pane command=\"nvim\" {\n            args \"-u\" \"NONE\" \"file.txt\"\n        }"));
     }
 
     #[test]
