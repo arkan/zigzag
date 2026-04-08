@@ -39,6 +39,21 @@ impl WorktreeManager for WtWorktreeManager {
     }
 
     fn create_worktree(&self, project: &str, branch: &str) -> Result<Worktree> {
+        // Fetch latest remote state so the worktree starts from the newest main.
+        let fetch = Command::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(&self.project_path)
+            .output()
+            .map_err(|e| ZError::Worktree(format!("git fetch origin failed: {}", e)))?;
+
+        if !fetch.status.success() {
+            let stderr = String::from_utf8_lossy(&fetch.stderr);
+            return Err(ZError::Worktree(format!(
+                "git fetch origin failed: {}",
+                stderr.trim()
+            )));
+        }
+
         // Use wt switch -c to create the worktree (worktrunk convention).
         let output = Command::new("wt")
             .args(["switch", "-c", branch])
@@ -268,6 +283,17 @@ mod tests {
         let output = "worktree /path/to/wt\nHEAD abc123\n";
         let worktrees = parse_git_worktree_porcelain(output, "proj");
         assert!(worktrees.is_empty());
+    }
+
+    #[test]
+    fn create_worktree_fails_when_fetch_fails() {
+        let mgr = WtWorktreeManager::new(PathBuf::from("/nonexistent/path"));
+        let result = mgr.create_worktree("proj", "feat-test");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("git fetch"),
+            "expected error about git fetch, got: {err}"
+        );
     }
 
     #[test]
