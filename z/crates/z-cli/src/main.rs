@@ -507,7 +507,8 @@ fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<(
     let global = load_global_config();
     let per_repo = load_per_repo_config(&project.path);
     let mut layout = effective_layout(&global, &per_repo);
-    layout.cwd = Some(cwd);
+    layout.cwd = Some(cwd.clone());
+    inject_claude_stop_hook(&cwd);
     let theme = z_core::theme::Theme::from_name(global.theme);
     session_mgr.create_session(&project.name, effective_branch, layout, &theme)?;
     log::log_info(&logger, &format!("session {} created", target_session.name));
@@ -954,6 +955,33 @@ fn cmd_logs_viewer() -> z_core::error::Result<()> {
     let lines: Vec<String> = entries.iter().map(|e| e.format()).collect();
     z_tui::run_log_viewer(lines)
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code hook injection
+// ---------------------------------------------------------------------------
+
+/// Inject (or update) the Z stop hook in `.claude/settings.json` at `cwd`.
+///
+/// Best-effort: failures are silently ignored so they never block session creation.
+fn inject_claude_stop_hook(cwd: &std::path::Path) {
+    let settings_dir = cwd.join(".claude");
+    let settings_path = settings_dir.join("settings.json");
+
+    let existing: Option<serde_json::Value> = std::fs::read_to_string(&settings_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let merged = z_core::claude_hook::merge_stop_hook(
+        existing,
+        "z notify \"Claude a terminé: $ZELLIJ_SESSION_NAME\"",
+    );
+
+    let _ = std::fs::create_dir_all(&settings_dir);
+    let _ = std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&merged).unwrap_or_default(),
+    );
 }
 
 // ---------------------------------------------------------------------------

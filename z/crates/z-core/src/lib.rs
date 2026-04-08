@@ -1,3 +1,4 @@
+pub mod claude_hook;
 pub mod config;
 pub mod depcheck;
 pub mod domain;
