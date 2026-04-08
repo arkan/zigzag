@@ -738,7 +738,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "z-autopilot"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "kdl",
  "serde",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "z-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "z-autopilot",
  "z-core",
@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "z-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "kdl",
  "semver",
@@ -767,14 +767,14 @@ dependencies = [
 
 [[package]]
 name = "z-plugin"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "z-core",
 ]
 
 [[package]]
 name = "z-tui"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "z-web"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "z-core",
 ]
