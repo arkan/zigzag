@@ -27,6 +27,7 @@ pub enum ActionContext {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaneType {
     Float,
+    FloatFullscreen,
     Split,
     Tab,
 }
@@ -235,6 +236,7 @@ impl PaneType {
     pub fn from_str(s: &str) -> Option<PaneType> {
         match s {
             "float" => Some(PaneType::Float),
+            "float-fullscreen" => Some(PaneType::FloatFullscreen),
             "split" => Some(PaneType::Split),
             "tab" => Some(PaneType::Tab),
             _ => None,
@@ -244,6 +246,7 @@ impl PaneType {
     pub fn as_str(&self) -> &'static str {
         match self {
             PaneType::Float => "float",
+            PaneType::FloatFullscreen => "float-fullscreen",
             PaneType::Split => "split",
             PaneType::Tab => "tab",
         }
@@ -306,7 +309,7 @@ pub fn builtin_actions() -> Vec<ActionDef> {
             },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
-            pane: PaneType::Float,
+            pane: PaneType::FloatFullscreen,
             icon: Some("\u{1f500}".into()), // 🔀
             disabled: false,
         },
@@ -565,7 +568,7 @@ action "Open PR" {
 
     #[test]
     fn pane_type_roundtrip() {
-        let types = [PaneType::Float, PaneType::Split, PaneType::Tab];
+        let types = [PaneType::Float, PaneType::FloatFullscreen, PaneType::Split, PaneType::Tab];
         for t in &types {
             assert_eq!(PaneType::from_str(t.as_str()).as_ref(), Some(t));
         }
