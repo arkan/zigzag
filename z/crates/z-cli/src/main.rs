@@ -378,7 +378,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
 
             TuiAction::RunAction { session, command, pane_type } => {
                 let pane_flag = match pane_type {
-                    z_core::action::PaneType::Float => "--floating",
+                    z_core::action::PaneType::Float | z_core::action::PaneType::FloatFullscreen => "--floating",
                     z_core::action::PaneType::Split => "--in-place",
                     z_core::action::PaneType::Tab => "--floating", // tab handled below
                 };
@@ -1046,6 +1046,7 @@ fn cmd_actions() -> z_core::error::Result<()> {
             z_core::action::ActionType::Run { command } => {
                 let pane_args: Vec<&str> = match action.pane {
                     z_core::action::PaneType::Float => vec!["run", "--floating", "--"],
+                    z_core::action::PaneType::FloatFullscreen => vec!["run", "--floating", "--width", "100%", "--height", "100%", "--"],
                     z_core::action::PaneType::Split => vec!["run", "--"],
                     z_core::action::PaneType::Tab => vec!["run", "--floating", "--"],
                 };
