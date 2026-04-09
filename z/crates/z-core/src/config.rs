@@ -3,13 +3,14 @@ use std::path::PathBuf;
 
 use kdl::{KdlDocument, KdlNode};
 
+use crate::action::{self, ActionDef};
 use crate::domain::{Layout, Pane, Project, Tab};
 use crate::error::{Result, ZError};
 use crate::layout::default_layout;
 use crate::theme::ThemeName;
 
 /// Global configuration from `~/.config/z/config.kdl`.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct GlobalConfig {
     pub default_layout: Option<Layout>,
     /// Navigation style: `"arrows"` or `"vim"`.
@@ -19,6 +20,24 @@ pub struct GlobalConfig {
     pub deps: HashMap<String, String>,
     /// TUI color theme.
     pub theme: ThemeName,
+    /// User-defined actions from the `actions { ... }` block.
+    pub actions: Vec<ActionDef>,
+    /// Default AI review tool (e.g. `"codex"`). Read from `actions { review-tool "..." }`.
+    pub review_tool: String,
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            default_layout: None,
+            navigation: None,
+            notifications: NotificationsConfig::default(),
+            deps: HashMap::new(),
+            theme: ThemeName::default(),
+            actions: Vec::new(),
+            review_tool: "codex".to_string(),
+        }
+    }
 }
 
 /// Per-repo configuration from `.config/z.kdl` in the project root.
@@ -30,6 +49,8 @@ pub struct PerRepoConfig {
     pub deploy_command: Option<String>,
     /// Autopilot behaviour overrides.
     pub autopilot: AutopilotConfig,
+    /// Project-specific actions from the `actions { ... }` block.
+    pub actions: Vec<ActionDef>,
 }
 
 /// Autopilot behaviour overrides from per-repo config.
@@ -259,12 +280,45 @@ pub fn parse_global_config_kdl(content: &str) -> Result<GlobalConfig> {
                 "deps" => {
                     config.deps = parse_deps_node(node)?;
                 }
+                "actions" => {
+                    parse_actions_config_node(node, &mut config)?;
+                }
                 _ => {}
             }
         }
     }
 
     Ok(config)
+}
+
+fn parse_actions_config_node(node: &KdlNode, config: &mut GlobalConfig) -> Result<()> {
+    if let Some(children) = node.children() {
+        // Collect action nodes into a KDL string for parse_actions_kdl
+        let mut action_kdl = String::new();
+        for child in children.nodes() {
+            match child.name().value() {
+                "review-tool" => {
+                    if let Some(val) = child
+                        .entries()
+                        .iter()
+                        .find(|e| e.name().is_none())
+                        .and_then(|e| e.value().as_string())
+                    {
+                        config.review_tool = val.to_string();
+                    }
+                }
+                "action" => {
+                    action_kdl.push_str(&child.to_string());
+                    action_kdl.push('\n');
+                }
+                _ => {} // forward-compatible
+            }
+        }
+        if !action_kdl.is_empty() {
+            config.actions = action::parse_actions_kdl(&action_kdl)?;
+        }
+    }
+    Ok(())
 }
 
 fn parse_layout_node(node: &KdlNode) -> Result<Layout> {
@@ -410,6 +464,20 @@ pub fn parse_per_repo_config_kdl(content: &str) -> Result<PerRepoConfig> {
             }
             "autopilot" => {
                 cfg.autopilot = parse_autopilot_config_node(node);
+            }
+            "actions" => {
+                if let Some(children) = node.children() {
+                    let mut action_kdl = String::new();
+                    for child in children.nodes() {
+                        if child.name().value() == "action" {
+                            action_kdl.push_str(&child.to_string());
+                            action_kdl.push('\n');
+                        }
+                    }
+                    if !action_kdl.is_empty() {
+                        cfg.actions = action::parse_actions_kdl(&action_kdl)?;
+                    }
+                }
             }
             _ => {} // forward-compatible: ignore unknown nodes
         }
@@ -1229,5 +1297,138 @@ project "beta" {
         let projects = parse_projects_kdl(&result).unwrap();
         assert_eq!(projects[0].name, "beta");
         assert_eq!(projects[1].name, "alpha");
+    }
+
+    // -----------------------------------------------------------------------
+    // actions in global config
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_global_config_with_actions() {
+        let kdl = r#"
+config {
+    actions {
+        review-tool "codex"
+
+        action "Run tests" {
+            run "cargo test"
+            context "project"
+        }
+
+        action "Review PR" {
+            run "codex review #${pr_number}"
+            when "has_pr"
+            context "session"
+            pane "tab"
+            icon "🔍"
+        }
+    }
+}
+"#;
+        let config = parse_global_config_kdl(kdl).unwrap();
+        assert_eq!(config.review_tool, "codex");
+        assert_eq!(config.actions.len(), 2);
+        assert_eq!(config.actions[0].name, "Run tests");
+        assert_eq!(config.actions[1].name, "Review PR");
+    }
+
+    #[test]
+    fn parse_global_config_review_tool_override() {
+        let kdl = r#"
+config {
+    actions {
+        review-tool "claude"
+    }
+}
+"#;
+        let config = parse_global_config_kdl(kdl).unwrap();
+        assert_eq!(config.review_tool, "claude");
+        assert!(config.actions.is_empty());
+    }
+
+    #[test]
+    fn parse_global_config_no_actions_block() {
+        let kdl = r#"
+config {
+    keybindings {
+        navigation "vim"
+    }
+}
+"#;
+        let config = parse_global_config_kdl(kdl).unwrap();
+        assert!(config.actions.is_empty());
+        assert_eq!(config.review_tool, "codex"); // default
+    }
+
+    #[test]
+    fn parse_global_config_actions_with_disabled() {
+        let kdl = r#"
+config {
+    actions {
+        action "Open PR" {
+            run "echo disabled"
+            disabled true
+        }
+    }
+}
+"#;
+        let config = parse_global_config_kdl(kdl).unwrap();
+        assert_eq!(config.actions.len(), 1);
+        assert!(config.actions[0].disabled);
+    }
+
+    // -----------------------------------------------------------------------
+    // actions in per-repo config
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_per_repo_config_with_actions() {
+        let kdl = r#"
+actions {
+    action "Run tests" {
+        run "npm test"
+        context "project"
+    }
+
+    action "Lint" {
+        run "npm run lint"
+        context "project"
+        pane "float"
+    }
+}
+"#;
+        let config = parse_per_repo_config_kdl(kdl).unwrap();
+        assert_eq!(config.actions.len(), 2);
+        assert_eq!(config.actions[0].name, "Run tests");
+        assert_eq!(config.actions[1].name, "Lint");
+    }
+
+    #[test]
+    fn parse_per_repo_config_no_actions() {
+        let kdl = r#"
+layout {
+    tab name="shell" {
+        pane
+    }
+}
+"#;
+        let config = parse_per_repo_config_kdl(kdl).unwrap();
+        assert!(config.actions.is_empty());
+    }
+
+    #[test]
+    fn parse_per_repo_config_actions_override_builtin() {
+        let kdl = r#"
+actions {
+    action "Open PR" {
+        run "gh pr view --web"
+        when "has_pr"
+        context "session"
+    }
+}
+"#;
+        let config = parse_per_repo_config_kdl(kdl).unwrap();
+        assert_eq!(config.actions.len(), 1);
+        assert_eq!(config.actions[0].name, "Open PR");
     }
 }
