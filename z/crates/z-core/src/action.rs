@@ -272,7 +272,7 @@ pub fn builtin_actions() -> Vec<ActionDef> {
         ActionDef {
             name: "Review code".into(),
             action: ActionType::Run {
-                command: "${review_tool} review".into(),
+                command: "${review_tool} review --base main".into(),
             },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
