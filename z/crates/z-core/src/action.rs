@@ -267,11 +267,11 @@ pub fn builtin_actions() -> Vec<ActionDef> {
             disabled: false,
         },
         ActionDef {
-            name: "Review PR".into(),
+            name: "Review code".into(),
             action: ActionType::Run {
-                command: "${review_tool} -q 'Review PR #${pr_number} on branch ${branch}. Focus on: 1) SECURITY: auth flaws, injection vectors, secret leaks, unsafe deserialization, OWASP top 10. 2) ARCHITECTURE: trait/interface boundaries, coupling, separation of concerns, I/O purity. 3) PATTERNS: idiomatic Rust, error handling, ownership, lifetime correctness, unnecessary allocations. Read the full diff with gh pr diff ${pr_number}. Post findings as a PR review using gh pr review ${pr_number} --comment --body <your review>. Only comment on real issues. No nitpicks, no style-only remarks.'".into(),
+                command: "${review_tool} -q 'Review the current branch ${branch}. Focus on: 1) SECURITY: auth flaws, injection vectors, secret leaks, unsafe deserialization, OWASP top 10. 2) ARCHITECTURE: trait/interface boundaries, coupling, separation of concerns, I/O purity. 3) PATTERNS: idiomatic Rust, error handling, ownership, lifetime correctness, unnecessary allocations. Read the diff with git diff main...HEAD. Only comment on real issues. No nitpicks, no style-only remarks.'".into(),
             },
-            condition: ActionCondition::HasPr,
+            condition: ActionCondition::Always,
             context: ActionContext::Session,
             pane: PaneType::Tab,
             icon: Some("\u{1f50d}".into()), // 🔍
@@ -697,7 +697,7 @@ action "Bad" {
         let builtins = builtin_actions();
         let names: Vec<&str> = builtins.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"Open PR"));
-        assert!(names.contains(&"Review PR"));
+        assert!(names.contains(&"Review code"));
         assert!(names.contains(&"Fix CI"));
         assert!(names.contains(&"Address review comments"));
     }
@@ -711,12 +711,13 @@ action "Bad" {
     }
 
     #[test]
-    fn builtin_review_pr_uses_review_tool_var() {
+    fn builtin_review_code_uses_review_tool_var() {
         let builtins = builtin_actions();
-        let review = builtins.iter().find(|a| a.name == "Review PR").unwrap();
+        let review = builtins.iter().find(|a| a.name == "Review code").unwrap();
+        assert_eq!(review.condition, ActionCondition::Always);
         if let ActionType::Run { command } = &review.action {
             assert!(command.contains("${review_tool}"));
-            assert!(command.contains("${pr_number}"));
+            assert!(command.contains("${branch}"));
         } else {
             panic!("expected Run action");
         }
