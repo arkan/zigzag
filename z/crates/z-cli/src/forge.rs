@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use z_core::domain::{CiStatus, PrState, PullRequest};
+use z_core::domain::{CiStatus, PrState, PullRequest, ReviewStatus};
 use z_core::error::{Result, ZError};
 use z_core::traits::ForgeClient;
 
@@ -21,6 +21,24 @@ impl ForgeClient for GhForgeClient {
         }
         let json = String::from_utf8_lossy(&out.stdout);
         Ok(parse_pr_json(&json))
+    }
+
+    fn get_review_status(&self, _project: &str, branch: &str) -> Result<Option<ReviewStatus>> {
+        if branch.is_empty() {
+            return Ok(None);
+        }
+        let out = Command::new("gh")
+            .args([
+                "pr", "view", branch, "--json",
+                "reviews,latestReviews,commits",
+            ])
+            .output()
+            .map_err(|e| ZError::Forge(e.to_string()))?;
+        if !out.status.success() {
+            return Ok(None);
+        }
+        let json = String::from_utf8_lossy(&out.stdout);
+        Ok(parse_review_status_json(&json))
     }
 
     fn get_ci_status(&self, _project: &str, branch: &str) -> Result<CiStatus> {
@@ -78,6 +96,60 @@ fn parse_ci_status_json(json: &str) -> CiStatus {
         },
         _ => CiStatus::Unknown,
     }
+}
+
+/// Parse `gh pr view --json reviews,latestReviews,commits` to determine review status.
+///
+/// Compares the latest review `submittedAt` against the latest commit `committedDate`.
+/// If a review exists after the last commit, `has_new_comments` is true.
+fn parse_review_status_json(json: &str) -> Option<ReviewStatus> {
+    // Count reviews: look for "submittedAt" occurrences as a proxy for review count
+    let comment_count = json.matches("\"submittedAt\"").count() as u32;
+
+    // Extract the latest review timestamp
+    let last_review_at = extract_last_timestamp(json, "submittedAt");
+
+    // Extract the latest commit timestamp
+    let last_commit_at = extract_last_timestamp(json, "committedDate");
+
+    let has_new_comments = match (&last_review_at, &last_commit_at) {
+        (Some(review), Some(commit)) => review.as_str() > commit.as_str(),
+        _ => false,
+    };
+
+    Some(ReviewStatus {
+        has_new_comments,
+        comment_count,
+        last_review_at,
+    })
+}
+
+/// Find the last (lexicographically greatest) occurrence of a timestamp field in JSON.
+fn extract_last_timestamp(json: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{}\":", field);
+    let mut latest: Option<String> = None;
+    let mut search_from = 0;
+    while let Some(pos) = json[search_from..].find(&needle) {
+        let abs = search_from + pos + needle.len();
+        if let Some(ts) = extract_json_string(&json[abs - needle.len() + field.len() + 2..], field)
+            .or_else(|| {
+                // Try direct extraction from this position
+                let trimmed = json[abs..].trim_start();
+                if trimmed.starts_with('"') {
+                    let rest = &trimmed[1..];
+                    rest.find('"').map(|end| rest[..end].to_string())
+                } else {
+                    None
+                }
+            })
+        {
+            if latest.as_ref().map_or(true, |l| ts > *l) {
+                latest = Some(ts);
+            }
+        }
+        search_from = abs + 1;
+    }
+    latest
 }
 
 /// Extract a u64 value from a simple JSON object: `"key": 42`.
@@ -194,5 +266,114 @@ mod tests {
     fn parse_ci_status_unknown_on_unexpected_conclusion() {
         let json = r#"[{"conclusion":"cancelled","status":"completed"}]"#;
         assert_eq!(parse_ci_status_json(json), CiStatus::Unknown);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_review_status_json
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn review_after_last_commit_has_new_comments() {
+        // Review at 15:00, commit at 14:00 → has_new_comments = true
+        let json = r#"{
+            "reviews": [
+                {"submittedAt": "2026-04-09T15:00:00Z", "body": "LGTM"}
+            ],
+            "commits": [
+                {"committedDate": "2026-04-09T14:00:00Z"}
+            ]
+        }"#;
+        let status = parse_review_status_json(json).unwrap();
+        assert!(status.has_new_comments);
+        assert_eq!(status.comment_count, 1);
+        assert_eq!(status.last_review_at.as_deref(), Some("2026-04-09T15:00:00Z"));
+    }
+
+    #[test]
+    fn review_before_last_commit_no_new_comments() {
+        // Review at 13:00, commit at 14:00 → has_new_comments = false
+        let json = r#"{
+            "reviews": [
+                {"submittedAt": "2026-04-09T13:00:00Z", "body": "needs changes"}
+            ],
+            "commits": [
+                {"committedDate": "2026-04-09T14:00:00Z"}
+            ]
+        }"#;
+        let status = parse_review_status_json(json).unwrap();
+        assert!(!status.has_new_comments);
+        assert_eq!(status.comment_count, 1);
+    }
+
+    #[test]
+    fn no_reviews_no_new_comments() {
+        let json = r#"{
+            "reviews": [],
+            "commits": [
+                {"committedDate": "2026-04-09T14:00:00Z"}
+            ]
+        }"#;
+        let status = parse_review_status_json(json).unwrap();
+        assert!(!status.has_new_comments);
+        assert_eq!(status.comment_count, 0);
+        assert!(status.last_review_at.is_none());
+    }
+
+    #[test]
+    fn multiple_reviews_uses_latest() {
+        // Two reviews: 13:00 and 15:00. Commit at 14:00.
+        // Latest review (15:00) > commit (14:00) → has_new_comments = true
+        let json = r#"{
+            "reviews": [
+                {"submittedAt": "2026-04-09T13:00:00Z", "body": "early"},
+                {"submittedAt": "2026-04-09T15:00:00Z", "body": "late"}
+            ],
+            "commits": [
+                {"committedDate": "2026-04-09T14:00:00Z"}
+            ]
+        }"#;
+        let status = parse_review_status_json(json).unwrap();
+        assert!(status.has_new_comments);
+        assert_eq!(status.comment_count, 2);
+        assert_eq!(status.last_review_at.as_deref(), Some("2026-04-09T15:00:00Z"));
+    }
+
+    #[test]
+    fn no_commits_no_new_comments() {
+        let json = r#"{
+            "reviews": [
+                {"submittedAt": "2026-04-09T15:00:00Z", "body": "review"}
+            ],
+            "commits": []
+        }"#;
+        let status = parse_review_status_json(json).unwrap();
+        assert!(!status.has_new_comments);
+        assert_eq!(status.comment_count, 1);
+    }
+
+    #[test]
+    fn empty_json_object() {
+        let json = r#"{}"#;
+        let status = parse_review_status_json(json).unwrap();
+        assert!(!status.has_new_comments);
+        assert_eq!(status.comment_count, 0);
+        assert!(status.last_review_at.is_none());
+    }
+
+    #[test]
+    fn multiple_commits_uses_latest() {
+        // Review at 15:00, commits at 14:00 and 16:00.
+        // Latest commit (16:00) > review (15:00) → has_new_comments = false
+        let json = r#"{
+            "reviews": [
+                {"submittedAt": "2026-04-09T15:00:00Z", "body": "review"}
+            ],
+            "commits": [
+                {"committedDate": "2026-04-09T14:00:00Z"},
+                {"committedDate": "2026-04-09T16:00:00Z"}
+            ]
+        }"#;
+        let status = parse_review_status_json(json).unwrap();
+        assert!(!status.has_new_comments);
     }
 }
