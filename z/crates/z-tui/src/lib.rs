@@ -144,7 +144,7 @@ pub enum TuiAction {
     New { project: String, branch: String },
     /// User pressed `e` — open per-repo config in $EDITOR.
     EditPerRepoConfig { project_path: std::path::PathBuf },
-    /// User pressed `Alt+g` — open lazygit in the selected session.
+    /// User pressed `Ctrl+k g` — open lazygit in the selected session.
     LazyGit { project: String, session: String },
     /// User selected an action from the action menu (Alt+r).
     RunAction {
@@ -376,6 +376,10 @@ pub struct TuiState {
     pub status_message: Option<String>,
     /// Color theme applied to the entire TUI.
     pub theme: z_core::theme::Theme,
+    /// Timestamp when Ctrl+k leader key was pressed. `None` = not waiting.
+    /// If set, the next keypress is dispatched as a leader combo.
+    /// Expires after 2 seconds.
+    pub leader_pending: Option<Instant>,
     /// Global action definitions (from `~/.config/z/config.kdl`).
     pub global_actions: Vec<ActionDef>,
     /// Default AI review tool name (from global config, default: `"codex"`).
@@ -412,6 +416,7 @@ impl TuiState {
             modal: None,
             status_message: None,
             theme: z_core::theme::Theme::default(),
+            leader_pending: None,
             global_actions: Vec::new(),
             review_tool: "codex".to_string(),
             refresher,
@@ -1463,6 +1468,14 @@ fn event_loop<B: Backend>(
 
         terminal.draw(|f| render(f, state))?;
 
+        // Expire leader key after 2 seconds.
+        if let Some(when) = state.leader_pending {
+            if when.elapsed() > Duration::from_secs(2) {
+                state.leader_pending = None;
+                state.status_message = None;
+            }
+        }
+
         // Poll with a short timeout so we can refresh the preview pane
         // without waiting for a keypress.
         if !event::poll(Duration::from_millis(100))? {
@@ -1472,6 +1485,65 @@ fn event_loop<B: Backend>(
         if let Event::Key(key) = event::read()? {
             // Any keypress dismisses a one-shot status message (e.g. prune result).
             state.status_message = None;
+
+            // ── Leader key (Ctrl+k) dispatch ───────────────────────────────
+            if state.leader_pending.is_some() {
+                state.leader_pending = None;
+                match key.code {
+                    KeyCode::Char('r') => {
+                        let actions = build_action_menu(state);
+                        if !actions.is_empty() {
+                            state.modal = Some(Modal::ActionMenu {
+                                actions,
+                                selected: 0,
+                            });
+                        } else {
+                            state.status_message = Some("No actions available in this context.".to_string());
+                        }
+                    }
+                    KeyCode::Char('l') => {
+                        match (cb.log_fn)(200) {
+                            Ok(lines) => {
+                                state.modal = Some(Modal::LogViewer {
+                                    lines,
+                                    scroll_offset: 0,
+                                });
+                            }
+                            Err(e) => {
+                                state.status_message = Some(format!("Failed to load logs: {e}"));
+                            }
+                        }
+                    }
+                    KeyCode::Char('g') => {
+                        if let Some(entry) = state.selected_entry() {
+                            let project = entry.project.name.clone();
+                            let session = if state.focused_panel == Panel::Sessions {
+                                let sessions = state.filtered_sessions();
+                                sessions.get(state.selected_session).map(|s| s.name.clone())
+                            } else {
+                                entry.sessions.first().map(|s| s.name.clone())
+                            };
+                            if let Some(session) = session {
+                                return Ok(TuiAction::LazyGit { project, session });
+                            } else {
+                                state.status_message = Some("No active session to open lazygit in.".to_string());
+                            }
+                        }
+                    }
+                    KeyCode::Esc => {
+                        // Cancel leader
+                    }
+                    _ => {
+                        state.status_message = Some(format!("Unknown leader combo: Ctrl+k {}", match key.code {
+                            KeyCode::Char(c) => format!("{c}"),
+                            _ => "?".to_string(),
+                        }));
+                    }
+                }
+                state.trigger_preview_load();
+                continue;
+            }
+
             // ── Modal mode ─────────────────────────────────────────────────
             if state.modal.is_some() {
                 let outcome = advance_modal(state.modal.as_mut().unwrap(), key.code);
@@ -1686,16 +1758,9 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::ALT) => {
-                        let actions = build_action_menu(state);
-                        if !actions.is_empty() {
-                            state.modal = Some(Modal::ActionMenu {
-                                actions,
-                                selected: 0,
-                            });
-                        } else {
-                            state.status_message = Some("No actions available in this context.".to_string());
-                        }
+                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        state.leader_pending = Some(Instant::now());
+                        state.status_message = Some("Ctrl+k ...".to_string());
                     }
 
                     KeyCode::Char('A') => {
@@ -1770,33 +1835,6 @@ fn event_loop<B: Backend>(
 
                     KeyCode::Char('?') => {
                         state.modal = Some(Modal::Help);
-                    }
-
-                    KeyCode::Char('l') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                        match (cb.log_fn)(200) {
-                            Ok(lines) => {
-                                let scroll_offset = lines.len().saturating_sub(1);
-                                state.modal = Some(Modal::LogViewer { lines, scroll_offset });
-                            }
-                            Err(e) => {
-                                state.status_message = Some(format!("Failed to read logs: {e}"));
-                            }
-                        }
-                    }
-
-                    KeyCode::Char('g') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
-                        if let Some(entry) = state.selected_entry() {
-                            let project = entry.project.name.clone();
-                            // Find a selected session to attach to.
-                            if let Some(session) = state.filtered_sessions()
-                                .get(state.selected_session)
-                                .map(|s| s.name.clone())
-                            {
-                                return Ok(TuiAction::LazyGit { project, session });
-                            } else {
-                                state.status_message = Some("No active session to open lazygit in.".to_string());
-                            }
-                        }
                     }
 
                     // ── Project reorder: K = move up, J = move down ───
@@ -2280,7 +2318,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
             .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string())
     };
 
-    let hints = " [o]pen [n]ew [Alt+r]un action [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [?]help [q]uit";
+    let hints = " [o]pen [n]ew [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [Ctrl+k]actions [/]search [?]help [q]uit";
     let content = format!("{}\n{}", first_line, hints);
 
     let theme = &state.theme;
@@ -2522,7 +2560,9 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
         Line::from(Span::styled("   E                Edit project", normal)),
         Line::from(Span::styled("   D                Delete project", normal)),
         Line::from(Span::styled("   p                Prune orphaned sessions", normal)),
-        Line::from(Span::styled("   Alt+r            Run action", normal)),
+        Line::from(Span::styled("   Ctrl+k r         Run action", normal)),
+        Line::from(Span::styled("   Ctrl+k l         View logs", normal)),
+        Line::from(Span::styled("   Ctrl+k g         Lazygit", normal)),
         Line::from(Span::styled("   a                Autopilot workflows", normal)),
         Line::from(Span::styled("   e                Edit per-repo config", normal)),
         Line::from(""),
@@ -2530,7 +2570,7 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
         Line::from(Span::styled("   Ctrl+O \u{2192} D      Detach (return to z)", normal)),
         Line::from(Span::styled("   Ctrl+Q           Quit session (return to z)", normal)),
         Line::from(Span::styled(" \u{2500}".repeat((inner.width.saturating_sub(1) / 2) as usize), dim)),
-        Line::from(Span::styled("   Alt+l  logs   Alt+g  lazygit   ?  help   q  quit", dim)),
+        Line::from(Span::styled("   Ctrl+k: r actions  l logs  g lazygit   ?  help  q  quit", dim)),
     ];
 
     let paragraph = Paragraph::new(Text::from(lines))
@@ -3229,7 +3269,7 @@ mod tests {
         assert!(out.contains("[n]"), "should show [n] hint");
         assert!(out.contains("[d]"), "should show [d] hint");
         assert!(out.contains("[e]"), "should show [e] edit config hint");
-        assert!(out.contains("[Alt+r]"), "should show [Alt+r] run action hint");
+        assert!(out.contains("[Ctrl+k]"), "should show [Ctrl+k] leader key hint");
     }
 
     #[test]
