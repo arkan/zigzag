@@ -376,27 +376,6 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 cmd_edit_per_repo_config(&project_path)?;
             }
 
-            TuiAction::LazyGit { project, session } => {
-                let _ = z_core::notification::clear_notifications(&session);
-                let sess = z_core::domain::Session {
-                    name: session.clone(),
-                    project: project.clone(),
-                    branch: parse_session_name(&session)
-                        .map(|(_, b)| b)
-                        .unwrap_or_default(),
-                };
-                let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
-                match session_mgr.attach_session(&sess) {
-                    Ok(()) => {
-                        let _ = z_core::notification::clear_notifications(&session);
-                    }
-                    Err(e) => {
-                        status_message = Some(format!("Failed to attach session: {e}"));
-                    }
-                }
-                initial_project = Some(project);
-            }
-
             TuiAction::RunAction { session, command, pane_type } => {
                 let pane_flag = match pane_type {
                     z_core::action::PaneType::Float => "--floating",
