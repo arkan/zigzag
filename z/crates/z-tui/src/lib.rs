@@ -3085,6 +3085,59 @@ pub fn run_log_viewer(lines: Vec<String>) -> io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Standalone action picker (used by `z actions` in a Zellij floating pane)
+// ---------------------------------------------------------------------------
+
+/// Run a standalone action picker TUI. Displays the given actions in a modal
+/// and returns the selected action, or `None` if the user cancels with Esc.
+pub fn run_action_picker(actions: Vec<ResolvedAction>) -> io::Result<Option<ResolvedAction>> {
+    if actions.is_empty() {
+        return Ok(None);
+    }
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut modal = Modal::ActionMenu {
+        actions,
+        selected: 0,
+    };
+
+    let theme = z_core::theme::Theme::default();
+
+    let result = loop {
+        terminal.draw(|f| {
+            if let Modal::ActionMenu { ref actions, selected } = modal {
+                render_action_menu_modal(f, actions, selected, &theme);
+            }
+        })?;
+
+        if !event::poll(Duration::from_millis(100))? {
+            continue;
+        }
+        if let event::Event::Key(key) = event::read()? {
+            if key.kind != event::KeyEventKind::Press {
+                continue;
+            }
+            match advance_modal(&mut modal, key.code) {
+                ModalOutcome::Close => break Ok(None),
+                ModalOutcome::ActionSelected { action } => break Ok(Some(action)),
+                _ => {}
+            }
+        }
+    };
+
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = terminal.show_cursor();
+
+    result
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
