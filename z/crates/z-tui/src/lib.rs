@@ -144,8 +144,6 @@ pub enum TuiAction {
     New { project: String, branch: String },
     /// User pressed `e` — open per-repo config in $EDITOR.
     EditPerRepoConfig { project_path: std::path::PathBuf },
-    /// User pressed `Alt+z g` — open lazygit in the selected session.
-    LazyGit { project: String, session: String },
     /// User selected an action from the action menu (Alt+r).
     RunAction {
         session: String,
@@ -1518,22 +1516,7 @@ fn event_loop<B: Backend>(
                             }
                         }
                     }
-                    KeyCode::Char('g') => {
-                        if let Some(entry) = state.selected_entry() {
-                            let project = entry.project.name.clone();
-                            let session = if state.focused_panel == Panel::Sessions {
-                                let sessions = state.filtered_sessions();
-                                sessions.get(state.selected_session).map(|s| s.name.clone())
-                            } else {
-                                entry.sessions.first().map(|s| s.name.clone())
-                            };
-                            if let Some(session) = session {
-                                return Ok(TuiAction::LazyGit { project, session });
-                            } else {
-                                state.status_message = Some("No active session to open lazygit in.".to_string());
-                            }
-                        }
-                    }
+                    // 'g' removed from leader — lazygit is now in the action menu
                     KeyCode::Esc => {
                         // Cancel leader
                     }
@@ -2578,7 +2561,6 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
         Line::from(Span::styled("   p                Prune orphaned sessions", normal)),
         Line::from(Span::styled("   Alt+z r         Run action", normal)),
         Line::from(Span::styled("   Alt+z l         View logs", normal)),
-        Line::from(Span::styled("   Alt+z g         Lazygit", normal)),
         Line::from(Span::styled("   a                Autopilot workflows", normal)),
         Line::from(Span::styled("   e                Edit per-repo config", normal)),
         Line::from(""),
@@ -2586,7 +2568,7 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
         Line::from(Span::styled("   Ctrl+O \u{2192} D      Detach (return to z)", normal)),
         Line::from(Span::styled("   Ctrl+Q           Quit session (return to z)", normal)),
         Line::from(Span::styled(" \u{2500}".repeat((inner.width.saturating_sub(1) / 2) as usize), dim)),
-        Line::from(Span::styled("   Alt+z: r actions  l logs  g lazygit   ?  help  q  quit", dim)),
+        Line::from(Span::styled("   Alt+z: r actions  l logs   ?  help  q  quit", dim)),
     ];
 
     let paragraph = Paragraph::new(Text::from(lines))

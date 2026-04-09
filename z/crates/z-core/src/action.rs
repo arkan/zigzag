@@ -299,6 +299,17 @@ pub fn builtin_actions() -> Vec<ActionDef> {
             icon: Some("\u{1f4ac}".into()), // 💬
             disabled: false,
         },
+        ActionDef {
+            name: "Lazygit".into(),
+            action: ActionType::Run {
+                command: "lazygit".into(),
+            },
+            condition: ActionCondition::Always,
+            context: ActionContext::Session,
+            pane: PaneType::Float,
+            icon: Some("\u{1f500}".into()), // 🔀
+            disabled: false,
+        },
     ]
 }
 
@@ -689,7 +700,7 @@ action "Bad" {
     #[test]
     fn builtin_actions_count() {
         let builtins = builtin_actions();
-        assert_eq!(builtins.len(), 4);
+        assert_eq!(builtins.len(), 5);
     }
 
     #[test]
@@ -700,6 +711,7 @@ action "Bad" {
         assert!(names.contains(&"Review code"));
         assert!(names.contains(&"Fix CI"));
         assert!(names.contains(&"Address review comments"));
+        assert!(names.contains(&"Lazygit"));
     }
 
     #[test]
