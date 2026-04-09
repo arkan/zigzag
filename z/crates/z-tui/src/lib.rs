@@ -1763,6 +1763,18 @@ fn event_loop<B: Backend>(
                         state.status_message = Some("Alt+z ...".to_string());
                     }
 
+                    KeyCode::Char('r') => {
+                        let actions = build_action_menu(state);
+                        if !actions.is_empty() {
+                            state.modal = Some(Modal::ActionMenu {
+                                actions,
+                                selected: 0,
+                            });
+                        } else {
+                            state.status_message = Some("No actions available in this context.".to_string());
+                        }
+                    }
+
                     KeyCode::Char('A') => {
                         if state.focused_panel == Panel::Projects {
                             state.modal = Some(Modal::AddProject(ProjectForm::new()));
@@ -2318,7 +2330,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
             .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string())
     };
 
-    let hints = " [o]pen [n]ew [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [Alt+z]cmds [/]search [?]help [q]uit";
+    let hints = " [o]pen [n]ew [r]un action [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [?]help [q]uit";
     let content = format!("{}\n{}", first_line, hints);
 
     let theme = &state.theme;
@@ -3269,7 +3281,7 @@ mod tests {
         assert!(out.contains("[n]"), "should show [n] hint");
         assert!(out.contains("[d]"), "should show [d] hint");
         assert!(out.contains("[e]"), "should show [e] edit config hint");
-        assert!(out.contains("[Alt+z]"), "should show [Alt+z] leader key hint");
+        assert!(out.contains("[r]"), "should show [r] run action hint");
     }
 
     #[test]
@@ -7371,7 +7383,7 @@ mod tests {
     fn make_test_actions() -> Vec<ResolvedAction> {
         vec![
             ResolvedAction {
-                name: "Review PR".into(),
+                name: "Review code".into(),
                 action: ActionType::Run { command: "codex review".into() },
                 pane: PaneType::Tab,
                 icon: Some("\u{1f50d}".into()),
@@ -7400,7 +7412,7 @@ mod tests {
         });
         let out = render_to_string(&state, 80, 24);
         assert!(out.contains("Actions"), "should show Actions title");
-        assert!(out.contains("Review PR"), "should show 'Review PR' action");
+        assert!(out.contains("Review code"), "should show 'Review PR' action");
         assert!(out.contains("Fix CI"), "should show 'Fix CI' action");
         assert!(out.contains("Open PR"), "should show 'Open PR' action");
     }
@@ -7424,7 +7436,7 @@ mod tests {
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
             ModalOutcome::ActionSelected { action } => {
-                assert_eq!(action.name, "Review PR");
+                assert_eq!(action.name, "Review code");
             }
             _ => panic!("expected ActionSelected"),
         }
