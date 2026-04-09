@@ -146,7 +146,7 @@ pub enum TuiAction {
     EditPerRepoConfig { project_path: std::path::PathBuf },
     /// User pressed `Alt+g` — open lazygit in the selected session.
     LazyGit { project: String, session: String },
-    /// User selected an action from the action menu ('r').
+    /// User selected an action from the action menu (Alt+r).
     RunAction {
         session: String,
         command: String,
@@ -259,7 +259,7 @@ pub enum Modal {
     BranchInput { project: String, input: String },
     /// Scrollable log viewer opened with 'l'.
     LogViewer { lines: Vec<String>, scroll_offset: usize },
-    /// Action menu shown when the user presses 'r'.
+    /// Action menu shown when the user presses Alt+r.
     ActionMenu { actions: Vec<ResolvedAction>, selected: usize },
 }
 
@@ -1686,7 +1686,7 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('r') => {
+                    KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::ALT) => {
                         let actions = build_action_menu(state);
                         if !actions.is_empty() {
                             state.modal = Some(Modal::ActionMenu {
@@ -2280,7 +2280,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
             .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string())
     };
 
-    let hints = " [o]pen [n]ew [r]un action [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [?]help [q]uit";
+    let hints = " [o]pen [n]ew [Alt+r]un action [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [?]help [q]uit";
     let content = format!("{}\n{}", first_line, hints);
 
     let theme = &state.theme;
@@ -2522,7 +2522,7 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
         Line::from(Span::styled("   E                Edit project", normal)),
         Line::from(Span::styled("   D                Delete project", normal)),
         Line::from(Span::styled("   p                Prune orphaned sessions", normal)),
-        Line::from(Span::styled("   r                Run action", normal)),
+        Line::from(Span::styled("   Alt+r            Run action", normal)),
         Line::from(Span::styled("   a                Autopilot workflows", normal)),
         Line::from(Span::styled("   e                Edit per-repo config", normal)),
         Line::from(""),
@@ -3229,7 +3229,7 @@ mod tests {
         assert!(out.contains("[n]"), "should show [n] hint");
         assert!(out.contains("[d]"), "should show [d] hint");
         assert!(out.contains("[e]"), "should show [e] edit config hint");
-        assert!(out.contains("[r]"), "should show [r] run action hint");
+        assert!(out.contains("[Alt+r]"), "should show [Alt+r] run action hint");
     }
 
     #[test]
@@ -6174,7 +6174,7 @@ mod tests {
     #[test]
     fn status_bar_hints_include_help() {
         let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
-        let out = render_to_string(&state, 120, 24);
+        let out = render_to_string(&state, 150, 24);
         assert!(out.contains("[?]help"), "status bar should advertise '?' for help");
     }
 
