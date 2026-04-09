@@ -377,24 +377,28 @@ fn cmd_tui() -> z_core::error::Result<()> {
             }
 
             TuiAction::RunAction { session, command, pane_type } => {
-                let pane_flag = match pane_type {
-                    z_core::action::PaneType::Float | z_core::action::PaneType::FloatFullscreen => "--floating",
-                    z_core::action::PaneType::Split => "--in-place",
-                    z_core::action::PaneType::Tab => "--floating", // tab handled below
-                };
-                let result = if matches!(pane_type, z_core::action::PaneType::Tab) {
-                    // Create a new tab first, then run the command
-                    let _ = std::process::Command::new("zellij")
-                        .args(["-s", &session, "action", "new-tab"])
-                        .status();
-                    std::process::Command::new("zellij")
-                        .args(["-s", &session, "run", "--", "sh", "-c", &command])
-                        .status()
-                } else {
-                    std::process::Command::new("zellij")
-                        .args(["-s", &session, "run", pane_flag, "--", "sh", "-c", &command])
-                        .status()
-                };
+                let mut pane_args: Vec<&str> = vec!["-s", &session, "run"];
+                match pane_type {
+                    z_core::action::PaneType::Float => {
+                        pane_args.extend(["--floating", "-c"]);
+                    }
+                    z_core::action::PaneType::FloatFullscreen => {
+                        pane_args.extend(["--floating", "-c", "--width", "100%", "--height", "100%"]);
+                    }
+                    z_core::action::PaneType::Split => {
+                        pane_args.push("-c");
+                    }
+                    z_core::action::PaneType::Tab => {
+                        let _ = std::process::Command::new("zellij")
+                            .args(["-s", &session, "action", "new-tab"])
+                            .status();
+                        pane_args.push("-c");
+                    }
+                }
+                pane_args.extend(["--", "sh", "-c", &command]);
+                let result = std::process::Command::new("zellij")
+                    .args(&pane_args)
+                    .status();
                 match result {
                     Ok(s) if s.success() => {
                         status_message = Some("Action launched.".to_string());
@@ -1045,10 +1049,10 @@ fn cmd_actions() -> z_core::error::Result<()> {
         match &action.action {
             z_core::action::ActionType::Run { command } => {
                 let pane_args: Vec<&str> = match action.pane {
-                    z_core::action::PaneType::Float => vec!["run", "--floating", "--"],
-                    z_core::action::PaneType::FloatFullscreen => vec!["run", "--floating", "--width", "100%", "--height", "100%", "--"],
-                    z_core::action::PaneType::Split => vec!["run", "--"],
-                    z_core::action::PaneType::Tab => vec!["run", "--floating", "--"],
+                    z_core::action::PaneType::Float => vec!["run", "--floating", "-c", "--"],
+                    z_core::action::PaneType::FloatFullscreen => vec!["run", "--floating", "-c", "--width", "100%", "--height", "100%", "--"],
+                    z_core::action::PaneType::Split => vec!["run", "-c", "--"],
+                    z_core::action::PaneType::Tab => vec!["run", "--floating", "-c", "--"],
                 };
                 let status = std::process::Command::new("zellij")
                     .args(&pane_args)
