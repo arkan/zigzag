@@ -272,7 +272,7 @@ pub fn builtin_actions() -> Vec<ActionDef> {
         ActionDef {
             name: "Review code".into(),
             action: ActionType::Run {
-                command: "${review_tool} -q 'Review the current branch ${branch}. Focus on: 1) SECURITY: auth flaws, injection vectors, secret leaks, unsafe deserialization, OWASP top 10. 2) ARCHITECTURE: trait/interface boundaries, coupling, separation of concerns, I/O purity. 3) PATTERNS: idiomatic Rust, error handling, ownership, lifetime correctness, unnecessary allocations. Read the diff with git diff main...HEAD. Only comment on real issues. No nitpicks, no style-only remarks.'".into(),
+                command: "${review_tool} review".into(),
             },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
@@ -732,7 +732,7 @@ action "Bad" {
         assert_eq!(review.condition, ActionCondition::Always);
         if let ActionType::Run { command } = &review.action {
             assert!(command.contains("${review_tool}"));
-            assert!(command.contains("${branch}"));
+            assert!(command.contains("review"));
         } else {
             panic!("expected Run action");
         }
