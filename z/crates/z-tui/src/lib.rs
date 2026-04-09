@@ -1763,6 +1763,19 @@ fn event_loop<B: Backend>(
                         state.status_message = Some("Ctrl+k ...".to_string());
                     }
 
+                    // Direct shortcut: 'r' opens the action menu (no leader needed)
+                    KeyCode::Char('r') => {
+                        let actions = build_action_menu(state);
+                        if !actions.is_empty() {
+                            state.modal = Some(Modal::ActionMenu {
+                                actions,
+                                selected: 0,
+                            });
+                        } else {
+                            state.status_message = Some("No actions available in this context.".to_string());
+                        }
+                    }
+
                     KeyCode::Char('A') => {
                         if state.focused_panel == Panel::Projects {
                             state.modal = Some(Modal::AddProject(ProjectForm::new()));
@@ -2318,7 +2331,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
             .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string())
     };
 
-    let hints = " [o]pen [n]ew [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [Ctrl+k]actions [/]search [?]help [q]uit";
+    let hints = " [o]pen [n]ew [r]un action [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [?]help [q]uit";
     let content = format!("{}\n{}", first_line, hints);
 
     let theme = &state.theme;
@@ -3269,7 +3282,7 @@ mod tests {
         assert!(out.contains("[n]"), "should show [n] hint");
         assert!(out.contains("[d]"), "should show [d] hint");
         assert!(out.contains("[e]"), "should show [e] edit config hint");
-        assert!(out.contains("[Ctrl+k]"), "should show [Ctrl+k] leader key hint");
+        assert!(out.contains("[r]"), "should show [r] run action hint");
     }
 
     #[test]
