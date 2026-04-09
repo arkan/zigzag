@@ -1483,6 +1483,10 @@ fn event_loop<B: Backend>(
         }
 
         if let Event::Key(key) = event::read()? {
+            // Only handle key press events, not release/repeat (important for Zellij).
+            if key.kind != event::KeyEventKind::Press {
+                continue;
+            }
             // Any keypress dismisses a one-shot status message (e.g. prune result).
             state.status_message = None;
 
