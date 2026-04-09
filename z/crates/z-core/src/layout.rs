@@ -15,8 +15,9 @@ const DEFAULT_TAB_TEMPLATE: &str = "\
     }\n";
 
 /// Generate the keybind block for a given binary path.
-/// Binds `Alt+k` to session switcher, `Alt+l` to log viewer, and
-/// `Alt+g` to lazygit — all running in floating panes that close on exit.
+/// Binds `Alt+k` to session switcher, `Alt+l` to log viewer,
+/// `Alt+g` to lazygit, and `Alt+z` to action menu
+/// — all running in floating panes that close on exit.
 fn keybinds_block(bin_path: &str) -> String {
     let bin = escape_kdl_string(bin_path);
     format!(
@@ -41,6 +42,12 @@ fn keybinds_block(bin_path: &str) -> String {
                     close_on_exit true\n\
                     width \"100%\"\n\
                     height \"100%\"\n\
+                }}\n\
+            }}\n\
+            bind \"Alt z\" {{\n\
+                Run \"{bin}\" \"actions\" {{\n\
+                    floating true\n\
+                    close_on_exit true\n\
                 }}\n\
             }}\n\
         }}\n\
@@ -454,7 +461,9 @@ mod tests {
         assert!(kdl.contains("bind \"Alt k\""), "keybinds must bind Alt k");
         assert!(kdl.contains("bind \"Alt l\""), "keybinds must bind Alt l");
         assert!(kdl.contains("bind \"Alt g\""), "keybinds must bind Alt g");
+        assert!(kdl.contains("bind \"Alt z\""), "keybinds must bind Alt z");
         assert!(kdl.contains("\"switch\""), "binding must run z switch");
+        assert!(kdl.contains("\"actions\""), "binding must run z actions");
         assert!(kdl.contains("\"lazygit\""), "binding must run lazygit");
         assert!(kdl.contains("floating true"), "binding must set floating true");
         assert!(kdl.contains("close_on_exit true"), "binding must set close_on_exit true");

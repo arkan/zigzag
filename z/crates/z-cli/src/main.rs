@@ -168,6 +168,12 @@ fn run() {
                 std::process::exit(1);
             }
         }
+        Some("actions") => {
+            if let Err(e) = cmd_actions() {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Some(cmd) => {
             eprintln!("unknown command: {:?}", cmd);
             eprintln!("usage: z [list|open|close|delete|prune|notify|autopilot|logs|switch|logs-viewer]");
@@ -1000,6 +1006,90 @@ fn cmd_logs_viewer() -> z_core::error::Result<()> {
     let lines: Vec<String> = entries.iter().map(|e| e.format()).collect();
     z_tui::run_log_viewer(lines)
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))
+}
+
+/// Run the action picker inside a Zellij floating pane.
+/// Reads `ZELLIJ_SESSION_NAME` to detect project/branch context,
+/// resolves available actions, shows a picker, and executes the selection.
+fn cmd_actions() -> z_core::error::Result<()> {
+    let session_name = std::env::var("ZELLIJ_SESSION_NAME").unwrap_or_default();
+    if session_name.is_empty() {
+        return Err(z_core::error::ZError::Session(
+            "z actions must be run inside a Zellij session".into(),
+        ));
+    }
+
+    let (project_name, branch) = session_manager::parse_session_name(&session_name)
+        .ok_or_else(|| {
+            z_core::error::ZError::Session(format!(
+                "cannot parse session name '{session_name}' (expected project:branch)"
+            ))
+        })?;
+
+    let store = config_store::KdlProjectStore::new();
+    let project = store.get_project(&project_name)?;
+
+    let global = load_global_config();
+    let per_repo = load_per_repo_config(&project.path);
+
+    // Build action env from session context
+    let env = z_core::action::ActionEnv {
+        project: project.name.clone(),
+        project_path: project.path.to_string_lossy().to_string(),
+        repo: None,
+        branch: Some(branch.clone()),
+        session: Some(session_name.clone()),
+        pr_number: None,  // Not fetched in floating picker for speed
+        pr_url: None,
+        ci_status: None,
+        has_new_comments: false,
+        review_tool: global.review_tool.clone(),
+    };
+
+    let merged = z_core::action::merge_actions(&[
+        z_core::action::builtin_actions(),
+        global.actions.clone(),
+        per_repo.actions.clone(),
+    ]);
+
+    let actions = z_core::action::resolve_actions(&merged, &env).unwrap_or_default();
+
+    if actions.is_empty() {
+        eprintln!("No actions available for {session_name}");
+        return Ok(());
+    }
+
+    let selected = z_tui::run_action_picker(actions)
+        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+
+    if let Some(action) = selected {
+        match &action.action {
+            z_core::action::ActionType::Run { command } => {
+                let pane_args: Vec<&str> = match action.pane {
+                    z_core::action::PaneType::Float => vec!["run", "--floating", "--"],
+                    z_core::action::PaneType::Split => vec!["run", "--"],
+                    z_core::action::PaneType::Tab => vec!["run", "--floating", "--"],
+                };
+                let status = std::process::Command::new("zellij")
+                    .args(&pane_args)
+                    .args(["sh", "-c", command])
+                    .status()
+                    .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+                if !status.success() {
+                    return Err(z_core::error::ZError::Io(
+                        "action command failed".into(),
+                    ));
+                }
+            }
+            z_core::action::ActionType::OpenUrl { url } => {
+                // Print OSC 8 hyperlink
+                print!("\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\");
+                println!();
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
