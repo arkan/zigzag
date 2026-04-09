@@ -227,7 +227,18 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 })
                 .collect();
 
-            entries.push(ProjectEntry { project: project.clone(), sessions, worktree_count, workflows });
+            let repo_actions = {
+                let repo_config_path = project.path.join(".config").join("z.kdl");
+                if let Ok(content) = fs::read_to_string(&repo_config_path) {
+                    z_core::config::parse_per_repo_config_kdl(&content)
+                        .map(|c| c.actions)
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            };
+
+            entries.push(ProjectEntry { project: project.clone(), sessions, worktree_count, workflows, repo_actions });
         }
         Ok(entries)
     }
@@ -325,6 +336,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
             Box::new(forge::GhForgeClient),
             Box::new(ZellijSessionRefresher),
             theme,
+            global.actions.clone(),
+            global.review_tool.clone(),
         )
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
@@ -376,6 +389,38 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     }
                 }
                 initial_project = Some(project);
+            }
+
+            TuiAction::RunAction { session, command, pane_type } => {
+                let pane_flag = match pane_type {
+                    z_core::action::PaneType::Float => "--floating",
+                    z_core::action::PaneType::Split => "--in-place",
+                    z_core::action::PaneType::Tab => "--floating", // tab handled below
+                };
+                let result = if matches!(pane_type, z_core::action::PaneType::Tab) {
+                    // Create a new tab first, then run the command
+                    let _ = std::process::Command::new("zellij")
+                        .args(["-s", &session, "action", "new-tab"])
+                        .status();
+                    std::process::Command::new("zellij")
+                        .args(["-s", &session, "run", "--", "sh", "-c", &command])
+                        .status()
+                } else {
+                    std::process::Command::new("zellij")
+                        .args(["-s", &session, "run", pane_flag, "--", "sh", "-c", &command])
+                        .status()
+                };
+                match result {
+                    Ok(s) if s.success() => {
+                        status_message = Some("Action launched.".to_string());
+                    }
+                    Ok(_) => {
+                        status_message = Some("Action failed to launch.".to_string());
+                    }
+                    Err(e) => {
+                        status_message = Some(format!("Failed to run action: {e}"));
+                    }
+                }
             }
         }
     }
