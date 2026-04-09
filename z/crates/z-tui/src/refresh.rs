@@ -99,6 +99,7 @@ mod tests {
                 .collect(),
             worktree_count: 0,
             workflows: vec![],
+            repo_actions: vec![],
         }
     }
 

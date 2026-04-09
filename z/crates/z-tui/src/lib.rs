@@ -52,6 +52,7 @@ use ratatui::{
 };
 pub mod refresh;
 
+use z_core::action::{ActionDef, ActionType, PaneType, ResolvedAction};
 use z_core::domain::{CiStatus, PrState, PullRequest, Project, Session};
 use z_core::traits::SessionRefresher;
 use z_core::theme::{Rgb, ThemeStyle};
@@ -94,6 +95,8 @@ pub struct ProjectEntry {
     pub worktree_count: usize,
     /// Available autopilot workflows for this project (built-in + per-repo custom).
     pub workflows: Vec<WorkflowInfo>,
+    /// Per-repo action definitions (from `.config/z.kdl`).
+    pub repo_actions: Vec<ActionDef>,
 }
 
 /// Minimal workflow descriptor used by the TUI workflow selector modal.
@@ -143,6 +146,12 @@ pub enum TuiAction {
     EditPerRepoConfig { project_path: std::path::PathBuf },
     /// User pressed `Alt+g` — open lazygit in the selected session.
     LazyGit { project: String, session: String },
+    /// User selected an action from the action menu ('r').
+    RunAction {
+        session: String,
+        command: String,
+        pane_type: PaneType,
+    },
 }
 
 /// All callbacks the TUI can invoke to mutate external state without leaving
@@ -250,6 +259,8 @@ pub enum Modal {
     BranchInput { project: String, input: String },
     /// Scrollable log viewer opened with 'l'.
     LogViewer { lines: Vec<String>, scroll_offset: usize },
+    /// Action menu shown when the user presses 'r'.
+    ActionMenu { actions: Vec<ResolvedAction>, selected: usize },
 }
 
 /// Outcome of processing one keypress inside a modal.
@@ -273,6 +284,7 @@ enum ModalOutcome {
     SessionDeleteConfirmed { session: String },
     WorkflowSelected { #[allow(dead_code)] project: String, #[allow(dead_code)] workflow: String },
     NewBranch { project: String, branch: String },
+    ActionSelected { action: ResolvedAction },
 }
 
 // ---------------------------------------------------------------------------
@@ -309,6 +321,8 @@ pub struct GitInfo {
     pub ci: Option<CiStatus>,
     /// Zellij session info for this branch (filled asynchronously after git info).
     pub zellij: Option<ZellijInfo>,
+    /// Review status for the PR (filled asynchronously).
+    pub review: Option<z_core::domain::ReviewStatus>,
 }
 
 /// Combined PR/CI/Zellij data from the forge/session background thread.
@@ -316,6 +330,7 @@ struct ForgeData {
     pr: Option<PullRequest>,
     ci: CiStatus,
     zellij: Option<ZellijInfo>,
+    review: Option<z_core::domain::ReviewStatus>,
 }
 
 /// State of the preview pane data.
@@ -361,6 +376,10 @@ pub struct TuiState {
     pub status_message: Option<String>,
     /// Color theme applied to the entire TUI.
     pub theme: z_core::theme::Theme,
+    /// Global action definitions (from `~/.config/z/config.kdl`).
+    pub global_actions: Vec<ActionDef>,
+    /// Default AI review tool name (from global config, default: `"codex"`).
+    pub review_tool: String,
     /// Session refresher used to poll sessions/notifications in background.
     pub refresher: Arc<dyn SessionRefresher>,
     /// Receiver for the in-flight session refresh, if any.
@@ -393,6 +412,8 @@ impl TuiState {
             modal: None,
             status_message: None,
             theme: z_core::theme::Theme::default(),
+            global_actions: Vec::new(),
+            review_tool: "codex".to_string(),
             refresher,
             refresh_rx: None,
             last_refresh: Instant::now(),
@@ -574,6 +595,7 @@ impl TuiState {
                     .get_ci_status(&project_name, &branch)
                     .unwrap_or(CiStatus::Unknown),
                 zellij: fetch_zellij_info(&session_name),
+                review: forge_client.get_review_status(&project_name, &branch).ok().flatten(),
             };
             let _ = tx2.send(Ok(forge));
         });
@@ -598,6 +620,7 @@ impl TuiState {
                     info.pr = forge.pr;
                     info.ci = Some(forge.ci);
                     info.zellij = forge.zellij;
+                    info.review = forge.review;
                 }
             }
             // Always clear forge_rx once we get a result (success or failure)
@@ -748,6 +771,7 @@ fn fetch_git_info(path: &str) -> Result<GitInfo, String> {
         pr: None,
         ci: None,
         zellij: None,
+        review: None,
     })
 }
 
@@ -1330,6 +1354,30 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             }
             _ => ModalOutcome::Continue,
         },
+
+        Modal::ActionMenu { actions, selected } => match code {
+            KeyCode::Esc => ModalOutcome::Close,
+            KeyCode::Up | KeyCode::Char('k') => {
+                if *selected > 0 {
+                    *selected -= 1;
+                }
+                ModalOutcome::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if *selected + 1 < actions.len() {
+                    *selected += 1;
+                }
+                ModalOutcome::Continue
+            }
+            KeyCode::Enter => {
+                if let Some(action) = actions.get(*selected) {
+                    ModalOutcome::ActionSelected { action: action.clone() }
+                } else {
+                    ModalOutcome::Close
+                }
+            }
+            _ => ModalOutcome::Continue,
+        },
     }
 }
 
@@ -1363,6 +1411,8 @@ pub fn run_tui(
     forge_client: Box<dyn z_core::traits::ForgeClient + Send + Sync>,
     refresher: Box<dyn SessionRefresher>,
     theme: z_core::theme::Theme,
+    global_actions: Vec<ActionDef>,
+    review_tool: String,
 ) -> io::Result<TuiAction> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1372,6 +1422,8 @@ pub fn run_tui(
 
     let mut state = TuiState::new(entries, navigation, Arc::from(forge_client), Arc::from(refresher));
     state.theme = theme;
+    state.global_actions = global_actions;
+    state.review_tool = review_tool;
     state.notifications = notifications;
     state.status_message = status_message;
     if let Some(idx) = initial_project {
@@ -1469,6 +1521,36 @@ fn event_loop<B: Backend>(
                         // Autopilot workflow selection — currently a no-op
                         // (actual execution handled by `z autopilot run`).
                         state.modal = None;
+                    }
+                    ModalOutcome::ActionSelected { action } => {
+                        state.modal = None;
+                        match action.action {
+                            ActionType::Run { ref command } => {
+                                // Determine the target session name
+                                let session_name = if state.focused_panel == Panel::Sessions {
+                                    state.filtered_sessions()
+                                        .get(state.selected_session)
+                                        .map(|s| s.name.clone())
+                                } else {
+                                    state.selected_entry()
+                                        .and_then(|e| e.sessions.first())
+                                        .map(|s| s.name.clone())
+                                };
+                                if let Some(session) = session_name {
+                                    return Ok(TuiAction::RunAction {
+                                        session,
+                                        command: command.clone(),
+                                        pane_type: action.pane.clone(),
+                                    });
+                                } else {
+                                    state.status_message = Some("No active session to run action in.".to_string());
+                                }
+                            }
+                            ActionType::OpenUrl { ref url } => {
+                                // Render OSC 8 hyperlink to stdout (works over SSH)
+                                state.status_message = Some(format!("PR: {}", url));
+                            }
+                        }
                     }
                     ModalOutcome::NewBranch { project, branch } => {
                         state.modal = None;
@@ -1601,6 +1683,18 @@ fn event_loop<B: Backend>(
                                     selected: 0,
                                 });
                             }
+                        }
+                    }
+
+                    KeyCode::Char('r') => {
+                        let actions = build_action_menu(state);
+                        if !actions.is_empty() {
+                            state.modal = Some(Modal::ActionMenu {
+                                actions,
+                                selected: 0,
+                            });
+                        } else {
+                            state.status_message = Some("No actions available in this context.".to_string());
                         }
                     }
 
@@ -1867,6 +1961,60 @@ fn apply_delete_session(
 ///
 /// Called directly from the event loop when the user presses `p`, so the TUI
 /// never leaves the alternate screen — no flicker, no re-entry.
+/// Build the list of resolved actions for the action menu modal.
+/// Uses built-in actions only (user config actions will be added later).
+fn build_action_menu(state: &TuiState) -> Vec<ResolvedAction> {
+    use z_core::action::{self, ActionEnv};
+
+    let entry = match state.selected_entry() {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+
+    let builtins = action::builtin_actions();
+    let merged = action::merge_actions(&[
+        builtins,
+        state.global_actions.clone(),
+        entry.repo_actions.clone(),
+    ]);
+
+    // Determine current session context
+    let selected_session = if state.focused_panel == Panel::Sessions {
+        state.filtered_sessions().get(state.selected_session).cloned()
+    } else {
+        entry.sessions.first()
+    };
+
+    // Build env from preview data + entry
+    let (pr_number, pr_url, ci_status) = match &state.preview_data {
+        PreviewData::Ready(ref git_info) => {
+            let pr_number = git_info.pr.as_ref().map(|pr| pr.number);
+            let pr_url = git_info.pr.as_ref().map(|pr| pr.url.clone());
+            let ci_status = git_info.ci.clone();
+            (pr_number, pr_url, ci_status)
+        }
+        _ => (None, None, None),
+    };
+
+    let env = ActionEnv {
+        project: entry.project.name.clone(),
+        project_path: entry.project.path.to_string_lossy().to_string(),
+        repo: None, // TODO: extract from git remote
+        branch: selected_session.map(|s| s.branch.clone()),
+        session: selected_session.map(|s| s.name.clone()),
+        pr_number,
+        pr_url,
+        ci_status,
+        has_new_comments: match &state.preview_data {
+            PreviewData::Ready(ref info) => info.review.as_ref().map_or(false, |r| r.has_new_comments),
+            _ => false,
+        },
+        review_tool: state.review_tool.clone(),
+    };
+
+    action::resolve_actions(&merged, &env).unwrap_or_default()
+}
+
 fn apply_prune(state: &mut TuiState, prune_fn: &dyn Fn(bool) -> io::Result<String>, force: bool) {
     match prune_fn(force) {
         Ok(msg) => state.status_message = Some(msg),
@@ -2062,6 +2210,23 @@ fn render_preview(f: &mut Frame, area: Rect, state: &TuiState) {
                 (true, None) => {}
             }
 
+            // Review status line
+            if let Some(review) = &info.review {
+                if review.has_new_comments {
+                    lines.push(format!(
+                        " \u{1f4ac} {} new review comment{}",
+                        review.comment_count,
+                        if review.comment_count == 1 { "" } else { "s" }
+                    ));
+                } else if review.comment_count > 0 {
+                    lines.push(format!(
+                        " {} review comment{} (addressed)",
+                        review.comment_count,
+                        if review.comment_count == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+
             // Zellij session info line
             if let Some(zellij) = &info.zellij {
                 let tab_str = if zellij.tab_count > 0 {
@@ -2115,7 +2280,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
             .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string())
     };
 
-    let hints = " [o]pen [n]ew [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [?]help [q]uit";
+    let hints = " [o]pen [n]ew [r]un action [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [?]help [q]uit";
     let content = format!("{}\n{}", first_line, hints);
 
     let theme = &state.theme;
@@ -2271,6 +2436,56 @@ fn render_workflow_selector_modal(
     f.render_widget(paragraph, inner);
 }
 
+fn render_action_menu_modal(
+    f: &mut Frame,
+    actions: &[ResolvedAction],
+    selected: usize,
+    theme: &z_core::theme::Theme,
+) {
+    let area = f.area();
+    let modal_height = (actions.len() as u16 + 4).max(7).min(area.height);
+    let modal_width = 72u16;
+    let rect = modal_rect(modal_width, modal_height, area);
+
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Actions ")
+        .title_style(theme_style_to_style(&theme.modal_title))
+        .border_style(theme_style_to_style(&theme.modal_border));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (i, action) in actions.iter().enumerate() {
+        let is_selected = i == selected;
+        let cursor = if is_selected { "\u{25b8} " } else { "  " };
+        let icon = action.icon.as_deref().unwrap_or("");
+        let icon_pad = if icon.is_empty() { "" } else { " " };
+        let text = format!("{}{}{}{}", cursor, icon, icon_pad, action.name);
+        let style = if is_selected {
+            theme_style_to_style(&theme.item_selected_focused)
+        } else {
+            theme_style_to_style(&theme.item_normal)
+        };
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+
+    let dim = theme_style_to_style(&theme.text_dim);
+    let sep_width = inner.width.saturating_sub(1) as usize;
+    lines.push(Line::from(Span::styled("\u{2500}".repeat(sep_width), dim)));
+    lines.push(Line::from(Span::styled(
+        " \u{2191}/\u{2193}: select  Enter: run  Esc: cancel",
+        dim,
+    )));
+
+    let paragraph = Paragraph::new(Text::from(lines))
+        .style(Style::default().bg(rgb_to_color(theme.modal_background)));
+    f.render_widget(paragraph, inner);
+}
+
 fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
     let area = f.area();
     let modal_height = 25u16;
@@ -2307,6 +2522,7 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
         Line::from(Span::styled("   E                Edit project", normal)),
         Line::from(Span::styled("   D                Delete project", normal)),
         Line::from(Span::styled("   p                Prune orphaned sessions", normal)),
+        Line::from(Span::styled("   r                Run action", normal)),
         Line::from(Span::styled("   a                Autopilot workflows", normal)),
         Line::from(Span::styled("   e                Edit per-repo config", normal)),
         Line::from(""),
@@ -2336,6 +2552,10 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
         }
         Some(Modal::WorkflowSelector { project, workflows, selected }) => {
             render_workflow_selector_modal(f, project, workflows, *selected, theme);
+            return;
+        }
+        Some(Modal::ActionMenu { actions, selected }) => {
+            render_action_menu_modal(f, actions, *selected, theme);
             return;
         }
         Some(Modal::Help) => {
@@ -2831,6 +3051,9 @@ mod tests {
         fn get_ci_status(&self, _: &str, _: &str) -> z_core::error::Result<CiStatus> {
             Ok(CiStatus::Unknown)
         }
+        fn get_review_status(&self, _: &str, _: &str) -> z_core::error::Result<Option<z_core::domain::ReviewStatus>> {
+            Ok(None)
+        }
     }
 
     fn mock_forge() -> Arc<dyn z_core::traits::ForgeClient + Send + Sync> {
@@ -2874,18 +3097,21 @@ mod tests {
                 ],
                 worktree_count: 0,
                 workflows: vec![],
+                repo_actions: vec![],
             },
             ProjectEntry {
                 project: make_project("hermes", false),
                 sessions: vec![],
                 worktree_count: 0,
                 workflows: vec![],
+                repo_actions: vec![],
             },
             ProjectEntry {
                 project: make_project("prod-api", true),
                 sessions: vec![],
                 worktree_count: 0,
                 workflows: vec![],
+                repo_actions: vec![],
             },
         ]
     }
@@ -2909,6 +3135,7 @@ mod tests {
             pr: None,
             ci: None,
             zellij: None,
+            review: None,
         }
     }
 
@@ -2996,12 +3223,13 @@ mod tests {
     #[test]
     fn renders_status_bar_hints() {
         let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
-        let out = render_to_string(&state, 120, 24);
+        let out = render_to_string(&state, 140, 24);
         assert!(out.contains("[o]"), "should show [o] hint");
         assert!(out.contains("[q]"), "should show [q] hint");
         assert!(out.contains("[n]"), "should show [n] hint");
         assert!(out.contains("[d]"), "should show [d] hint");
         assert!(out.contains("[e]"), "should show [e] edit config hint");
+        assert!(out.contains("[r]"), "should show [r] run action hint");
     }
 
     #[test]
@@ -3110,6 +3338,7 @@ mod tests {
             pr: None,
             ci: None,
             zellij: None,
+            review: None,
         });
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("clean"), "should show clean working tree status");
@@ -3158,6 +3387,7 @@ mod tests {
             pr: None,
             ci: None,
             zellij: None,
+            review: None,
         });
         let out = render_to_string(&state, 80, 30);
         // When 0 ahead/0 behind, tracking info should not appear
@@ -3557,6 +3787,7 @@ mod tests {
             sessions: vec![Session::new("solo", "main")],
             worktree_count: 0,
             workflows: vec![],
+            repo_actions: vec![],
         }];
         let mut state = TuiState::new(entries, Navigation::Arrows, mock_forge(), mock_refresher());
         state.move_up();
@@ -3990,6 +4221,65 @@ mod tests {
     }
 
     #[test]
+    fn renders_review_new_comments() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let mut info = make_git_info();
+        info.review = Some(z_core::domain::ReviewStatus {
+            has_new_comments: true,
+            comment_count: 3,
+            last_review_at: Some("2026-04-09T15:00:00Z".into()),
+        });
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("3 new review comments"), "should show new comment count");
+        // 💬 U+1F4AC
+        assert!(out.contains('\u{1f4ac}'), "should show 💬 for new comments");
+    }
+
+    #[test]
+    fn renders_review_addressed_comments() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let mut info = make_git_info();
+        info.review = Some(z_core::domain::ReviewStatus {
+            has_new_comments: false,
+            comment_count: 2,
+            last_review_at: Some("2026-04-09T13:00:00Z".into()),
+        });
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("2 review comments (addressed)"), "should show addressed comments");
+    }
+
+    #[test]
+    fn renders_no_review_line_when_no_comments() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let mut info = make_git_info();
+        info.review = Some(z_core::domain::ReviewStatus {
+            has_new_comments: false,
+            comment_count: 0,
+            last_review_at: None,
+        });
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(!out.contains("review comment"), "should not show review line when 0 comments");
+    }
+
+    #[test]
+    fn renders_review_singular_comment() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        let mut info = make_git_info();
+        info.review = Some(z_core::domain::ReviewStatus {
+            has_new_comments: true,
+            comment_count: 1,
+            last_review_at: Some("2026-04-09T15:00:00Z".into()),
+        });
+        state.preview_data = PreviewData::Ready(info);
+        let out = render_to_string(&state, 80, 30);
+        assert!(out.contains("1 new review comment"), "should show singular 'comment'");
+        assert!(!out.contains("comments"), "should not show plural 'comments'");
+    }
+
+    #[test]
     fn renders_zellij_session_info() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let mut info = make_git_info();
@@ -4060,6 +4350,7 @@ mod tests {
             pr: Some(make_pull_request(42, PrState::Open)),
             ci: CiStatus::Passing,
             zellij: Some(make_zellij_info()),
+            review: None,
         }))
         .unwrap();
 
@@ -4106,6 +4397,7 @@ mod tests {
             pr: Some(make_pull_request(1, PrState::Open)),
             ci: CiStatus::Passing,
             zellij: None,
+            review: None,
         }))
         .unwrap();
         state.poll_forge();
@@ -4625,6 +4917,7 @@ mod tests {
             sessions: vec![],
             worktree_count: 0,
             workflows: vec![],
+            repo_actions: vec![],
         };
         // Simulate 'E' key: create EditProject modal pre-filled from entry
         let project = &entry.project;
@@ -4978,6 +5271,7 @@ mod tests {
             sessions: vec![],
             worktree_count: 5,
             workflows: vec![],
+            repo_actions: vec![],
         };
         assert_eq!(entry.worktree_count, 5);
     }
@@ -6899,6 +7193,7 @@ mod tests {
             sessions: vec![],
             worktree_count: 0,
             workflows: vec![],
+            repo_actions: vec![],
         });
         apply_add_project(
             &mut state,
@@ -6921,6 +7216,7 @@ mod tests {
             sessions: vec![],
             worktree_count: 0,
             workflows: vec![],
+            repo_actions: vec![],
         });
         apply_add_project(
             &mut state,
@@ -6987,6 +7283,7 @@ mod tests {
             sessions: vec![],
             worktree_count: 0,
             workflows: vec![],
+            repo_actions: vec![],
         });
         apply_add_project(
             &mut state,
@@ -7027,5 +7324,165 @@ mod tests {
             "myapp:feat/login",
         );
         assert_eq!(state.entries.len(), original_count, "should not reload on error");
+    }
+
+    // ── ActionMenu modal tests ─────────────────────────────────────────────
+
+    fn make_test_actions() -> Vec<ResolvedAction> {
+        vec![
+            ResolvedAction {
+                name: "Review PR".into(),
+                action: ActionType::Run { command: "codex review".into() },
+                pane: PaneType::Tab,
+                icon: Some("\u{1f50d}".into()),
+            },
+            ResolvedAction {
+                name: "Fix CI".into(),
+                action: ActionType::Run { command: "claude fix".into() },
+                pane: PaneType::Tab,
+                icon: Some("\u{1f527}".into()),
+            },
+            ResolvedAction {
+                name: "Open PR".into(),
+                action: ActionType::OpenUrl { url: "https://github.com/pr/42".into() },
+                pane: PaneType::Float,
+                icon: Some("\u{1f310}".into()),
+            },
+        ]
+    }
+
+    #[test]
+    fn action_menu_renders_action_names() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
+        state.modal = Some(Modal::ActionMenu {
+            actions: make_test_actions(),
+            selected: 0,
+        });
+        let out = render_to_string(&state, 80, 24);
+        assert!(out.contains("Actions"), "should show Actions title");
+        assert!(out.contains("Review PR"), "should show 'Review PR' action");
+        assert!(out.contains("Fix CI"), "should show 'Fix CI' action");
+        assert!(out.contains("Open PR"), "should show 'Open PR' action");
+    }
+
+    #[test]
+    fn action_menu_esc_closes() {
+        let mut modal = Modal::ActionMenu {
+            actions: make_test_actions(),
+            selected: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Esc);
+        assert!(matches!(outcome, ModalOutcome::Close));
+    }
+
+    #[test]
+    fn action_menu_enter_returns_action_selected() {
+        let mut modal = Modal::ActionMenu {
+            actions: make_test_actions(),
+            selected: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::ActionSelected { action } => {
+                assert_eq!(action.name, "Review PR");
+            }
+            _ => panic!("expected ActionSelected"),
+        }
+    }
+
+    #[test]
+    fn action_menu_down_moves_selection() {
+        let mut modal = Modal::ActionMenu {
+            actions: make_test_actions(),
+            selected: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Down);
+        assert!(matches!(outcome, ModalOutcome::Continue));
+        if let Modal::ActionMenu { selected, .. } = &modal {
+            assert_eq!(*selected, 1);
+        }
+    }
+
+    #[test]
+    fn action_menu_up_at_top_stays() {
+        let mut modal = Modal::ActionMenu {
+            actions: make_test_actions(),
+            selected: 0,
+        };
+        advance_modal(&mut modal, KeyCode::Up);
+        if let Modal::ActionMenu { selected, .. } = &modal {
+            assert_eq!(*selected, 0);
+        }
+    }
+
+    #[test]
+    fn action_menu_down_at_bottom_stays() {
+        let mut modal = Modal::ActionMenu {
+            actions: make_test_actions(),
+            selected: 2,
+        };
+        advance_modal(&mut modal, KeyCode::Down);
+        if let Modal::ActionMenu { selected, .. } = &modal {
+            assert_eq!(*selected, 2);
+        }
+    }
+
+    #[test]
+    fn action_menu_j_moves_down() {
+        let mut modal = Modal::ActionMenu {
+            actions: make_test_actions(),
+            selected: 0,
+        };
+        advance_modal(&mut modal, KeyCode::Char('j'));
+        if let Modal::ActionMenu { selected, .. } = &modal {
+            assert_eq!(*selected, 1);
+        }
+    }
+
+    #[test]
+    fn action_menu_k_moves_up() {
+        let mut modal = Modal::ActionMenu {
+            actions: make_test_actions(),
+            selected: 1,
+        };
+        advance_modal(&mut modal, KeyCode::Char('k'));
+        if let Modal::ActionMenu { selected, .. } = &modal {
+            assert_eq!(*selected, 0);
+        }
+    }
+
+    #[test]
+    fn action_menu_enter_on_second_item() {
+        let mut modal = Modal::ActionMenu {
+            actions: make_test_actions(),
+            selected: 1,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::ActionSelected { action } => {
+                assert_eq!(action.name, "Fix CI");
+            }
+            _ => panic!("expected ActionSelected"),
+        }
+    }
+
+    #[test]
+    fn action_menu_enter_on_empty_list_closes() {
+        let mut modal = Modal::ActionMenu {
+            actions: vec![],
+            selected: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        assert!(matches!(outcome, ModalOutcome::Close));
+    }
+
+    #[test]
+    fn action_menu_other_key_continues() {
+        let mut modal = Modal::ActionMenu {
+            actions: make_test_actions(),
+            selected: 0,
+        };
+        let outcome = advance_modal(&mut modal, KeyCode::Char('x'));
+        assert!(matches!(outcome, ModalOutcome::Continue));
     }
 }
