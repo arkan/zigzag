@@ -144,7 +144,7 @@ pub enum TuiAction {
     New { project: String, branch: String },
     /// User pressed `e` — open per-repo config in $EDITOR.
     EditPerRepoConfig { project_path: std::path::PathBuf },
-    /// User pressed `Ctrl+k g` — open lazygit in the selected session.
+    /// User pressed `Alt+z g` — open lazygit in the selected session.
     LazyGit { project: String, session: String },
     /// User selected an action from the action menu (Alt+r).
     RunAction {
@@ -376,7 +376,7 @@ pub struct TuiState {
     pub status_message: Option<String>,
     /// Color theme applied to the entire TUI.
     pub theme: z_core::theme::Theme,
-    /// Timestamp when Ctrl+k leader key was pressed. `None` = not waiting.
+    /// Timestamp when Alt+z leader key was pressed. `None` = not waiting.
     /// If set, the next keypress is dispatched as a leader combo.
     /// Expires after 2 seconds.
     pub leader_pending: Option<Instant>,
@@ -1486,7 +1486,7 @@ fn event_loop<B: Backend>(
             // Any keypress dismisses a one-shot status message (e.g. prune result).
             state.status_message = None;
 
-            // ── Leader key (Ctrl+k) dispatch ───────────────────────────────
+            // ── Leader key (Alt+z) dispatch ───────────────────────────────
             if state.leader_pending.is_some() {
                 state.leader_pending = None;
                 match key.code {
@@ -1534,7 +1534,7 @@ fn event_loop<B: Backend>(
                         // Cancel leader
                     }
                     _ => {
-                        state.status_message = Some(format!("Unknown leader combo: Ctrl+k {}", match key.code {
+                        state.status_message = Some(format!("Unknown leader combo: Alt+z {}", match key.code {
                             KeyCode::Char(c) => format!("{c}"),
                             _ => "?".to_string(),
                         }));
@@ -1758,22 +1758,9 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::ALT) => {
                         state.leader_pending = Some(Instant::now());
-                        state.status_message = Some("Ctrl+k ...".to_string());
-                    }
-
-                    // Direct shortcut: 'r' opens the action menu (no leader needed)
-                    KeyCode::Char('r') => {
-                        let actions = build_action_menu(state);
-                        if !actions.is_empty() {
-                            state.modal = Some(Modal::ActionMenu {
-                                actions,
-                                selected: 0,
-                            });
-                        } else {
-                            state.status_message = Some("No actions available in this context.".to_string());
-                        }
+                        state.status_message = Some("Alt+z ...".to_string());
                     }
 
                     KeyCode::Char('A') => {
@@ -2331,7 +2318,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
             .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string())
     };
 
-    let hints = " [o]pen [n]ew [r]un action [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [/]search [?]help [q]uit";
+    let hints = " [o]pen [n]ew [d]el session [p]rune [a]utopilot [A]dd [E]dit [D]el project [e]config [Alt+z]cmds [/]search [?]help [q]uit";
     let content = format!("{}\n{}", first_line, hints);
 
     let theme = &state.theme;
@@ -2573,9 +2560,9 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
         Line::from(Span::styled("   E                Edit project", normal)),
         Line::from(Span::styled("   D                Delete project", normal)),
         Line::from(Span::styled("   p                Prune orphaned sessions", normal)),
-        Line::from(Span::styled("   Ctrl+k r         Run action", normal)),
-        Line::from(Span::styled("   Ctrl+k l         View logs", normal)),
-        Line::from(Span::styled("   Ctrl+k g         Lazygit", normal)),
+        Line::from(Span::styled("   Alt+z r         Run action", normal)),
+        Line::from(Span::styled("   Alt+z l         View logs", normal)),
+        Line::from(Span::styled("   Alt+z g         Lazygit", normal)),
         Line::from(Span::styled("   a                Autopilot workflows", normal)),
         Line::from(Span::styled("   e                Edit per-repo config", normal)),
         Line::from(""),
@@ -2583,7 +2570,7 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
         Line::from(Span::styled("   Ctrl+O \u{2192} D      Detach (return to z)", normal)),
         Line::from(Span::styled("   Ctrl+Q           Quit session (return to z)", normal)),
         Line::from(Span::styled(" \u{2500}".repeat((inner.width.saturating_sub(1) / 2) as usize), dim)),
-        Line::from(Span::styled("   Ctrl+k: r actions  l logs  g lazygit   ?  help  q  quit", dim)),
+        Line::from(Span::styled("   Alt+z: r actions  l logs  g lazygit   ?  help  q  quit", dim)),
     ];
 
     let paragraph = Paragraph::new(Text::from(lines))
@@ -3282,7 +3269,7 @@ mod tests {
         assert!(out.contains("[n]"), "should show [n] hint");
         assert!(out.contains("[d]"), "should show [d] hint");
         assert!(out.contains("[e]"), "should show [e] edit config hint");
-        assert!(out.contains("[r]"), "should show [r] run action hint");
+        assert!(out.contains("[Alt+z]"), "should show [Alt+z] leader key hint");
     }
 
     #[test]
