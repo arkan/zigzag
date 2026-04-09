@@ -89,6 +89,17 @@ pub struct Pane {
     pub args: Vec<String>,
 }
 
+/// Review status for a pull request, used to evaluate `has_new_comments`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewStatus {
+    /// True if reviews/comments exist after the last pushed commit.
+    pub has_new_comments: bool,
+    /// Total number of review comments on the PR.
+    pub comment_count: u32,
+    /// ISO 8601 timestamp of the most recent review, if any.
+    pub last_review_at: Option<String>,
+}
+
 /// Notification severity level.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NotifyLevel {

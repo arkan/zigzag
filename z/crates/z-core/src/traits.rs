@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::domain::{CiStatus, Layout, NotifyLevel, PullRequest, Project, Session, Worktree};
+use crate::domain::{CiStatus, Layout, NotifyLevel, PullRequest, Project, ReviewStatus, Session, Worktree};
 use crate::error::Result;
 use crate::theme::Theme;
 
@@ -33,6 +33,7 @@ pub trait WorktreeManager {
 pub trait ForgeClient {
     fn get_pr(&self, project: &str, branch: &str) -> Result<Option<PullRequest>>;
     fn get_ci_status(&self, project: &str, branch: &str) -> Result<CiStatus>;
+    fn get_review_status(&self, project: &str, branch: &str) -> Result<Option<ReviewStatus>>;
 }
 
 pub trait Notifier {
