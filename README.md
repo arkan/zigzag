@@ -24,9 +24,10 @@
 │  │ myapp:feat/login                           │  │
 │  │ branch: 3 ahead, 1 behind · dirty          │  │
 │  │ PR: #42 (open) | CI: passing               │  │
+│  │ 💬 2 new review comments                    │  │
 │  │ session: 3 tabs, 5 panes, up 2h34m         │  │
 │  └───────────────────────────────────────────┘  │
-│  [o]pen [n]ew [d]elete [p]rune [a]utopilot [/] │
+│  [o]pen [n]ew [r]un [d]el [p]rune [a]utopilot [/] │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -104,6 +105,7 @@ z close [session]                # Detach session (keep worktree)
 z delete <project:branch>        # Kill session + prompt to delete worktree
 z prune [--dry-run]              # Clean orphaned sessions and worktrees
 z switch                         # Switch between sessions (interactive)
+z actions                        # Open action menu (inside Zellij sessions)
 z notify [session] <msg> [--level info|warning|error]
 z autopilot <subcommand>         # Manage autopilot workflows
 z logs [-n <count>]              # View logs
@@ -131,6 +133,7 @@ This will:
 |-----|--------|
 | `o` | Open selected project/session |
 | `n` | New branch on selected project |
+| `r` | Open action menu |
 | `d` | Delete session + worktree |
 | `p` | Prune orphaned sessions |
 | `a` | Open autopilot panel |
@@ -163,11 +166,51 @@ Inside a Zellij session, useful built-in shortcuts:
 
 | Shortcut | Action |
 |----------|--------|
+| `Alt+Z` | **Action menu** — floating picker with contextual actions (review, lazygit, CI fix, etc.) |
 | `Alt+K` | **Switch session** — floating picker to jump between z-managed sessions |
 | `Alt+L` | **Logs** — view z logs in a floating pane |
-| `Alt+G` | **Lazygit** — open lazygit full-screen in a floating pane |
 
 These shortcuts work in all Zellij modes. Floating panes close automatically on exit.
+
+### Action menu
+
+The action menu (`Alt+Z` in Zellij, `r` in the TUI) provides contextual actions based on the current project and branch state.
+
+**Built-in actions:**
+
+| Action | Condition | Pane |
+|--------|-----------|------|
+| Review code | Always | Tab |
+| Lazygit | Always | Fullscreen float |
+| Open PR | Has PR | — (shows URL) |
+| Fix CI | CI failing | Tab |
+| Address review comments | New comments | Tab |
+
+Actions are configurable at three levels (built-in < global < per-repo) via KDL:
+
+```kdl
+// In ~/.config/z/config.kdl or .config/z.kdl
+actions {
+    review-tool "codex"    // default AI tool for review actions
+
+    action "Run tests" {
+        run "cargo test"
+        context "session"
+        pane "float"
+    }
+
+    action "Deploy" {
+        run "./deploy.sh"
+        when "has_pr"
+        context "session"
+        pane "tab"
+    }
+}
+```
+
+**Pane types:** `float` (default), `float-fullscreen`, `split`, `tab`
+**Conditions:** `always` (default), `has_pr`, `has_ci_failure`, `has_new_comments`
+**Variables:** `${project}`, `${branch}`, `${session}`, `${pr_number}`, `${pr_url}`, `${ci_status}`, `${review_tool}`
 
 ### Session naming
 
@@ -315,5 +358,6 @@ All I/O is abstracted behind traits in `z-core` (`SessionManager`, `WorktreeMana
 ## Docs
 
 - [PRD](docs/PRD.md) — problem, solution, user stories, decisions
+- [Action Menu PRD](docs/PRD-action-menu.md) — contextual action menu design
 - [Specs](docs/SPECS.md) — architecture, config format, TUI design, autopilot DSL, phasing
 - [Sandcastle](.sandcastle/README.md) — AI agent orchestration (parallel issue solving via Claude Code in Docker)
