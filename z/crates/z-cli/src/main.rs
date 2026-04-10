@@ -389,10 +389,22 @@ fn cmd_tui() -> z_core::error::Result<()> {
                         pane_args.push("-c");
                     }
                     z_core::action::PaneType::Tab => {
-                        let _ = std::process::Command::new("zellij")
-                            .args(["-s", &session, "action", "new-tab"])
+                        // For Tab, we use new-tab directly instead of run
+                        let result = std::process::Command::new("zellij")
+                            .args(["-s", &session, "action", "new-tab", "--", "sh", "-c", &command])
                             .status();
-                        pane_args.push("-c");
+                        match result {
+                            Ok(s) if s.success() => {
+                                status_message = Some("Action launched in new tab.".to_string());
+                            }
+                            Ok(_) => {
+                                status_message = Some("Action failed to launch.".to_string());
+                            }
+                            Err(e) => {
+                                status_message = Some(format!("Failed to run action: {e}"));
+                            }
+                        }
+                        continue;
                     }
                 }
                 pane_args.extend(["--", "sh", "-c", &command]);
@@ -1050,12 +1062,8 @@ fn cmd_actions() -> z_core::error::Result<()> {
             z_core::action::ActionType::Run { command } => {
                 let status = match action.pane {
                     z_core::action::PaneType::Tab => {
-                        // Create a new tab and run the command in it (no close-on-exit)
-                        let _ = std::process::Command::new("zellij")
-                            .args(["action", "new-tab"])
-                            .status();
                         std::process::Command::new("zellij")
-                            .args(["run", "--", "sh", "-c", command])
+                            .args(["action", "new-tab", "-n", &action.name, "--", "sh", "-c", command])
                             .status()
                             .map_err(|e| z_core::error::ZError::Io(e.to_string()))?
                     }
