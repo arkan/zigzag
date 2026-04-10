@@ -24,6 +24,10 @@ pub struct GlobalConfig {
     pub actions: Vec<ActionDef>,
     /// Default AI review tool (e.g. `"codex"`). Read from `actions { review-tool "..." }`.
     pub review_tool: String,
+    /// Prompt template for sessions created from a GitHub issue.
+    pub issue_prompt_template: Option<String>,
+    /// Prompt template for sessions created from a GitHub PR.
+    pub pr_prompt_template: Option<String>,
 }
 
 impl Default for GlobalConfig {
@@ -36,6 +40,8 @@ impl Default for GlobalConfig {
             theme: ThemeName::default(),
             actions: Vec::new(),
             review_tool: "codex".to_string(),
+            issue_prompt_template: None,
+            pr_prompt_template: None,
         }
     }
 }
@@ -51,6 +57,10 @@ pub struct PerRepoConfig {
     pub autopilot: AutopilotConfig,
     /// Project-specific actions from the `actions { ... }` block.
     pub actions: Vec<ActionDef>,
+    /// Prompt template for sessions created from a GitHub issue.
+    pub issue_prompt_template: Option<String>,
+    /// Prompt template for sessions created from a GitHub PR.
+    pub pr_prompt_template: Option<String>,
 }
 
 /// Autopilot behaviour overrides from per-repo config.
@@ -283,6 +293,20 @@ pub fn parse_global_config_kdl(content: &str) -> Result<GlobalConfig> {
                 "actions" => {
                     parse_actions_config_node(node, &mut config)?;
                 }
+                "issue-prompt-template" => {
+                    config.issue_prompt_template = node
+                        .entries()
+                        .first()
+                        .and_then(|e| e.value().as_string())
+                        .map(|s| s.to_string());
+                }
+                "pr-prompt-template" => {
+                    config.pr_prompt_template = node
+                        .entries()
+                        .first()
+                        .and_then(|e| e.value().as_string())
+                        .map(|s| s.to_string());
+                }
                 _ => {}
             }
         }
@@ -479,6 +503,20 @@ pub fn parse_per_repo_config_kdl(content: &str) -> Result<PerRepoConfig> {
                     }
                 }
             }
+            "issue-prompt-template" => {
+                cfg.issue_prompt_template = node
+                    .entries()
+                    .first()
+                    .and_then(|e| e.value().as_string())
+                    .map(|s| s.to_string());
+            }
+            "pr-prompt-template" => {
+                cfg.pr_prompt_template = node
+                    .entries()
+                    .first()
+                    .and_then(|e| e.value().as_string())
+                    .map(|s| s.to_string());
+            }
             _ => {} // forward-compatible: ignore unknown nodes
         }
     }
@@ -538,6 +576,24 @@ pub fn effective_layout(global: &GlobalConfig, per_repo: &PerRepoConfig) -> Layo
     } else {
         default_layout()
     }
+}
+
+/// Resolve the effective issue prompt template: per-repo > global > hardcoded default.
+pub fn effective_issue_prompt_template(global: &GlobalConfig, per_repo: &PerRepoConfig) -> String {
+    per_repo
+        .issue_prompt_template
+        .clone()
+        .or_else(|| global.issue_prompt_template.clone())
+        .unwrap_or_else(|| crate::template::DEFAULT_ISSUE_TEMPLATE.to_string())
+}
+
+/// Resolve the effective PR prompt template: per-repo > global > hardcoded default.
+pub fn effective_pr_prompt_template(global: &GlobalConfig, per_repo: &PerRepoConfig) -> String {
+    per_repo
+        .pr_prompt_template
+        .clone()
+        .or_else(|| global.pr_prompt_template.clone())
+        .unwrap_or_else(|| crate::template::DEFAULT_PR_TEMPLATE.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1430,5 +1486,114 @@ actions {
         let config = parse_per_repo_config_kdl(kdl).unwrap();
         assert_eq!(config.actions.len(), 1);
         assert_eq!(config.actions[0].name, "Open PR");
+    }
+
+    // -----------------------------------------------------------------------
+    // prompt templates in config
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_global_config_with_prompt_templates() {
+        let kdl = r#"
+config {
+    issue-prompt-template "custom issue {number}"
+    pr-prompt-template "custom pr {number}"
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert_eq!(cfg.issue_prompt_template.as_deref(), Some("custom issue {number}"));
+        assert_eq!(cfg.pr_prompt_template.as_deref(), Some("custom pr {number}"));
+    }
+
+    #[test]
+    fn parse_global_config_without_prompt_templates() {
+        let kdl = r#"
+config {
+    keybindings {
+        navigation "vim"
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert!(cfg.issue_prompt_template.is_none());
+        assert!(cfg.pr_prompt_template.is_none());
+    }
+
+    #[test]
+    fn parse_per_repo_with_prompt_templates() {
+        let kdl = r#"
+issue-prompt-template "repo issue {number}: {title}"
+pr-prompt-template "repo pr {number}: {title}"
+"#;
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+        assert_eq!(cfg.issue_prompt_template.as_deref(), Some("repo issue {number}: {title}"));
+        assert_eq!(cfg.pr_prompt_template.as_deref(), Some("repo pr {number}: {title}"));
+    }
+
+    #[test]
+    fn parse_per_repo_without_prompt_templates() {
+        let cfg = parse_per_repo_config_kdl("").unwrap();
+        assert!(cfg.issue_prompt_template.is_none());
+        assert!(cfg.pr_prompt_template.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // effective_prompt_template
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn effective_issue_template_default() {
+        let global = GlobalConfig::default();
+        let per_repo = PerRepoConfig::default();
+        assert_eq!(
+            effective_issue_prompt_template(&global, &per_repo),
+            crate::template::DEFAULT_ISSUE_TEMPLATE
+        );
+    }
+
+    #[test]
+    fn effective_pr_template_default() {
+        let global = GlobalConfig::default();
+        let per_repo = PerRepoConfig::default();
+        assert_eq!(
+            effective_pr_prompt_template(&global, &per_repo),
+            crate::template::DEFAULT_PR_TEMPLATE
+        );
+    }
+
+    #[test]
+    fn effective_issue_template_global_overrides_default() {
+        let global = GlobalConfig {
+            issue_prompt_template: Some("global issue".to_string()),
+            ..Default::default()
+        };
+        let per_repo = PerRepoConfig::default();
+        assert_eq!(effective_issue_prompt_template(&global, &per_repo), "global issue");
+    }
+
+    #[test]
+    fn effective_issue_template_per_repo_overrides_global() {
+        let global = GlobalConfig {
+            issue_prompt_template: Some("global".to_string()),
+            ..Default::default()
+        };
+        let per_repo = PerRepoConfig {
+            issue_prompt_template: Some("repo".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(effective_issue_prompt_template(&global, &per_repo), "repo");
+    }
+
+    #[test]
+    fn effective_pr_template_per_repo_overrides_global() {
+        let global = GlobalConfig {
+            pr_prompt_template: Some("global pr".to_string()),
+            ..Default::default()
+        };
+        let per_repo = PerRepoConfig {
+            pr_prompt_template: Some("repo pr".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(effective_pr_prompt_template(&global, &per_repo), "repo pr");
     }
 }

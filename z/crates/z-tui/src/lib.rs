@@ -142,6 +142,10 @@ pub enum TuiAction {
     },
     /// User pressed `n` — create a new session for the selected project on a named branch.
     New { project: String, branch: String },
+    /// User selected an issue from the GhPicker — create worktree + session with prompt.
+    NewFromIssue { project: String, number: u64, title: String, slug: String },
+    /// User selected a PR from the GhPicker — checkout branch + session with prompt.
+    NewFromPr { project: String, number: u64, title: String, branch: String },
     /// User pressed `e` — open per-repo config in $EDITOR.
     EditPerRepoConfig { project_path: std::path::PathBuf },
     /// User selected an action from the action menu (Alt+r).
@@ -229,6 +233,22 @@ impl Default for ProjectForm {
     }
 }
 
+/// Whether the GhPicker shows issues or PRs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GhPickerKind {
+    Issue,
+    Pr,
+}
+
+/// A single item in the GhPicker list.
+#[derive(Debug, Clone)]
+pub struct GhPickerItem {
+    pub number: u64,
+    pub title: String,
+    /// Only set for PRs (the branch name).
+    pub branch: Option<String>,
+}
+
 /// A modal overlay rendered on top of the main TUI.
 #[derive(Debug, Clone)]
 pub enum Modal {
@@ -255,6 +275,17 @@ pub enum Modal {
     Help,
     /// Branch name input shown when the user presses 'n' (new session).
     BranchInput { project: String, input: String },
+    /// Three-choice menu: Blank / From Issue / From PR.
+    NewSessionMenu { project: String, selected: usize },
+    /// Fuzzy-searchable list of GitHub issues or PRs.
+    GhPicker {
+        project: String,
+        kind: GhPickerKind,
+        items: Vec<GhPickerItem>,
+        query: String,
+        selected: usize,
+        loading: bool,
+    },
     /// Scrollable log viewer opened with 'l'.
     LogViewer { lines: Vec<String>, scroll_offset: usize },
     /// Action menu shown when the user presses Alt+r.
@@ -283,6 +314,14 @@ enum ModalOutcome {
     WorkflowSelected { #[allow(dead_code)] project: String, #[allow(dead_code)] workflow: String },
     NewBranch { project: String, branch: String },
     ActionSelected { action: ResolvedAction },
+    /// User selected "Blank" in the NewSessionMenu — transition to BranchInput.
+    OpenBranchInput { project: String },
+    /// User selected "From Issue" or "From PR" — open GhPicker.
+    OpenGhPicker { project: String, kind: GhPickerKind },
+    /// User selected an issue from the GhPicker.
+    GhIssueSelected { project: String, number: u64, title: String },
+    /// User selected a PR from the GhPicker.
+    GhPrSelected { project: String, number: u64, title: String, branch: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -388,6 +427,10 @@ pub struct TuiState {
     pub(crate) refresh_rx: Option<mpsc::Receiver<refresh::RefreshData>>,
     /// Timestamp of the last refresh spawn.
     pub(crate) last_refresh: Instant,
+    /// Sender for background `gh` fetch results (issues/PRs JSON).
+    pub(crate) gh_tx: Option<mpsc::Sender<String>>,
+    /// Receiver for background `gh` fetch results.
+    pub(crate) gh_rx: Option<mpsc::Receiver<String>>,
 }
 
 impl TuiState {
@@ -420,6 +463,8 @@ impl TuiState {
             refresher,
             refresh_rx: None,
             last_refresh: Instant::now(),
+            gh_tx: None,
+            gh_rx: None,
         }
     }
 
@@ -650,6 +695,37 @@ impl TuiState {
                 Err(e) => PreviewData::Error(e),
             };
             self.preview_rx = None;
+        }
+    }
+
+    /// Poll the in-flight `gh` fetch channel; update GhPicker modal items if data arrived.
+    pub fn poll_gh(&mut self) {
+        let json = match &self.gh_rx {
+            Some(rx) => match rx.try_recv() {
+                Ok(json) => Some(json),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => None,
+            },
+            None => return,
+        };
+        if let Some(json) = json {
+            if let Some(Modal::GhPicker { kind, items, loading, .. }) = &mut self.modal {
+                let parsed = match kind {
+                    GhPickerKind::Issue => z_core::gh::parse_gh_issues(&json),
+                    GhPickerKind::Pr => z_core::gh::parse_gh_prs(&json),
+                };
+                if let Ok(gh_items) = parsed {
+                    *items = gh_items
+                        .into_iter()
+                        .map(|i| GhPickerItem {
+                            number: i.number,
+                            title: i.title,
+                            branch: i.branch,
+                        })
+                        .collect();
+                }
+                *loading = false;
+            }
         }
     }
 
@@ -1335,6 +1411,94 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             _ => ModalOutcome::Continue,
         },
 
+        Modal::NewSessionMenu { project, selected } => {
+            const MENU_LEN: usize = 3;
+            match code {
+                KeyCode::Esc => ModalOutcome::Close,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    *selected = selected.saturating_sub(1);
+                    ModalOutcome::Continue
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if *selected + 1 < MENU_LEN {
+                        *selected += 1;
+                    }
+                    ModalOutcome::Continue
+                }
+                KeyCode::Enter => match *selected {
+                    0 => ModalOutcome::OpenBranchInput { project: project.clone() },
+                    1 => ModalOutcome::OpenGhPicker { project: project.clone(), kind: GhPickerKind::Issue },
+                    2 => ModalOutcome::OpenGhPicker { project: project.clone(), kind: GhPickerKind::Pr },
+                    _ => ModalOutcome::Continue,
+                },
+                _ => ModalOutcome::Continue,
+            }
+        }
+
+        Modal::GhPicker { project, kind, items, query, selected, loading } => match code {
+            KeyCode::Esc => ModalOutcome::Close,
+            KeyCode::Enter => {
+                if *loading { return ModalOutcome::Continue; }
+                let filtered: Vec<&GhPickerItem> = items
+                    .iter()
+                    .filter(|item| {
+                        let label = format!("#{} {}", item.number, item.title);
+                        fuzzy_match(query, &label)
+                    })
+                    .collect();
+                if let Some(item) = filtered.get(*selected) {
+                    match kind {
+                        GhPickerKind::Issue => ModalOutcome::GhIssueSelected {
+                            project: project.clone(),
+                            number: item.number,
+                            title: item.title.clone(),
+                        },
+                        GhPickerKind::Pr => {
+                            let branch = item.branch.clone().unwrap_or_else(|| {
+                                format!("pr-{}", item.number)
+                            });
+                            ModalOutcome::GhPrSelected {
+                                project: project.clone(),
+                                number: item.number,
+                                title: item.title.clone(),
+                                branch,
+                            }
+                        }
+                    }
+                } else {
+                    ModalOutcome::Continue
+                }
+            }
+            KeyCode::Up => {
+                *selected = selected.saturating_sub(1);
+                ModalOutcome::Continue
+            }
+            KeyCode::Down => {
+                let filtered_count = items
+                    .iter()
+                    .filter(|item| {
+                        let label = format!("#{} {}", item.number, item.title);
+                        fuzzy_match(query, &label)
+                    })
+                    .count();
+                if *selected + 1 < filtered_count {
+                    *selected += 1;
+                }
+                ModalOutcome::Continue
+            }
+            KeyCode::Backspace => {
+                query.pop();
+                *selected = 0;
+                ModalOutcome::Continue
+            }
+            KeyCode::Char(c) => {
+                query.push(c);
+                *selected = 0;
+                ModalOutcome::Continue
+            }
+            _ => ModalOutcome::Continue,
+        },
+
         Modal::LogViewer { lines, scroll_offset } => match code {
             KeyCode::Esc | KeyCode::Char('q') => ModalOutcome::Close,
             KeyCode::Up | KeyCode::Char('k') => {
@@ -1424,6 +1588,9 @@ pub fn run_tui(
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = TuiState::new(entries, navigation, Arc::from(forge_client), Arc::from(refresher));
+    let (gh_tx, gh_rx) = mpsc::channel();
+    state.gh_tx = Some(gh_tx);
+    state.gh_rx = Some(gh_rx);
     state.theme = theme;
     state.global_actions = global_actions;
     state.review_tool = review_tool;
@@ -1459,6 +1626,8 @@ fn event_loop<B: Backend>(
         state.poll_preview();
         // Check if async forge/Zellij data has arrived.
         state.poll_forge();
+        // Check if async gh issue/PR data has arrived.
+        state.poll_gh();
         // Check if session/notification refresh data has arrived.
         state.poll_refresh();
         // Spawn a new session refresh if the interval has elapsed.
@@ -1615,6 +1784,59 @@ fn event_loop<B: Backend>(
                         state.modal = None;
                         return Ok(TuiAction::New { project, branch });
                     }
+                    ModalOutcome::OpenBranchInput { project } => {
+                        state.modal = Some(Modal::BranchInput {
+                            project,
+                            input: String::new(),
+                        });
+                    }
+                    ModalOutcome::OpenGhPicker { project, kind } => {
+                        // Spawn background gh fetch
+                        let kind_clone = kind.clone();
+                        let project_path = state.entries.iter()
+                            .find(|e| e.project.name == project)
+                            .map(|e| e.project.path.clone());
+                        let tx = state.gh_tx.clone();
+                        if let (Some(path), Some(tx)) = (project_path, tx) {
+                            let kind_for_thread = kind_clone.clone();
+                            std::thread::spawn(move || {
+                                let json = match kind_for_thread {
+                                    GhPickerKind::Issue => {
+                                        std::process::Command::new("gh")
+                                            .args(["issue", "list", "--json", "number,title,body,url", "--limit", "50"])
+                                            .current_dir(&path)
+                                            .output()
+                                    }
+                                    GhPickerKind::Pr => {
+                                        std::process::Command::new("gh")
+                                            .args(["pr", "list", "--json", "number,title,body,url,headRefName", "--limit", "50"])
+                                            .current_dir(&path)
+                                            .output()
+                                    }
+                                };
+                                if let Ok(output) = json {
+                                    let _ = tx.send(String::from_utf8_lossy(&output.stdout).to_string());
+                                }
+                            });
+                        }
+                        state.modal = Some(Modal::GhPicker {
+                            project,
+                            kind: kind_clone,
+                            items: vec![],
+                            query: String::new(),
+                            selected: 0,
+                            loading: true,
+                        });
+                    }
+                    ModalOutcome::GhIssueSelected { project, number, title } => {
+                        state.modal = None;
+                        let slug = z_core::domain::slugify(&title);
+                        return Ok(TuiAction::NewFromIssue { project, number, title, slug });
+                    }
+                    ModalOutcome::GhPrSelected { project, number, title, branch } => {
+                        state.modal = None;
+                        return Ok(TuiAction::NewFromPr { project, number, title, branch });
+                    }
                     ModalOutcome::Continue => {}
                 }
                 continue;
@@ -1706,9 +1928,9 @@ fn event_loop<B: Backend>(
 
                     KeyCode::Char('n') => {
                         if let Some(entry) = state.selected_entry() {
-                            state.modal = Some(Modal::BranchInput {
+                            state.modal = Some(Modal::NewSessionMenu {
                                 project: entry.project.name.clone(),
-                                input: String::new(),
+                                selected: 0,
                             });
                         }
                     }
@@ -2604,6 +2826,14 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
             render_branch_input_modal(f, project, input, theme);
             return;
         }
+        Some(Modal::NewSessionMenu { project, selected }) => {
+            render_new_session_menu_modal(f, project, *selected, theme);
+            return;
+        }
+        Some(Modal::GhPicker { project, kind, items, query, selected, loading }) => {
+            render_gh_picker_modal(f, project, kind, items, query, *selected, *loading, theme);
+            return;
+        }
         Some(Modal::LogViewer { lines, scroll_offset }) => {
             render_log_viewer_modal(f, lines, *scroll_offset, theme);
             return;
@@ -2704,6 +2934,131 @@ fn render_branch_input_modal(f: &mut Frame, project: &str, input: &str, theme: &
     ];
 
     let paragraph = Paragraph::new(Text::from(lines))
+        .style(Style::default().bg(rgb_to_color(theme.modal_background)));
+    f.render_widget(paragraph, inner);
+}
+
+fn render_new_session_menu_modal(f: &mut Frame, project: &str, selected: usize, theme: &z_core::theme::Theme) {
+    let area = f.area();
+    let rect = modal_rect(40, 9, area);
+
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" New Session \u{2014} {} ", project))
+        .title_style(theme_style_to_style(&theme.modal_title))
+        .border_style(theme_style_to_style(&theme.modal_border));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let dim = theme_style_to_style(&theme.text_dim);
+    let choices = ["  Blank", "  From Issue", "  From PR"];
+    let mut lines_vec = Vec::new();
+    for (i, label) in choices.iter().enumerate() {
+        let style = if i == selected {
+            theme_style_to_style(&theme.item_selected_focused)
+        } else {
+            Style::default().fg(rgb_to_color(theme.foreground))
+        };
+        let prefix = if i == selected { " \u{25b6}" } else { "  " };
+        lines_vec.push(Line::from(Span::styled(format!("{}{}", prefix, label), style)));
+    }
+    let sep_width = inner.width.saturating_sub(1) as usize;
+    lines_vec.push(Line::from(""));
+    lines_vec.push(Line::from(Span::styled("\u{2500}".repeat(sep_width), dim)));
+    lines_vec.push(Line::from(Span::styled(" Enter: select  Esc: cancel", dim)));
+
+    let paragraph = Paragraph::new(Text::from(lines_vec))
+        .style(Style::default().bg(rgb_to_color(theme.modal_background)));
+    f.render_widget(paragraph, inner);
+}
+
+fn render_gh_picker_modal(
+    f: &mut Frame,
+    _project: &str,
+    kind: &GhPickerKind,
+    items: &[GhPickerItem],
+    query: &str,
+    selected: usize,
+    loading: bool,
+    theme: &z_core::theme::Theme,
+) {
+    let area = f.area();
+    let modal_width = area.width.saturating_sub(4).min(80);
+    let modal_height = area.height.saturating_sub(4).min(30);
+    let rect = modal_rect(modal_width, modal_height, area);
+
+    f.render_widget(Clear, rect);
+
+    let title = match kind {
+        GhPickerKind::Issue => " Select Issue ",
+        GhPickerKind::Pr => " Select PR ",
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_style(theme_style_to_style(&theme.modal_title))
+        .border_style(theme_style_to_style(&theme.modal_border));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let dim = theme_style_to_style(&theme.text_dim);
+    let mut lines_vec = Vec::new();
+
+    // Search input
+    lines_vec.push(Line::from(Span::styled(
+        format!(" \u{1f50d} {}\u{2588}", query),
+        theme_style_to_style(&theme.text_highlight),
+    )));
+    let sep_width = inner.width.saturating_sub(1) as usize;
+    lines_vec.push(Line::from(Span::styled("\u{2500}".repeat(sep_width), dim)));
+
+    if loading {
+        lines_vec.push(Line::from(Span::styled(" Loading...", dim)));
+    } else if items.is_empty() {
+        lines_vec.push(Line::from(Span::styled(" No items found", dim)));
+    } else {
+        let filtered: Vec<&GhPickerItem> = items
+            .iter()
+            .filter(|item| {
+                let label = format!("#{} {}", item.number, item.title);
+                fuzzy_match(query, &label)
+            })
+            .collect();
+
+        let visible_height = inner.height.saturating_sub(4) as usize;
+        let scroll_offset = if selected >= visible_height {
+            selected - visible_height + 1
+        } else {
+            0
+        };
+
+        for (i, item) in filtered.iter().enumerate().skip(scroll_offset).take(visible_height) {
+            let style = if i == selected {
+                theme_style_to_style(&theme.item_selected_focused)
+            } else {
+                Style::default().fg(rgb_to_color(theme.foreground))
+            };
+            let prefix = if i == selected { " \u{25b6}" } else { "  " };
+            let label = format!("{} #{} {}", prefix, item.number, item.title);
+            // Truncate to fit modal width (char-boundary safe)
+            let max_width = inner.width.saturating_sub(1) as usize;
+            let truncated = if label.chars().count() > max_width {
+                let end: String = label.chars().take(max_width.saturating_sub(3)).collect();
+                format!("{}...", end)
+            } else {
+                label
+            };
+            lines_vec.push(Line::from(Span::styled(truncated, style)));
+        }
+
+        if filtered.is_empty() {
+            lines_vec.push(Line::from(Span::styled(" No matches", dim)));
+        }
+    }
+
+    let paragraph = Paragraph::new(Text::from(lines_vec))
         .style(Style::default().bg(rgb_to_color(theme.modal_background)));
     f.render_widget(paragraph, inner);
 }

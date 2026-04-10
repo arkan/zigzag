@@ -77,6 +77,37 @@ pub fn sanitize_branch_name(branch: &str) -> String {
     branch.replace('/', "-")
 }
 
+/// Convert a title into a URL/branch-safe slug.
+///
+/// Lowercase, non-ASCII-alphanumeric replaced with `-`, consecutive dashes
+/// collapsed, trimmed to 40 chars, trailing `-` removed.
+pub fn slugify(title: &str) -> String {
+    let raw: String = title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    // Collapse consecutive dashes
+    let mut slug = String::with_capacity(raw.len());
+    let mut prev_dash = false;
+    for c in raw.chars() {
+        if c == '-' {
+            if !prev_dash && !slug.is_empty() {
+                slug.push('-');
+            }
+            prev_dash = true;
+        } else {
+            slug.push(c);
+            prev_dash = false;
+        }
+    }
+    // Truncate to 40 chars
+    if slug.len() > 40 {
+        slug.truncate(40);
+    }
+    slug.trim_end_matches('-').to_string()
+}
+
 #[derive(Debug, Clone)]
 pub struct Tab {
     pub name: String,
@@ -182,5 +213,45 @@ mod tests {
             s.name,
             format!("proj:{}", sanitize_branch_name(branch))
         );
+    }
+
+    // ---- slugify ----
+
+    #[test]
+    fn slugify_clean_title() {
+        assert_eq!(slugify("add auth middleware"), "add-auth-middleware");
+    }
+
+    #[test]
+    fn slugify_special_chars() {
+        assert_eq!(slugify("fix: login bug (#42)"), "fix-login-bug-42");
+    }
+
+    #[test]
+    fn slugify_long_title_truncated() {
+        let long = "a]".repeat(30); // 60 chars worth of content
+        let result = slugify(&long);
+        assert!(result.len() <= 40);
+        assert!(!result.ends_with('-'));
+    }
+
+    #[test]
+    fn slugify_empty() {
+        assert_eq!(slugify(""), "");
+    }
+
+    #[test]
+    fn slugify_already_clean() {
+        assert_eq!(slugify("simple-slug"), "simple-slug");
+    }
+
+    #[test]
+    fn slugify_unicode() {
+        assert_eq!(slugify("café résumé"), "caf-r-sum");
+    }
+
+    #[test]
+    fn slugify_consecutive_special_chars() {
+        assert_eq!(slugify("hello---world"), "hello-world");
     }
 }
