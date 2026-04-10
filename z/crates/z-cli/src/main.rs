@@ -91,7 +91,7 @@ fn run() {
                 std::process::exit(1);
             }
             let branch = args.get(2).map(|s| s.as_str());
-            if let Err(e) = cmd_open(project, branch) {
+            if let Err(e) = cmd_open(project, branch, None) {
                 eprintln!("error: {}", e);
                 std::process::exit(1);
             }
@@ -359,7 +359,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     .as_deref()
                     .and_then(|s| parse_session_name(s))
                     .map(|(_, b)| b);
-                cmd_open(&project, branch_owned.as_deref())?;
+                cmd_open(&project, branch_owned.as_deref(), None)?;
                 let _ = z_core::notification::clear_notifications(&session_name);
                 initial_project = Some(project);
             }
@@ -367,7 +367,41 @@ fn cmd_tui() -> z_core::error::Result<()> {
             TuiAction::New { project, branch } => {
                 let session_name = z_core::domain::Session::new(&project, &branch).name;
                 let _ = z_core::notification::clear_notifications(&session_name);
-                cmd_open(&project, Some(&branch))?;
+                cmd_open(&project, Some(&branch), None)?;
+                let _ = z_core::notification::clear_notifications(&session_name);
+                initial_project = Some(project);
+            }
+
+            TuiAction::NewFromIssue { project, number, title, slug } => {
+                let branch = format!("grill/{}-{}", number, slug);
+                let global = load_global_config();
+                let per_repo = load_per_repo_config_for_project(&project);
+                let template = z_core::config::effective_issue_prompt_template(&global, &per_repo);
+                let mut vars = std::collections::HashMap::new();
+                let num_str = number.to_string();
+                vars.insert("number", num_str.as_str());
+                vars.insert("title", title.as_str());
+                let prompt = z_core::template::resolve_template(&template, &vars);
+                let session_name = z_core::domain::Session::new(&project, &branch).name;
+                let _ = z_core::notification::clear_notifications(&session_name);
+                cmd_open(&project, Some(&branch), Some(&prompt))?;
+                let _ = z_core::notification::clear_notifications(&session_name);
+                initial_project = Some(project);
+            }
+
+            TuiAction::NewFromPr { project, number, title, branch } => {
+                let global = load_global_config();
+                let per_repo = load_per_repo_config_for_project(&project);
+                let template = z_core::config::effective_pr_prompt_template(&global, &per_repo);
+                let mut vars = std::collections::HashMap::new();
+                let num_str = number.to_string();
+                vars.insert("number", num_str.as_str());
+                vars.insert("title", title.as_str());
+                vars.insert("branch", branch.as_str());
+                let prompt = z_core::template::resolve_template(&template, &vars);
+                let session_name = z_core::domain::Session::new(&project, &branch).name;
+                let _ = z_core::notification::clear_notifications(&session_name);
+                cmd_open(&project, Some(&branch), Some(&prompt))?;
                 let _ = z_core::notification::clear_notifications(&session_name);
                 initial_project = Some(project);
             }
@@ -447,6 +481,14 @@ fn load_per_repo_config(project_path: &std::path::Path) -> PerRepoConfig {
     }
 }
 
+fn load_per_repo_config_for_project(project_name: &str) -> PerRepoConfig {
+    let store = KdlProjectStore::new();
+    match store.get_project(project_name) {
+        Ok(project) => load_per_repo_config(&project.path),
+        Err(_) => PerRepoConfig::default(),
+    }
+}
+
 fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> z_core::error::Result<()> {
     let config_dir = project_path.join(".config");
     let config_file = config_dir.join("z.kdl");
@@ -501,7 +543,7 @@ fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> z_core::error::Re
     Ok(())
 }
 
-fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<()> {
+fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z_core::error::Result<()> {
     let store = KdlProjectStore::new();
     let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
 
@@ -554,6 +596,9 @@ fn cmd_open(project_name: &str, branch: Option<&str>) -> z_core::error::Result<(
     let per_repo = load_per_repo_config(&project.path);
     let mut layout = effective_layout(&global, &per_repo);
     layout.cwd = Some(cwd.clone());
+    if let Some(prompt_text) = prompt {
+        z_core::layout::inject_prompt_into_layout(&mut layout, prompt_text);
+    }
     inject_claude_stop_hook(&cwd);
     let theme = z_core::theme::Theme::from_name(global.theme);
     session_mgr.create_session(&project.name, effective_branch, layout, &theme)?;

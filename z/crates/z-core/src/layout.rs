@@ -117,6 +117,20 @@ fn generate_pane_kdl(pane: &Pane) -> String {
     }
 }
 
+/// Find the first pane with `command = "claude"` and append the prompt as a
+/// positional argument (Claude CLI accepts the initial prompt as a bare arg).
+/// No-op if no Claude pane exists.
+pub fn inject_prompt_into_layout(layout: &mut Layout, prompt: &str) {
+    for tab in &mut layout.tabs {
+        for pane in &mut tab.panes {
+            if pane.command.as_deref() == Some("claude") {
+                pane.args.push(prompt.to_string());
+                return;
+            }
+        }
+    }
+}
+
 /// Build the default layout: tab "claude" (pane command=claude) + tab "shell" (bare pane).
 pub fn default_layout() -> Layout {
     Layout {
@@ -524,5 +538,69 @@ mod tests {
             keybinds_pos > layout_close,
             "keybinds block must appear outside (after) the layout block"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // inject_prompt_into_layout
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn inject_prompt_adds_arg_to_claude_pane() {
+        let mut layout = default_layout();
+        inject_prompt_into_layout(&mut layout, "hello world");
+        let claude_pane = &layout.tabs[0].panes[0];
+        assert!(claude_pane.args.contains(&"hello world".to_string()));
+    }
+
+    #[test]
+    fn inject_prompt_preserves_existing_args() {
+        let mut layout = default_layout();
+        inject_prompt_into_layout(&mut layout, "test");
+        let claude_pane = &layout.tabs[0].panes[0];
+        assert!(claude_pane.args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn inject_prompt_no_claude_pane_is_noop() {
+        let mut layout = Layout {
+            tabs: vec![Tab {
+                name: "shell".to_string(),
+                panes: vec![Pane { command: None, args: vec![] }],
+            }],
+            cwd: None,
+        };
+        inject_prompt_into_layout(&mut layout, "test");
+        // No panic, no change
+        assert!(layout.tabs[0].panes[0].args.is_empty());
+    }
+
+    #[test]
+    fn inject_prompt_claude_in_second_tab() {
+        let mut layout = Layout {
+            tabs: vec![
+                Tab {
+                    name: "shell".to_string(),
+                    panes: vec![Pane { command: None, args: vec![] }],
+                },
+                Tab {
+                    name: "editor".to_string(),
+                    panes: vec![Pane {
+                        command: Some("claude".to_string()),
+                        args: vec![],
+                    }],
+                },
+            ],
+            cwd: None,
+        };
+        inject_prompt_into_layout(&mut layout, "found it");
+        assert!(layout.tabs[1].panes[0].args.contains(&"found it".to_string()));
+    }
+
+    #[test]
+    fn inject_prompt_generates_correct_kdl() {
+        let mut layout = default_layout();
+        inject_prompt_into_layout(&mut layout, "/grill-me issue #42");
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        assert!(kdl.contains("\"/grill-me issue #42\""));
     }
 }
