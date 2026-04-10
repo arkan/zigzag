@@ -1048,17 +1048,32 @@ fn cmd_actions() -> z_core::error::Result<()> {
     if let Some(action) = selected {
         match &action.action {
             z_core::action::ActionType::Run { command } => {
-                let pane_args: Vec<&str> = match action.pane {
-                    z_core::action::PaneType::Float => vec!["run", "--floating", "-c", "--"],
-                    z_core::action::PaneType::FloatFullscreen => vec!["run", "--floating", "-c", "--width", "100%", "--height", "100%", "--"],
-                    z_core::action::PaneType::Split => vec!["run", "-c", "--"],
-                    z_core::action::PaneType::Tab => vec!["run", "--floating", "-c", "--"],
+                let status = match action.pane {
+                    z_core::action::PaneType::Tab => {
+                        // Create a new tab and run the command in it (no close-on-exit)
+                        let _ = std::process::Command::new("zellij")
+                            .args(["action", "new-tab"])
+                            .status();
+                        std::process::Command::new("zellij")
+                            .args(["run", "--", "sh", "-c", command])
+                            .status()
+                            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?
+                    }
+                    _ => {
+                        let mut pane_args: Vec<&str> = vec!["run"];
+                        match action.pane {
+                            z_core::action::PaneType::Float => pane_args.extend(["--floating", "-c"]),
+                            z_core::action::PaneType::FloatFullscreen => pane_args.extend(["--floating", "-c", "--width", "100%", "--height", "100%"]),
+                            z_core::action::PaneType::Split => pane_args.push("-c"),
+                            _ => {}
+                        }
+                        pane_args.extend(["--", "sh", "-c", command]);
+                        std::process::Command::new("zellij")
+                            .args(&pane_args)
+                            .status()
+                            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?
+                    }
                 };
-                let status = std::process::Command::new("zellij")
-                    .args(&pane_args)
-                    .args(["sh", "-c", command])
-                    .status()
-                    .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
                 if !status.success() {
                     return Err(z_core::error::ZError::Io(
                         "action command failed".into(),
