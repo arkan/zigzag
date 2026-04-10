@@ -132,7 +132,7 @@ This will:
 | Key | Action |
 |-----|--------|
 | `o` | Open selected project/session |
-| `n` | New branch on selected project |
+| `n` | New session (menu: Blank / From Issue / From PR) |
 | `r` | Open action menu |
 | `d` | Delete session + worktree |
 | `p` | Prune orphaned sessions |
@@ -141,6 +141,24 @@ This will:
 | `q` | Quit |
 
 Both arrow keys and vim-style (`hjkl`) navigation are supported (configurable).
+
+### Creating sessions from Issues / PRs
+
+Pressing `n` opens a menu with three options:
+
+- **Blank** — classic branch name input (previous behavior)
+- **From Issue** — fuzzy-search open GitHub issues, then create a `grill/<id>-<slug>` worktree and launch Claude with a `/grill-me` prompt pre-filled with the issue context
+- **From PR** — fuzzy-search open PRs, checkout the PR branch in a new worktree, and launch Claude with a review-oriented prompt
+
+The prompt templates are overridable in config (global or per-repo):
+
+```kdl
+// In ~/.config/z/config.kdl or .config/z.kdl
+issue-prompt-template "/grill-me Working on issue #{number}: {title}. Fetch context with gh issue view {number} --comments"
+pr-prompt-template "/grill-me Reviewing PR #{number}: {title}. Fetch context with gh pr view {number} --comments"
+```
+
+Available placeholders: `{number}`, `{title}`, `{body}`, `{url}`, `{branch}`.
 
 ## Working with Zellij
 
