@@ -26,6 +26,8 @@
             pkgs.cargo-watch
             pkgs.nodejs_22
             pkgs.zellij
+            pkgs.gnumake
+            pkgs.docker
           ];
 
           shellHook = ''
