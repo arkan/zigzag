@@ -70,7 +70,14 @@ fn main() {
 }
 
 fn run() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let (profile_name, args) = extract_profile_flag(&raw_args);
+
+    // Store profile name for config loading later.
+    if let Some(ref name) = profile_name {
+        std::env::set_var("Z_PROFILE", name);
+    }
+
     match args.first().map(|s| s.as_str()) {
         None => {
             if let Err(e) = cmd_tui() {
@@ -467,9 +474,18 @@ fn load_global_config() -> GlobalConfig {
         .join(".config")
         .join("z")
         .join("config.kdl");
-    match fs::read_to_string(&path) {
+    let config = match fs::read_to_string(&path) {
         Ok(content) => parse_global_config_kdl(&content).unwrap_or_default(),
         Err(_) => GlobalConfig::default(),
+    };
+
+    // Apply profile if --profile was passed.
+    match std::env::var("Z_PROFILE") {
+        Ok(name) => config.with_profile(&name).unwrap_or_else(|e| {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }),
+        Err(_) => config,
     }
 }
 
@@ -1631,6 +1647,71 @@ mod tests {
         assert!(marker.exists(), "unrelated files in .config/ should be preserved");
         assert_eq!(fs::read_to_string(&marker).unwrap(), "keep me");
     }
+
+    // ── extract_profile_flag tests ───────────────────────────────────────
+
+    #[test]
+    fn extract_profile_no_flag() {
+        let args = vec!["notify".to_string(), "session".to_string(), "msg".to_string()];
+        let (profile, remaining) = extract_profile_flag(&args);
+        assert!(profile.is_none());
+        assert_eq!(remaining, args);
+    }
+
+    #[test]
+    fn extract_profile_equals_syntax() {
+        let args = vec!["--profile=ios".to_string(), "notify".to_string(), "msg".to_string()];
+        let (profile, remaining) = extract_profile_flag(&args);
+        assert_eq!(profile.as_deref(), Some("ios"));
+        assert_eq!(remaining, vec!["notify", "msg"]);
+    }
+
+    #[test]
+    fn extract_profile_space_syntax() {
+        let args = vec!["--profile".to_string(), "ios".to_string(), "notify".to_string()];
+        let (profile, remaining) = extract_profile_flag(&args);
+        assert_eq!(profile.as_deref(), Some("ios"));
+        assert_eq!(remaining, vec!["notify"]);
+    }
+
+    #[test]
+    fn extract_profile_flag_at_end() {
+        let args = vec!["notify".to_string(), "--profile=server".to_string()];
+        let (profile, remaining) = extract_profile_flag(&args);
+        assert_eq!(profile.as_deref(), Some("server"));
+        assert_eq!(remaining, vec!["notify"]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Profile flag extraction
+// ---------------------------------------------------------------------------
+
+/// Extract `--profile=<name>` or `--profile <name>` from the argument list.
+/// Returns the profile name (if any) and the remaining arguments.
+fn extract_profile_flag(args: &[String]) -> (Option<String>, Vec<String>) {
+    let mut profile: Option<String> = None;
+    let mut remaining = Vec::new();
+    let mut skip_next = false;
+
+    for (i, arg) in args.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if let Some(name) = arg.strip_prefix("--profile=") {
+            profile = Some(name.to_string());
+        } else if arg == "--profile" {
+            if let Some(next) = args.get(i + 1) {
+                profile = Some(next.to_string());
+                skip_next = true;
+            }
+        } else {
+            remaining.push(arg.clone());
+        }
+    }
+
+    (profile, remaining)
 }
 
 // ---------------------------------------------------------------------------

@@ -136,6 +136,60 @@ fn percent_encode(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// MoshiNotifier
+// ---------------------------------------------------------------------------
+
+/// Sends a push notification to iOS via the Moshi webhook API.
+pub struct MoshiNotifier {
+    pub token: String,
+}
+
+impl Notifier for MoshiNotifier {
+    fn notify(&self, message: &str, level: NotifyLevel) -> Result<()> {
+        let body = moshi_json_body(&self.token, message, level);
+        let status = std::process::Command::new("curl")
+            .args([
+                "-s",
+                "-X", "POST",
+                "https://api.getmoshi.app/api/webhook",
+                "-H", "Content-Type: application/json",
+                "-d", &body,
+            ])
+            .status()
+            .map_err(|e| ZError::Io(format!("curl (moshi): {}", e)))?;
+        if !status.success() {
+            return Err(ZError::Io(format!(
+                "curl moshi request failed with status {}",
+                status
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Build the JSON payload for the Moshi webhook API.
+fn moshi_json_body(token: &str, message: &str, level: NotifyLevel) -> String {
+    let title = match level {
+        NotifyLevel::Info => "z",
+        NotifyLevel::Warning => "z \u{26a0}\u{fe0f}",
+        NotifyLevel::Error => "z \u{274c}",
+    };
+    format!(
+        r#"{{"token":"{}","title":"{}","message":"{}"}}"#,
+        json_escape(token),
+        json_escape(title),
+        json_escape(message),
+    )
+}
+
+/// Minimal JSON string escaping (backslash and double-quote).
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+// ---------------------------------------------------------------------------
 // DispatchNotifier
 // ---------------------------------------------------------------------------
 
@@ -170,6 +224,14 @@ impl DispatchNotifier {
                 notifiers.push(Box::new(TelegramNotifier {
                     token: token.clone(),
                     chat_id: chat_id.clone(),
+                }));
+            }
+        }
+
+        if config.moshi {
+            if let Some(token) = &config.moshi_token {
+                notifiers.push(Box::new(MoshiNotifier {
+                    token: token.clone(),
                 }));
             }
         }
@@ -318,6 +380,8 @@ mod tests {
             tui: true,
             telegram_token: None,
             telegram_chat_id: None,
+            moshi: false,
+            moshi_token: None,
         };
         let dispatcher = DispatchNotifier::from_config(&config, &session);
         dispatcher.notify("test msg", NotifyLevel::Info).unwrap();
@@ -341,6 +405,8 @@ mod tests {
             tui: true,
             telegram_token: Some("fake_token".to_string()),
             telegram_chat_id: Some("123".to_string()),
+            moshi: false,
+            moshi_token: None,
         };
         let dispatcher = DispatchNotifier::from_config(&config, &session);
         // Should succeed (no curl call attempted).
@@ -360,6 +426,8 @@ mod tests {
             tui: true,
             telegram_token: None,
             telegram_chat_id: Some("123".to_string()),
+            moshi: false,
+            moshi_token: None,
         };
         let dispatcher = DispatchNotifier::from_config(&config, &session);
         dispatcher.notify("test", NotifyLevel::Info).unwrap();
@@ -446,6 +514,74 @@ mod tests {
         );
     }
 
+    // ── MoshiNotifier tests ────────────────────────────────────────────────
+
+    #[test]
+    fn moshi_json_body_info_level() {
+        let body = moshi_json_body("tok_abc", "Build done", NotifyLevel::Info);
+        assert!(body.contains(r#""token":"tok_abc""#));
+        assert!(body.contains(r#""title":"z""#));
+        assert!(body.contains(r#""message":"Build done""#));
+    }
+
+    #[test]
+    fn moshi_json_body_error_level() {
+        let body = moshi_json_body("tok_abc", "Build failed", NotifyLevel::Error);
+        assert!(body.contains(r#""title":"z ❌""#));
+    }
+
+    #[test]
+    fn moshi_json_body_warning_level() {
+        let body = moshi_json_body("tok_abc", "Retries exhausted", NotifyLevel::Warning);
+        assert!(body.contains(r#""title":"z ⚠️""#));
+    }
+
+    #[test]
+    fn moshi_json_body_escapes_quotes_in_message() {
+        let body = moshi_json_body("tok", "say \"hi\"", NotifyLevel::Info);
+        assert!(body.contains(r#""message":"say \"hi\"""#));
+    }
+
+    // ── DispatchNotifier: moshi channel selection ──────────────────────────
+
+    #[test]
+    fn dispatch_moshi_skipped_when_disabled() {
+        let session = unique_session("dispatch_no_moshi");
+        cleanup(&session);
+
+        let config = NotificationsConfig {
+            macos_native: false,
+            telegram: false,
+            tui: true,
+            telegram_token: None,
+            telegram_chat_id: None,
+            moshi: false,
+            moshi_token: Some("tok".to_string()),
+        };
+        let dispatcher = DispatchNotifier::from_config(&config, &session);
+        dispatcher.notify("test", NotifyLevel::Info).unwrap();
+        cleanup(&session);
+    }
+
+    #[test]
+    fn dispatch_moshi_skipped_when_token_missing() {
+        let session = unique_session("dispatch_moshi_no_tok");
+        cleanup(&session);
+
+        let config = NotificationsConfig {
+            macos_native: false,
+            telegram: false,
+            tui: true,
+            telegram_token: None,
+            telegram_chat_id: None,
+            moshi: true,
+            moshi_token: None,
+        };
+        let dispatcher = DispatchNotifier::from_config(&config, &session);
+        dispatcher.notify("test", NotifyLevel::Info).unwrap();
+        cleanup(&session);
+    }
+
     // ── DispatchNotifier: telegram with missing chat_id ───────────────────
 
     #[test]
@@ -459,6 +595,8 @@ mod tests {
             tui: true,
             telegram_token: Some("tok".to_string()),
             telegram_chat_id: None,
+            moshi: false,
+            moshi_token: None,
         };
         let dispatcher = DispatchNotifier::from_config(&config, &session);
         // Should succeed — no curl call attempted.

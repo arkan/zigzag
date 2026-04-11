@@ -28,6 +28,8 @@ pub struct GlobalConfig {
     pub issue_prompt_template: Option<String>,
     /// Prompt template for sessions created from a GitHub PR.
     pub pr_prompt_template: Option<String>,
+    /// Named profiles that override parts of the config.
+    pub profiles: HashMap<String, ProfileOverride>,
 }
 
 impl Default for GlobalConfig {
@@ -42,7 +44,45 @@ impl Default for GlobalConfig {
             review_tool: "codex".to_string(),
             issue_prompt_template: None,
             pr_prompt_template: None,
+            profiles: HashMap::new(),
         }
+    }
+}
+
+impl GlobalConfig {
+    /// Apply a named profile, merging its overrides on top of this config.
+    pub fn with_profile(mut self, name: &str) -> Result<Self> {
+        let profile = self
+            .profiles
+            .get(name)
+            .ok_or_else(|| ZError::ConfigParse(format!("unknown profile: {name:?}")))?
+            .clone();
+
+        if let Some(ovr) = profile.notifications {
+            if let Some(v) = ovr.macos_native {
+                self.notifications.macos_native = v;
+            }
+            if let Some(v) = ovr.telegram {
+                self.notifications.telegram = v;
+            }
+            if let Some(v) = ovr.tui {
+                self.notifications.tui = v;
+            }
+            if let Some(v) = ovr.moshi {
+                self.notifications.moshi = v;
+            }
+            if let Some(v) = ovr.telegram_token {
+                self.notifications.telegram_token = v;
+            }
+            if let Some(v) = ovr.telegram_chat_id {
+                self.notifications.telegram_chat_id = v;
+            }
+            if let Some(v) = ovr.moshi_token {
+                self.notifications.moshi_token = v;
+            }
+        }
+
+        Ok(self)
     }
 }
 
@@ -81,6 +121,25 @@ impl Default for AutopilotConfig {
     }
 }
 
+/// Optional overrides for notification fields in a profile.
+/// `None` means "inherit from default", `Some(v)` means "override to v".
+#[derive(Debug, Default, Clone)]
+pub struct NotificationsOverride {
+    pub macos_native: Option<bool>,
+    pub telegram: Option<bool>,
+    pub tui: Option<bool>,
+    pub telegram_token: Option<Option<String>>,
+    pub telegram_chat_id: Option<Option<String>>,
+    pub moshi: Option<bool>,
+    pub moshi_token: Option<Option<String>>,
+}
+
+/// A named profile that overrides parts of the global config.
+#[derive(Debug, Default, Clone)]
+pub struct ProfileOverride {
+    pub notifications: Option<NotificationsOverride>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct NotificationsConfig {
     pub macos_native: bool,
@@ -90,6 +149,9 @@ pub struct NotificationsConfig {
     pub telegram_token: Option<String>,
     /// Telegram chat ID to send messages to.
     pub telegram_chat_id: Option<String>,
+    pub moshi: bool,
+    /// Moshi webhook token (plain string or `env:VAR`).
+    pub moshi_token: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +311,17 @@ pub fn parse_global_config_kdl(content: &str) -> Result<GlobalConfig> {
 
     let mut config = GlobalConfig::default();
 
+    // Parse profile blocks (top-level).
+    for node in doc.nodes().iter().filter(|n| n.name().value() == "profile") {
+        let name = node
+            .entries()
+            .first()
+            .and_then(|e| e.value().as_string())
+            .ok_or_else(|| ZError::ConfigParse("profile node missing name".to_string()))?
+            .to_string();
+        config.profiles.insert(name, parse_profile_node(node)?);
+    }
+
     let config_node = match doc.nodes().iter().find(|n| n.name().value() == "config") {
         Some(n) => n,
         None => return Ok(config),
@@ -402,6 +475,65 @@ fn parse_pane_node(node: &KdlNode) -> Result<Pane> {
     Ok(Pane { command, args })
 }
 
+fn parse_profile_node(node: &KdlNode) -> Result<ProfileOverride> {
+    let mut profile = ProfileOverride::default();
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            if child.name().value() == "notifications" {
+                profile.notifications = Some(parse_notifications_override_node(child)?);
+            }
+        }
+    }
+    Ok(profile)
+}
+
+fn parse_notifications_override_node(node: &KdlNode) -> Result<NotificationsOverride> {
+    let mut ovr = NotificationsOverride::default();
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            match child.name().value() {
+                "macos-native" => {
+                    ovr.macos_native = Some(
+                        child.entries().first().and_then(|e| e.value().as_bool()).unwrap_or(false),
+                    );
+                }
+                "telegram" => {
+                    ovr.telegram = Some(
+                        child.entries().first().and_then(|e| e.value().as_bool()).unwrap_or(false),
+                    );
+                }
+                "tui" => {
+                    ovr.tui = Some(
+                        child.entries().first().and_then(|e| e.value().as_bool()).unwrap_or(false),
+                    );
+                }
+                "moshi" => {
+                    ovr.moshi = Some(
+                        child.entries().first().and_then(|e| e.value().as_bool()).unwrap_or(false),
+                    );
+                }
+                "moshi-token" => {
+                    if let Some(raw) = child.entries().first().and_then(|e| e.value().as_string()) {
+                        ovr.moshi_token = Some(resolve_env_token(raw).ok());
+                    }
+                }
+                "telegram-token" => {
+                    if let Some(raw) = child.entries().first().and_then(|e| e.value().as_string()) {
+                        ovr.telegram_token = Some(resolve_env_token(raw).ok());
+                    }
+                }
+                "telegram-chat-id" => {
+                    if let Some(raw) = child.entries().first().and_then(|e| e.value().as_string()) {
+                        ovr.telegram_chat_id = Some(resolve_env_token(raw).ok());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(ovr)
+}
+
 fn parse_notifications_node(node: &KdlNode) -> Result<NotificationsConfig> {
     let mut cfg = NotificationsConfig::default();
     if let Some(children) = node.children() {
@@ -444,6 +576,22 @@ fn parse_notifications_node(node: &KdlNode) -> Result<NotificationsConfig> {
                         .and_then(|e| e.value().as_string())
                     {
                         cfg.telegram_chat_id = resolve_env_token(raw).ok();
+                    }
+                }
+                "moshi" => {
+                    cfg.moshi = child
+                        .entries()
+                        .first()
+                        .and_then(|e| e.value().as_bool())
+                        .unwrap_or(false);
+                }
+                "moshi-token" => {
+                    if let Some(raw) = child
+                        .entries()
+                        .first()
+                        .and_then(|e| e.value().as_string())
+                    {
+                        cfg.moshi_token = resolve_env_token(raw).ok();
                     }
                 }
                 _ => {}
@@ -1595,5 +1743,215 @@ pr-prompt-template "repo pr {number}: {title}"
             ..Default::default()
         };
         assert_eq!(effective_pr_prompt_template(&global, &per_repo), "repo pr");
+    }
+
+    // -----------------------------------------------------------------------
+    // Profile parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_profile_with_notification_overrides() {
+        let kdl = r#"
+config {
+    notifications {
+        macos-native true
+        moshi true
+        moshi-token "tok_plain"
+    }
+}
+
+profile "ios" {
+    notifications {
+        macos-native false
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert!(cfg.profiles.contains_key("ios"));
+        let ios = &cfg.profiles["ios"];
+        assert_eq!(ios.notifications.as_ref().unwrap().macos_native, Some(false));
+    }
+
+    // -----------------------------------------------------------------------
+    // with_profile merge
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn with_profile_overrides_notifications() {
+        let kdl = r#"
+config {
+    notifications {
+        macos-native true
+        moshi true
+        moshi-token "tok_plain"
+        tui true
+    }
+}
+
+profile "ios" {
+    notifications {
+        macos-native false
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        let merged = cfg.with_profile("ios").unwrap();
+
+        // Overridden
+        assert!(!merged.notifications.macos_native);
+        // Inherited
+        assert!(merged.notifications.moshi);
+        assert_eq!(merged.notifications.moshi_token.as_deref(), Some("tok_plain"));
+        assert!(merged.notifications.tui);
+    }
+
+    #[test]
+    fn with_profile_unknown_name_is_error() {
+        let kdl = r#"
+config {
+    notifications {
+        macos-native true
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert!(cfg.with_profile("nonexistent").is_err());
+    }
+
+    #[test]
+    fn with_profile_none_returns_default() {
+        let kdl = r#"
+config {
+    notifications {
+        macos-native true
+        moshi true
+    }
+}
+
+profile "ios" {
+    notifications {
+        macos-native false
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        // No profile applied — should keep defaults
+        assert!(cfg.notifications.macos_native);
+        assert!(cfg.notifications.moshi);
+    }
+
+    #[test]
+    fn with_profile_full_integration() {
+        std::env::set_var("Z_TEST_MOSHI_INT", "tok_integration");
+        let kdl = r#"
+config {
+    notifications {
+        macos-native true
+        moshi true
+        moshi-token "env:Z_TEST_MOSHI_INT"
+        telegram false
+        tui true
+    }
+}
+
+profile "ios" {
+    notifications {
+        macos-native false
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+
+        // Default config: macos-native on
+        assert!(cfg.notifications.macos_native);
+        assert!(cfg.notifications.moshi);
+
+        // After applying ios profile: macos-native off, moshi still on
+        let merged = cfg.with_profile("ios").unwrap();
+        assert!(!merged.notifications.macos_native);
+        assert!(merged.notifications.moshi);
+        assert_eq!(merged.notifications.moshi_token.as_deref(), Some("tok_integration"));
+        assert!(!merged.notifications.telegram);
+        assert!(merged.notifications.tui);
+    }
+
+    #[test]
+    fn parse_no_profiles_is_empty() {
+        let kdl = r#"
+config {
+    notifications {
+        macos-native true
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert!(cfg.profiles.is_empty());
+    }
+
+    #[test]
+    fn parse_multiple_profiles() {
+        let kdl = r#"
+config {
+    notifications {
+        macos-native true
+    }
+}
+
+profile "ios" {
+    notifications {
+        macos-native false
+    }
+}
+
+profile "server" {
+    notifications {
+        macos-native false
+        moshi false
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert_eq!(cfg.profiles.len(), 2);
+        assert!(cfg.profiles.contains_key("ios"));
+        assert!(cfg.profiles.contains_key("server"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Moshi notification fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_notifications_moshi_fields() {
+        std::env::set_var("Z_TEST_MOSHI_TOKEN", "tok_moshi_123");
+        let kdl = r#"
+config {
+    notifications {
+        macos-native true
+        moshi true
+        moshi-token "env:Z_TEST_MOSHI_TOKEN"
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert!(cfg.notifications.moshi);
+        assert_eq!(
+            cfg.notifications.moshi_token.as_deref(),
+            Some("tok_moshi_123")
+        );
+        assert!(cfg.notifications.macos_native);
+    }
+
+    #[test]
+    fn parse_notifications_moshi_defaults_to_false() {
+        let kdl = r#"
+config {
+    notifications {
+        macos-native true
+    }
+}
+"#;
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+        assert!(!cfg.notifications.moshi);
+        assert!(cfg.notifications.moshi_token.is_none());
     }
 }
