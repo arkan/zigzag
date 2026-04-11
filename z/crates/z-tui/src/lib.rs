@@ -397,13 +397,13 @@ pub struct TuiState {
     /// Current preview pane data (loading / ready / error).
     pub preview_data: PreviewData,
     /// Key identifying what we last requested a preview for.
-    /// Format: `"{project_name}:{branch}"`.
+    /// Format: `"{project_name}--{branch}"`.
     pub preview_key: String,
     /// Receiver for the in-flight async git fetch, if any.
     pub preview_rx: Option<mpsc::Receiver<Result<GitInfo, String>>>,
     /// Receiver for the in-flight async forge/Zellij fetch (PR, CI, session info).
     pub(crate) forge_rx: Option<mpsc::Receiver<Result<ForgeData, String>>>,
-    /// Session names (e.g. `"myapp:feat-login"`) that have pending notifications.
+    /// Session names (e.g. `"myapp--feat-login"`) with pending notifications.
     /// Sessions in this set render with a 🔔 badge in the SESSIONS panel.
     pub notifications: HashSet<String>,
     /// Active modal overlay, if any.
@@ -569,7 +569,7 @@ impl TuiState {
                     .map(|s| s.branch.as_str())
                     .unwrap_or("")
             };
-            format!("{}:{}", entry.project.name, branch)
+            format!("{}{}{}", entry.project.name, z_core::domain::SESSION_SEP, branch)
         })
     }
 
@@ -609,7 +609,7 @@ impl TuiState {
                 .unwrap_or_default()
         };
 
-        // Session name for Zellij lookup (e.g. "myapp:feat-login").
+        // Session name for Zellij lookup (e.g. "myapp--feat-login").
         let session_name = if branch.is_empty() {
             project_name.clone()
         } else {
@@ -975,7 +975,7 @@ fn fetch_zellij_info(session_name: &str) -> Option<ZellijInfo> {
 /// Parse `zellij list-sessions --json` output looking for `session_name`.
 ///
 /// Expected format (may vary by Zellij version):
-/// `[{"name":"myapp:feat-login","tabs":3,"panes":5,"created_at":"..."},...]`
+/// `[{"name":"myapp--feat-login","tabs":3,"panes":5,"created_at":"..."},...]`
 fn parse_zellij_json_for_session(json: &str, session_name: &str) -> Option<ZellijInfo> {
     // Find the object that contains `"name":"<session_name>"` (with or without space after colon).
     let compact = format!("\"name\":\"{}\"", session_name);
@@ -3659,10 +3659,10 @@ mod tests {
         let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         let out = render_to_string(&state, 80, 24);
         // myapp is selected; its sessions should appear in the right panel
-        assert!(out.contains("myapp:main"), "should show 'myapp:main' session");
+        assert!(out.contains("myapp--main"), "should show 'myapp--main' session");
         assert!(
-            out.contains("myapp:feat-login"),
-            "should show 'myapp:feat-login' session"
+            out.contains("myapp--feat-login"),
+            "should show 'myapp--feat-login' session"
         );
     }
 
@@ -3876,7 +3876,7 @@ mod tests {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // Overwrite with Ready so we can confirm it reverts to Loading on change
         state.preview_data = PreviewData::Ready(make_git_info());
-        state.preview_key = "different:key".to_string();
+        state.preview_key = "different--key".to_string();
         state.trigger_preview_load();
         assert!(
             matches!(state.preview_data, PreviewData::Loading),
@@ -4010,7 +4010,7 @@ mod tests {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.selected_project = 1; // hermes has no sessions
         let key = state.current_preview_key().unwrap();
-        assert!(key.ends_with(':'), "key should end with ':' when project has no sessions");
+        assert!(key.ends_with(z_core::domain::SESSION_SEP), "key should end with separator when project has no sessions");
     }
 
     #[test]
@@ -4363,7 +4363,7 @@ mod tests {
     fn fuzzy_search_includes_project_with_matching_session() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // "feat" doesn't match "myapp" or "hermes" project names,
-        // but "myapp:feat-login" session contains "feat"
+        // but "myapp--feat-login" session contains "feat"
         state.search_query = "feat".to_string();
         let filtered = state.filtered_projects();
         assert_eq!(filtered.len(), 1);
@@ -4386,8 +4386,8 @@ mod tests {
     fn fuzzy_search_project_matched_by_name_hides_nonmatching_sessions() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         // "myapp" matches the project name; sessions should still be filtered
-        // "myapp:main" fuzzy-matches "myapp" (m-y-a-p-p all present) so it shows
-        // "myapp:feat-login" also fuzzy-matches "myapp" (m-y-a-p... has 'p') so both show
+        // "myapp--main" fuzzy-matches "myapp" (m-y-a-p-p all present) so it shows
+        // "myapp--feat-login" also fuzzy-matches "myapp" (m-y-a-p... has 'p') so both show
         state.search_query = "myapp".to_string();
         state.selected_project = 0;
         let sessions = state.filtered_sessions();
@@ -4398,7 +4398,7 @@ mod tests {
     #[test]
     fn fuzzy_search_session_name_match_via_project_inclusion() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
-        // "main" matches the "myapp:main" session, so myapp should appear
+        // "main" matches the "myapp--main" session, so myapp should appear
         state.search_query = "main".to_string();
         let filtered = state.filtered_projects();
         assert!(filtered.iter().any(|(_, e)| e.project.name == "myapp"));
@@ -4418,7 +4418,7 @@ mod tests {
     fn filtered_sessions_filters_by_fuzzy_match() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
         state.search_query = "login".to_string();
-        // Only "myapp:feat-login" matches "login"
+        // Only "myapp--feat-login" matches "login"
         let sessions = state.filtered_sessions();
         assert_eq!(sessions.len(), 1);
         assert!(sessions[0].name.contains("login"));
@@ -4499,11 +4499,11 @@ mod tests {
         state.search_mode = true;
         state.search_query = "login".to_string();
         let out = render_to_string(&state, 80, 24);
-        // "myapp:main" session does not fuzzy-match "login" (no 'l' in "myapp:main")
+        // "myapp--main" session does not fuzzy-match "login" (no 'l' in "myapp--main")
         // so it must not appear in the rendered output
         assert!(
-            !out.contains("myapp:main"),
-            "non-matching session myapp:main should be hidden"
+            !out.contains("myapp--main"),
+            "non-matching session myapp--main should be hidden"
         );
         assert!(
             out.contains("feat-login"),
@@ -4539,8 +4539,8 @@ mod tests {
     #[test]
     fn renders_bell_badge_on_session_with_notification() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
-        // myapp:main has a pending notification
-        state.notifications.insert("myapp:main".to_string());
+        // myapp--main has a pending notification
+        state.notifications.insert("myapp--main".to_string());
         let out = render_to_string(&state, 80, 24);
         // The 🔔 Unicode codepoint U+1F514 should appear in the output
         assert!(
@@ -4562,12 +4562,12 @@ mod tests {
     #[test]
     fn renders_bell_only_on_notified_session() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_refresher());
-        // Only myapp:feat-login has a notification
-        state.notifications.insert("myapp:feat-login".to_string());
+        // Only myapp--feat-login has a notification
+        state.notifications.insert("myapp--feat-login".to_string());
         let out = render_to_string(&state, 80, 24);
         assert!(out.contains('\u{1f514}'), "🔔 should appear for feat-login");
-        // myapp:main has no notification
-        assert!(out.contains("myapp:main"), "myapp:main should still render");
+        // myapp--main has no notification
+        assert!(out.contains("myapp--main"), "myapp--main should still render");
     }
 
     #[test]
@@ -4934,12 +4934,12 @@ mod tests {
 
     #[test]
     fn extract_zellij_uptime_no_pattern_returns_none() {
-        assert!(extract_zellij_uptime("myapp:main [EXITED]").is_none());
+        assert!(extract_zellij_uptime("myapp--main [EXITED]").is_none());
     }
 
     #[test]
     fn extract_zellij_uptime_extracts_duration() {
-        let line = "myapp:main [Created 3h12m ago]";
+        let line = "myapp--main [Created 3h12m ago]";
         assert_eq!(extract_zellij_uptime(line), Some("3h12m".to_string()));
     }
 
@@ -6519,8 +6519,8 @@ mod tests {
         } else {
             None
         };
-        // myapp has sessions: ["myapp:main", "myapp:feat-login"]
-        assert_eq!(session.as_deref(), Some("myapp:main"),
+        // myapp has sessions: ["myapp--main", "myapp--feat-login"]
+        assert_eq!(session.as_deref(), Some("myapp--main"),
             "'o' on Sessions panel should include the selected session name");
     }
 
@@ -7061,8 +7061,8 @@ mod tests {
     #[test]
     fn switch_picker_renders_title() {
         let state = SwitchPickerState::new(
-            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
-            "myapp:main".to_string(),
+            vec!["myapp--main".to_string(), "hermes--dev".to_string()],
+            "myapp--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains("Switch Session"), "should render title");
@@ -7071,19 +7071,19 @@ mod tests {
     #[test]
     fn switch_picker_renders_session_names() {
         let state = SwitchPickerState::new(
-            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
-            "myapp:main".to_string(),
+            vec!["myapp--main".to_string(), "hermes--dev".to_string()],
+            "myapp--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
-        assert!(out.contains("myapp:main"), "should render myapp:main");
-        assert!(out.contains("hermes:dev"), "should render hermes:dev");
+        assert!(out.contains("myapp--main"), "should render myapp--main");
+        assert!(out.contains("hermes--dev"), "should render hermes--dev");
     }
 
     #[test]
     fn switch_picker_renders_current_marker() {
         let state = SwitchPickerState::new(
-            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
-            "myapp:main".to_string(),
+            vec!["myapp--main".to_string(), "hermes--dev".to_string()],
+            "myapp--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains('\u{25cf}'), "should render ● marker on current session");
@@ -7092,8 +7092,8 @@ mod tests {
     #[test]
     fn switch_picker_renders_footer_hints() {
         let state = SwitchPickerState::new(
-            vec!["myapp:main".to_string()],
-            "myapp:main".to_string(),
+            vec!["myapp--main".to_string()],
+            "myapp--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 80, 15);
         assert!(out.contains("j/k"), "should render j/k hint");
@@ -7104,8 +7104,8 @@ mod tests {
     #[test]
     fn switch_picker_initial_selection_on_current_session() {
         let state = SwitchPickerState::new(
-            vec!["alpha:main".to_string(), "beta:dev".to_string(), "myapp:main".to_string()],
-            "beta:dev".to_string(),
+            vec!["alpha--main".to_string(), "beta--dev".to_string(), "myapp--main".to_string()],
+            "beta--dev".to_string(),
         );
         assert_eq!(state.selected, 1, "should start on the current session");
     }
@@ -7113,8 +7113,8 @@ mod tests {
     #[test]
     fn switch_picker_initial_selection_defaults_to_zero_when_not_found() {
         let state = SwitchPickerState::new(
-            vec!["alpha:main".to_string(), "beta:dev".to_string()],
-            "unknown:session".to_string(),
+            vec!["alpha--main".to_string(), "beta--dev".to_string()],
+            "unknown--session".to_string(),
         );
         assert_eq!(state.selected, 0);
     }
@@ -7122,8 +7122,8 @@ mod tests {
     #[test]
     fn switch_picker_move_up_decrements() {
         let mut state = SwitchPickerState::new(
-            vec!["alpha:main".to_string(), "beta:dev".to_string()],
-            "alpha:main".to_string(),
+            vec!["alpha--main".to_string(), "beta--dev".to_string()],
+            "alpha--main".to_string(),
         );
         state.selected = 1;
         state.move_up();
@@ -7133,8 +7133,8 @@ mod tests {
     #[test]
     fn switch_picker_move_down_increments() {
         let mut state = SwitchPickerState::new(
-            vec!["alpha:main".to_string(), "beta:dev".to_string()],
-            "alpha:main".to_string(),
+            vec!["alpha--main".to_string(), "beta--dev".to_string()],
+            "alpha--main".to_string(),
         );
         state.move_down();
         assert_eq!(state.selected, 1);
@@ -7143,8 +7143,8 @@ mod tests {
     #[test]
     fn switch_picker_move_up_clamps_at_zero() {
         let mut state = SwitchPickerState::new(
-            vec!["alpha:main".to_string()],
-            "alpha:main".to_string(),
+            vec!["alpha--main".to_string()],
+            "alpha--main".to_string(),
         );
         state.move_up();
         assert_eq!(state.selected, 0, "should not go below 0");
@@ -7153,8 +7153,8 @@ mod tests {
     #[test]
     fn switch_picker_move_down_clamps_at_last() {
         let mut state = SwitchPickerState::new(
-            vec!["alpha:main".to_string()],
-            "alpha:main".to_string(),
+            vec!["alpha--main".to_string()],
+            "alpha--main".to_string(),
         );
         state.move_down();
         assert_eq!(state.selected, 0, "should not go past last item");
@@ -7163,30 +7163,30 @@ mod tests {
     #[test]
     fn switch_picker_selected_session_returns_name() {
         let state = SwitchPickerState::new(
-            vec!["alpha:main".to_string(), "beta:dev".to_string()],
-            "alpha:main".to_string(),
+            vec!["alpha--main".to_string(), "beta--dev".to_string()],
+            "alpha--main".to_string(),
         );
-        assert_eq!(state.selected_session(), Some("alpha:main"));
+        assert_eq!(state.selected_session(), Some("alpha--main"));
     }
 
     #[test]
     fn switch_picker_small_terminal_no_panic() {
         let state = SwitchPickerState::new(
-            vec!["myapp:main".to_string()],
-            "myapp:main".to_string(),
+            vec!["myapp--main".to_string()],
+            "myapp--main".to_string(),
         );
         let _out = render_switch_picker_to_string(&state, 20, 5);
     }
 
     #[test]
     fn switch_picker_selected_session_empty_vec() {
-        let state = SwitchPickerState::new(vec![], "myapp:main".to_string());
+        let state = SwitchPickerState::new(vec![], "myapp--main".to_string());
         assert_eq!(state.selected_session(), None);
     }
 
     #[test]
     fn switch_picker_navigation_empty_vec_no_panic() {
-        let mut state = SwitchPickerState::new(vec![], "myapp:main".to_string());
+        let mut state = SwitchPickerState::new(vec![], "myapp--main".to_string());
         state.move_up();
         assert_eq!(state.selected, 0);
         state.move_down();
@@ -7196,11 +7196,11 @@ mod tests {
     #[test]
     fn switch_picker_non_current_session_has_no_marker() {
         let state = SwitchPickerState::new(
-            vec!["alpha:main".to_string(), "beta:dev".to_string()],
-            "alpha:main".to_string(),
+            vec!["alpha--main".to_string(), "beta--dev".to_string()],
+            "alpha--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
-        // ● should appear exactly once — only on alpha:main (the current session)
+        // ● should appear exactly once — only on alpha--main (the current session)
         let marker_count = out.matches('\u{25cf}').count();
         assert_eq!(marker_count, 1, "● marker should appear exactly once for the current session");
     }
@@ -7227,8 +7227,8 @@ mod tests {
     #[test]
     fn switch_picker_notification_counts_default_to_zero_in_new() {
         let state = SwitchPickerState::new(
-            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
-            "myapp:main".to_string(),
+            vec!["myapp--main".to_string(), "hermes--dev".to_string()],
+            "myapp--main".to_string(),
         );
         assert_eq!(state.notification_counts, vec![0, 0]);
     }
@@ -7236,9 +7236,9 @@ mod tests {
     #[test]
     fn switch_picker_notification_counts_default_to_zero_in_with_ages() {
         let state = SwitchPickerState::with_ages(
-            vec!["myapp:main".to_string()],
+            vec!["myapp--main".to_string()],
             vec![Some("1h".to_string())],
-            "myapp:main".to_string(),
+            "myapp--main".to_string(),
         );
         assert_eq!(state.notification_counts, vec![0]);
     }
@@ -7246,10 +7246,10 @@ mod tests {
     #[test]
     fn switch_picker_with_notifications_stores_counts() {
         let state = SwitchPickerState::with_notifications(
-            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
+            vec!["myapp--main".to_string(), "hermes--dev".to_string()],
             vec![Some("2h".to_string()), None],
             vec![3, 0],
-            "myapp:main".to_string(),
+            "myapp--main".to_string(),
         );
         assert_eq!(state.notification_counts, vec![3, 0]);
     }
@@ -7257,10 +7257,10 @@ mod tests {
     #[test]
     fn switch_picker_renders_bell_badge_for_session_with_notifications() {
         let state = SwitchPickerState::with_notifications(
-            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
+            vec!["myapp--main".to_string(), "hermes--dev".to_string()],
             vec![Some("2h".to_string()), None],
             vec![2, 0],
-            "myapp:main".to_string(),
+            "myapp--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains('\u{1f514}'), "should render 🔔 badge for session with notifications");
@@ -7269,10 +7269,10 @@ mod tests {
     #[test]
     fn switch_picker_renders_notification_count_number() {
         let state = SwitchPickerState::with_notifications(
-            vec!["myapp:main".to_string()],
+            vec!["myapp--main".to_string()],
             vec![None],
             vec![5],
-            "myapp:main".to_string(),
+            "myapp--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains('\u{1f514}'), "should render 🔔 badge");
@@ -7282,10 +7282,10 @@ mod tests {
     #[test]
     fn switch_picker_no_bell_badge_when_zero_notifications() {
         let state = SwitchPickerState::with_notifications(
-            vec!["myapp:main".to_string()],
+            vec!["myapp--main".to_string()],
             vec![None],
             vec![0],
-            "myapp:main".to_string(),
+            "myapp--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(!out.contains('\u{1f514}'), "should not render 🔔 badge when zero notifications");
@@ -7294,25 +7294,25 @@ mod tests {
     #[test]
     fn switch_picker_only_notified_sessions_show_badge() {
         let state = SwitchPickerState::with_notifications(
-            vec!["alpha:main".to_string(), "beta:dev".to_string(), "gamma:feat".to_string()],
+            vec!["alpha--main".to_string(), "beta--dev".to_string(), "gamma--feat".to_string()],
             vec![None, None, None],
             vec![0, 2, 0],
-            "alpha:main".to_string(),
+            "alpha--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 70, 15);
-        assert!(out.contains('\u{1f514}'), "🔔 should appear for beta:dev");
+        assert!(out.contains('\u{1f514}'), "🔔 should appear for beta--dev");
         // Count occurrences of 🔔 — should be exactly 1
         let bell_count = out.matches('\u{1f514}').count();
-        assert_eq!(bell_count, 1, "🔔 should appear exactly once (only for beta:dev)");
+        assert_eq!(bell_count, 1, "🔔 should appear exactly once (only for beta--dev)");
     }
 
     #[test]
     fn switch_picker_badge_with_age_both_visible() {
         let state = SwitchPickerState::with_notifications(
-            vec!["myapp:main".to_string()],
+            vec!["myapp--main".to_string()],
             vec![Some("3h".to_string())],
             vec![1],
-            "myapp:main".to_string(),
+            "myapp--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains('\u{1f514}'), "should render 🔔 badge");
@@ -7335,10 +7335,10 @@ mod tests {
     #[test]
     fn switch_picker_large_notification_count() {
         let state = SwitchPickerState::with_notifications(
-            vec!["myapp:main".to_string()],
+            vec!["myapp--main".to_string()],
             vec![Some("1h".to_string())],
             vec![99],
-            "myapp:main".to_string(),
+            "myapp--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains('\u{1f514}'), "should render 🔔 badge for large count");
@@ -7365,9 +7365,9 @@ mod tests {
     #[test]
     fn switch_picker_with_ages_renders_age_in_output() {
         let state = SwitchPickerState::with_ages(
-            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
+            vec!["myapp--main".to_string(), "hermes--dev".to_string()],
             vec![Some("2h".to_string()), Some("30m".to_string())],
-            "myapp:main".to_string(),
+            "myapp--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains("2h"), "should render age '2h'");
@@ -7377,30 +7377,30 @@ mod tests {
     #[test]
     fn switch_picker_with_ages_none_age_renders_gracefully() {
         let state = SwitchPickerState::with_ages(
-            vec!["myapp:main".to_string()],
+            vec!["myapp--main".to_string()],
             vec![None],
-            "myapp:main".to_string(),
+            "myapp--main".to_string(),
         );
         // Should not panic and should render session name
         let out = render_switch_picker_to_string(&state, 60, 15);
-        assert!(out.contains("myapp:main"), "should still render session name");
+        assert!(out.contains("myapp--main"), "should still render session name");
     }
 
     #[test]
     fn switch_picker_with_ages_initial_selection_on_current() {
         let state = SwitchPickerState::with_ages(
-            vec!["alpha:main".to_string(), "beta:dev".to_string()],
+            vec!["alpha--main".to_string(), "beta--dev".to_string()],
             vec![Some("1h".to_string()), Some("5m".to_string())],
-            "beta:dev".to_string(),
+            "beta--dev".to_string(),
         );
-        assert_eq!(state.selected, 1, "should start on beta:dev");
+        assert_eq!(state.selected, 1, "should start on beta--dev");
     }
 
     #[test]
     fn switch_picker_new_ages_all_none() {
         let state = SwitchPickerState::new(
-            vec!["myapp:main".to_string(), "hermes:dev".to_string()],
-            "myapp:main".to_string(),
+            vec!["myapp--main".to_string(), "hermes--dev".to_string()],
+            "myapp--main".to_string(),
         );
         assert_eq!(state.ages, vec![None, None], "new() should set all ages to None");
     }
@@ -7409,9 +7409,9 @@ mod tests {
     fn switch_picker_age_not_shown_when_insufficient_width() {
         // Very narrow terminal: age should not overflow or panic
         let state = SwitchPickerState::with_ages(
-            vec!["myapp:main".to_string()],
+            vec!["myapp--main".to_string()],
             vec![Some("2h".to_string())],
-            "myapp:main".to_string(),
+            "myapp--main".to_string(),
         );
         let _out = render_switch_picker_to_string(&state, 20, 5);
     }
@@ -7419,14 +7419,14 @@ mod tests {
     #[test]
     fn switch_picker_mixed_ages_some_and_none() {
         let state = SwitchPickerState::with_ages(
-            vec!["alpha:main".to_string(), "beta:dev".to_string(), "gamma:feat".to_string()],
+            vec!["alpha--main".to_string(), "beta--dev".to_string(), "gamma--feat".to_string()],
             vec![Some("1h".to_string()), None, Some("3d".to_string())],
-            "alpha:main".to_string(),
+            "alpha--main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains("1h"), "should render age for alpha");
         assert!(out.contains("3d"), "should render age for gamma");
-        assert!(out.contains("beta:dev"), "should render beta name without age");
+        assert!(out.contains("beta--dev"), "should render beta name without age");
     }
 
     // ── Theme style tests (TestBackend) ──────────────────────────────────
@@ -7499,11 +7499,11 @@ mod tests {
             &mut state,
             &|_| Ok(()),
             &make_reload_fn(reload_entries),
-            "myapp:feat/login",
+            "myapp--feat/login",
         );
         assert_eq!(
             state.status_message.as_deref(),
-            Some("Session myapp:feat/login killed."),
+            Some("Session myapp--feat/login killed."),
         );
     }
 
@@ -7520,7 +7520,7 @@ mod tests {
             &mut state,
             &|_| Ok(()),
             &make_reload_fn(reloaded),
-            "myapp:feat/login",
+            "myapp--feat/login",
         );
         assert_eq!(
             state.selected_session, 0,
@@ -7537,7 +7537,7 @@ mod tests {
             &mut state,
             &|_| Ok(()),
             &make_reload_fn(reloaded),
-            "myapp:feat/login",
+            "myapp--feat/login",
         );
         assert_eq!(state.entries.len(), 1, "state should reflect reloaded entries");
     }
@@ -7549,7 +7549,7 @@ mod tests {
             &mut state,
             &|_| Err(io::Error::new(io::ErrorKind::Other, "session not found")),
             &make_reload_fn(make_entries()),
-            "myapp:feat/login",
+            "myapp--feat/login",
         );
         assert_eq!(
             state.status_message.as_deref(),
@@ -7767,7 +7767,7 @@ mod tests {
             &mut state,
             &|_| Err(io::Error::new(io::ErrorKind::Other, "fail")),
             &make_reload_fn(vec![]), // reload would produce empty list
-            "myapp:feat/login",
+            "myapp--feat/login",
         );
         assert_eq!(state.entries.len(), original_count, "should not reload on error");
     }

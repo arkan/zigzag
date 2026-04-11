@@ -1,5 +1,9 @@
 use std::path::PathBuf;
 
+/// Separator between project and branch in session names.
+/// Uses `--` instead of `:` because macOS forbids `:` in file/socket paths.
+pub const SESSION_SEP: &str = "--";
+
 /// A project managed by z.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
@@ -11,10 +15,10 @@ pub struct Project {
     pub token: Option<String>,
 }
 
-/// A Zellij session, named `{project}:{branch}` (slashes in branch replaced by `-`).
+/// A Zellij session, named `{project}--{branch}` (slashes in branch replaced by `-`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Session {
-    /// Full session name, e.g. `myapp:feat-login`.
+    /// Full session name, e.g. `myapp--feat-login`.
     pub name: String,
     pub project: String,
     pub branch: String,
@@ -24,7 +28,7 @@ impl Session {
     pub fn new(project: &str, branch: &str) -> Self {
         let normalized = sanitize_branch_name(branch);
         Self {
-            name: format!("{}:{}", project, normalized),
+            name: format!("{}{}{}", project, SESSION_SEP, normalized),
             project: project.to_string(),
             branch: branch.to_string(),
         }
@@ -171,7 +175,7 @@ mod tests {
     #[test]
     fn session_new_normalizes_slash() {
         let s = Session::new("myapp", "feat/login");
-        assert_eq!(s.name, "myapp:feat-login");
+        assert_eq!(s.name, "myapp--feat-login");
         assert_eq!(s.branch, "feat/login");
         assert_eq!(s.project, "myapp");
     }
@@ -179,14 +183,14 @@ mod tests {
     #[test]
     fn session_new_main() {
         let s = Session::new("myapp", "main");
-        assert_eq!(s.name, "myapp:main");
+        assert_eq!(s.name, "myapp--main");
     }
 
     #[test]
     fn session_new_preserves_original_branch() {
         let s = Session::new("proj", "feat/a/b");
         assert_eq!(s.branch, "feat/a/b");
-        assert_eq!(s.name, "proj:feat-a-b");
+        assert_eq!(s.name, "proj--feat-a-b");
     }
 
     #[test]
@@ -211,8 +215,14 @@ mod tests {
         let s = Session::new("proj", branch);
         assert_eq!(
             s.name,
-            format!("proj:{}", sanitize_branch_name(branch))
+            format!("proj--{}", sanitize_branch_name(branch))
         );
+    }
+
+    #[test]
+    fn session_sep_is_cross_platform_safe() {
+        // The separator must not contain ':' (invalid on macOS file paths)
+        assert!(!SESSION_SEP.contains(':'));
     }
 
     // ---- slugify ----

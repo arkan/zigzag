@@ -153,13 +153,14 @@ impl SessionRefresher for ZellijSessionRefresher {
     }
 }
 
-/// Parse a session name string `"project:branch"` into `(project, branch)`.
+/// Parse a session name string `"project--branch"` into `(project, branch)`.
 ///
-/// Returns `None` if the string does not contain a `:` separator or either part is empty.
+/// Returns `None` if the string does not contain a `--` separator or either part is empty.
 pub fn parse_session_name(s: &str) -> Option<(String, String)> {
-    let mut parts = s.splitn(2, ':');
-    let project = parts.next()?.trim().to_string();
-    let branch = parts.next()?.trim().to_string();
+    let sep = z_core::domain::SESSION_SEP;
+    let idx = s.find(sep)?;
+    let project = s[..idx].trim().to_string();
+    let branch = s[idx + sep.len()..].trim().to_string();
     if project.is_empty() || branch.is_empty() {
         return None;
     }
@@ -284,14 +285,14 @@ pub fn list_all_z_sessions_with_ages() -> Vec<(String, Option<String>)> {
 ///
 /// Zellij output format (one session per line):
 /// ```
-/// myapp:main [Created: 5h ago]
-/// myapp:feat-login [Created: 1h ago] (EXITED)
-/// other-project:main
+/// myapp--main [Created: 5h ago]
+/// myapp--feat-login [Created: 1h ago] (EXITED)
+/// other-project--main
 /// ```
 ///
-/// We match lines whose session name starts with `"{project}:"`.
+/// We match lines whose session name starts with `"{project}--"`.
 pub fn parse_zellij_sessions(output: &str, project: &str) -> Vec<Session> {
-    let prefix = format!("{}:", project);
+    let prefix = format!("{}{}", project, z_core::domain::SESSION_SEP);
     output
         .lines()
         .filter_map(|line| {
@@ -330,17 +331,17 @@ mod tests {
 
     #[test]
     fn parse_sessions_no_matching_project() {
-        let output = "other:main\nother:feat\n";
+        let output = "other--main\nother--feat\n";
         let sessions = parse_zellij_sessions(output, "myapp");
         assert!(sessions.is_empty());
     }
 
     #[test]
     fn parse_sessions_one_match() {
-        let output = "myapp:main [Created: 5h ago]\nother:feat\n";
+        let output = "myapp--main [Created: 5h ago]\nother--feat\n";
         let sessions = parse_zellij_sessions(output, "myapp");
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].name, "myapp:main");
+        assert_eq!(sessions[0].name, "myapp--main");
         assert_eq!(sessions[0].project, "myapp");
         assert_eq!(sessions[0].branch, "main");
     }
@@ -348,48 +349,48 @@ mod tests {
     #[test]
     fn parse_sessions_multiple_matches() {
         let output =
-            "myapp:main [Created: 5h ago]\nmyapp:feat-login [Created: 1h ago]\nother:main\n";
+            "myapp--main [Created: 5h ago]\nmyapp--feat-login [Created: 1h ago]\nother--main\n";
         let sessions = parse_zellij_sessions(output, "myapp");
         assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0].name, "myapp:main");
-        assert_eq!(sessions[1].name, "myapp:feat-login");
+        assert_eq!(sessions[0].name, "myapp--main");
+        assert_eq!(sessions[1].name, "myapp--feat-login");
     }
 
     #[test]
     fn parse_sessions_skips_exited() {
-        let output = "myapp:main [Created: 5h ago] (EXITED)\nmyapp:feat-login [Created: 1h ago]\n";
+        let output = "myapp--main [Created: 5h ago] (EXITED)\nmyapp--feat-login [Created: 1h ago]\n";
         let sessions = parse_zellij_sessions(output, "myapp");
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].name, "myapp:feat-login");
+        assert_eq!(sessions[0].name, "myapp--feat-login");
     }
 
     #[test]
     fn parse_sessions_branch_with_dashes() {
-        let output = "myapp:feat-some-long-branch [Created: 2h ago]\n";
+        let output = "myapp--feat-some-long-branch [Created: 2h ago]\n";
         let sessions = parse_zellij_sessions(output, "myapp");
         assert_eq!(sessions[0].branch, "feat-some-long-branch");
     }
 
     #[test]
     fn parse_sessions_whitespace_only_lines_ignored() {
-        let output = "  \n\nmyapp:main\n  \n";
+        let output = "  \n\nmyapp--main\n  \n";
         let sessions = parse_zellij_sessions(output, "myapp");
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].name, "myapp:main");
+        assert_eq!(sessions[0].name, "myapp--main");
     }
 
     #[test]
     fn parse_sessions_no_false_prefix_match() {
-        // "myapp-ext:main" should NOT match project "myapp"
-        let output = "myapp-ext:main\nmyapp:dev\n";
+        // "myapp-ext--main" should NOT match project "myapp"
+        let output = "myapp-ext--main\nmyapp--dev\n";
         let sessions = parse_zellij_sessions(output, "myapp");
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].name, "myapp:dev");
+        assert_eq!(sessions[0].name, "myapp--dev");
     }
 
     #[test]
     fn parse_sessions_all_exited() {
-        let output = "myapp:main (EXITED)\nmyapp:dev (EXITED)\n";
+        let output = "myapp--main (EXITED)\nmyapp--dev (EXITED)\n";
         let sessions = parse_zellij_sessions(output, "myapp");
         assert!(sessions.is_empty());
     }
@@ -429,36 +430,36 @@ mod tests {
 
     #[test]
     fn parse_session_name_valid() {
-        let result = parse_session_name("myapp:main");
+        let result = parse_session_name("myapp--main");
         assert_eq!(result, Some(("myapp".to_string(), "main".to_string())));
     }
 
     #[test]
     fn parse_session_name_with_dashes() {
-        let result = parse_session_name("myapp:feat-login");
+        let result = parse_session_name("myapp--feat-login");
         assert_eq!(result, Some(("myapp".to_string(), "feat-login".to_string())));
     }
 
     #[test]
-    fn parse_session_name_colon_in_branch() {
-        // splitn(2, ':') — only first colon splits; remainder is branch
-        let result = parse_session_name("myapp:feat:extra");
-        assert_eq!(result, Some(("myapp".to_string(), "feat:extra".to_string())));
+    fn parse_session_name_sep_in_branch() {
+        // splitn(2, "--") — only first separator splits; remainder is branch
+        let result = parse_session_name("myapp--feat--extra");
+        assert_eq!(result, Some(("myapp".to_string(), "feat--extra".to_string())));
     }
 
     #[test]
-    fn parse_session_name_no_colon_returns_none() {
+    fn parse_session_name_no_sep_returns_none() {
         assert!(parse_session_name("myapp-main").is_none());
     }
 
     #[test]
     fn parse_session_name_empty_project_returns_none() {
-        assert!(parse_session_name(":main").is_none());
+        assert!(parse_session_name("--main").is_none());
     }
 
     #[test]
     fn parse_session_name_empty_branch_returns_none() {
-        assert!(parse_session_name("myapp:").is_none());
+        assert!(parse_session_name("myapp--").is_none());
     }
 
     #[test]
@@ -468,27 +469,27 @@ mod tests {
 
     #[test]
     fn parse_session_name_whitespace_project_returns_none() {
-        assert!(parse_session_name("  :main").is_none());
+        assert!(parse_session_name("  --main").is_none());
     }
 
     #[test]
     fn parse_session_name_whitespace_branch_returns_none() {
-        assert!(parse_session_name("myapp:  ").is_none());
+        assert!(parse_session_name("myapp--  ").is_none());
     }
 
     #[test]
     fn parse_session_name_both_whitespace_returns_none() {
-        assert!(parse_session_name(" : ").is_none());
+        assert!(parse_session_name(" -- ").is_none());
     }
 
     #[test]
-    fn parse_session_name_only_colon_returns_none() {
-        assert!(parse_session_name(":").is_none());
+    fn parse_session_name_only_sep_returns_none() {
+        assert!(parse_session_name("--").is_none());
     }
 
     #[test]
     fn parse_session_name_trims_surrounding_whitespace() {
-        let result = parse_session_name(" myapp : main ");
+        let result = parse_session_name(" myapp -- main ");
         assert_eq!(result, Some(("myapp".to_string(), "main".to_string())));
     }
 
@@ -512,25 +513,25 @@ mod tests {
 
     #[test]
     fn strip_ansi_removes_multiple_codes() {
-        let input = "\x1b[1mmyapp:main\x1b[0m [Created: \x1b[33m5h ago\x1b[0m]";
-        assert_eq!(strip_ansi(input), "myapp:main [Created: 5h ago]");
+        let input = "\x1b[1mmyapp--main\x1b[0m [Created: \x1b[33m5h ago\x1b[0m]";
+        assert_eq!(strip_ansi(input), "myapp--main [Created: 5h ago]");
     }
 
     #[test]
     fn strip_ansi_preserves_structure_for_session_parsing() {
         // Simulate actual Zellij output with ANSI codes around the session name
-        let colored = "\x1b[32;1mmyapp:main\x1b[0m [Created: 2h ago]";
+        let colored = "\x1b[32;1mmyapp--main\x1b[0m [Created: 2h ago]";
         let stripped = strip_ansi(colored);
         // After stripping, parse_zellij_sessions should still find the session
         let sessions = parse_zellij_sessions(&stripped, "myapp");
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].name, "myapp:main");
+        assert_eq!(sessions[0].name, "myapp--main");
     }
 
     #[test]
     fn strip_ansi_exited_session_still_filtered() {
         // EXITED sessions with ANSI codes around status should still be filtered
-        let colored = "\x1b[31mmyapp:main\x1b[0m [Created: 5h ago] \x1b[31m(EXITED)\x1b[0m";
+        let colored = "\x1b[31mmyapp--main\x1b[0m [Created: 5h ago] \x1b[31m(EXITED)\x1b[0m";
         let stripped = strip_ansi(colored);
         let sessions = parse_zellij_sessions(&stripped, "myapp");
         assert!(sessions.is_empty(), "EXITED sessions must be filtered even after ANSI stripping");
@@ -548,7 +549,7 @@ mod tests {
     #[test]
     fn parse_session_age_hours() {
         assert_eq!(
-            parse_session_age("myapp:main [Created 2h 30m 5s ago]"),
+            parse_session_age("myapp--main [Created 2h 30m 5s ago]"),
             Some("2h".to_string())
         );
     }
@@ -556,7 +557,7 @@ mod tests {
     #[test]
     fn parse_session_age_minutes_only() {
         assert_eq!(
-            parse_session_age("myapp:main [Created 30m 5s ago]"),
+            parse_session_age("myapp--main [Created 30m 5s ago]"),
             Some("30m".to_string())
         );
     }
@@ -564,7 +565,7 @@ mod tests {
     #[test]
     fn parse_session_age_seconds_only() {
         assert_eq!(
-            parse_session_age("myapp:main [Created 45s ago]"),
+            parse_session_age("myapp--main [Created 45s ago]"),
             Some("45s".to_string())
         );
     }
@@ -572,7 +573,7 @@ mod tests {
     #[test]
     fn parse_session_age_days() {
         assert_eq!(
-            parse_session_age("myapp:main [Created 3d 2h ago]"),
+            parse_session_age("myapp--main [Created 3d 2h ago]"),
             Some("3d".to_string())
         );
     }
@@ -581,14 +582,14 @@ mod tests {
     fn parse_session_age_colon_format() {
         // Zellij sometimes uses "Created: Xh ago"
         assert_eq!(
-            parse_session_age("myapp:main [Created: 5h ago]"),
+            parse_session_age("myapp--main [Created: 5h ago]"),
             Some("5h".to_string())
         );
     }
 
     #[test]
     fn parse_session_age_no_created_tag() {
-        assert_eq!(parse_session_age("myapp:main"), None);
+        assert_eq!(parse_session_age("myapp--main"), None);
     }
 
     #[test]
@@ -608,42 +609,42 @@ mod tests {
 
     #[test]
     fn sessions_with_ages_returns_name_and_age() {
-        let output = "myapp:main [Created 2h 30m ago]\nhermes:dev [Created: 1h ago]\n";
+        let output = "myapp--main [Created 2h 30m ago]\nhermes--dev [Created: 1h ago]\n";
         let sessions = list_all_z_sessions_with_ages_from_output(output);
         assert_eq!(sessions.len(), 2);
-        assert!(sessions.contains(&("hermes:dev".to_string(), Some("1h".to_string()))));
-        assert!(sessions.contains(&("myapp:main".to_string(), Some("2h".to_string()))));
+        assert!(sessions.contains(&("hermes--dev".to_string(), Some("1h".to_string()))));
+        assert!(sessions.contains(&("myapp--main".to_string(), Some("2h".to_string()))));
     }
 
     #[test]
     fn sessions_with_ages_none_when_no_age() {
-        let output = "myapp:main\n";
+        let output = "myapp--main\n";
         let sessions = list_all_z_sessions_with_ages_from_output(output);
-        assert_eq!(sessions, vec![("myapp:main".to_string(), None)]);
+        assert_eq!(sessions, vec![("myapp--main".to_string(), None)]);
     }
 
     #[test]
     fn sessions_with_ages_excludes_exited() {
-        let output = "myapp:main (EXITED)\nhermes:dev [Created 1h ago]\n";
+        let output = "myapp--main (EXITED)\nhermes--dev [Created 1h ago]\n";
         let sessions = list_all_z_sessions_with_ages_from_output(output);
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].0, "hermes:dev");
+        assert_eq!(sessions[0].0, "hermes--dev");
     }
 
     #[test]
     fn sessions_with_ages_sorted_alphabetically() {
-        let output = "zzz:main [Created 5h ago]\naaa:dev [Created 1h ago]\n";
+        let output = "zzz--main [Created 5h ago]\naaa--dev [Created 1h ago]\n";
         let sessions = list_all_z_sessions_with_ages_from_output(output);
-        assert_eq!(sessions[0].0, "aaa:dev");
-        assert_eq!(sessions[1].0, "zzz:main");
+        assert_eq!(sessions[0].0, "aaa--dev");
+        assert_eq!(sessions[1].0, "zzz--main");
     }
 
     #[test]
     fn sessions_with_ages_excludes_non_z_sessions() {
-        let output = "plain-session\nanother-session\nmyapp:main [Created 1h ago]\n";
+        let output = "plain-session\nanother-session\nmyapp--main [Created 1h ago]\n";
         let sessions = list_all_z_sessions_with_ages_from_output(output);
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].0, "myapp:main");
+        assert_eq!(sessions[0].0, "myapp--main");
     }
 
     #[test]
@@ -661,32 +662,32 @@ mod tests {
 
     #[test]
     fn sessions_with_ages_duplicates_preserved() {
-        let output = "myapp:main [Created: 5h ago]\nmyapp:main [Created: 1h ago]\n";
+        let output = "myapp--main [Created: 5h ago]\nmyapp--main [Created: 1h ago]\n";
         let sessions = list_all_z_sessions_with_ages_from_output(output);
         assert_eq!(sessions.len(), 2, "duplicates are preserved (no dedup)");
     }
 
     #[test]
     fn sessions_with_ages_exited_with_extra_metadata() {
-        let output = "myapp:main [Created: 5h ago] (EXITED - 2 hours ago)\n";
+        let output = "myapp--main [Created: 5h ago] (EXITED - 2 hours ago)\n";
         let sessions = list_all_z_sessions_with_ages_from_output(output);
         assert!(sessions.is_empty(), "EXITED anywhere in the line should exclude it");
     }
 
     #[test]
     fn parse_session_age_all_zeros() {
-        assert_eq!(parse_session_age("myapp:main [Created 0h 0m 0s ago]"), None);
+        assert_eq!(parse_session_age("myapp--main [Created 0h 0m 0s ago]"), None);
     }
 
     #[test]
     fn parse_session_age_no_duration_between_created_and_ago() {
-        assert_eq!(parse_session_age("myapp:main [Created  ago]"), None);
+        assert_eq!(parse_session_age("myapp--main [Created  ago]"), None);
     }
 
     #[test]
     fn parse_session_age_colon_format_with_minutes() {
         assert_eq!(
-            parse_session_age("myapp:main [Created: 15m ago]"),
+            parse_session_age("myapp--main [Created: 15m ago]"),
             Some("15m".to_string())
         );
     }

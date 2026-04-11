@@ -123,17 +123,17 @@ fn run() {
         }
         Some("notify") => {
             // Usage: z notify [session] <message> [--level info|warning|error]
+            // Best-effort: used as Claude Code stop hook, so failures must not
+            // return a non-zero exit code (that would surface as a hook error).
             let env_session = std::env::var("ZELLIJ_SESSION_NAME").ok();
             match resolve_notify_args(&args[1..], env_session.as_deref()) {
                 Ok((session, message, level)) => {
                     if let Err(e) = cmd_notify(&session, &message, level) {
-                        eprintln!("error: {}", e);
-                        std::process::exit(1);
+                        eprintln!("z notify: {}", e);
                     }
                 }
                 Err(e) => {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
+                    eprintln!("z notify: {e}");
                 }
             }
         }
@@ -599,7 +599,7 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
     if let Some(prompt_text) = prompt {
         z_core::layout::inject_prompt_into_layout(&mut layout, prompt_text);
     }
-    inject_claude_stop_hook(&cwd);
+    inject_claude_stop_hook(&cwd, &target_session.name);
     let theme = z_core::theme::Theme::from_name(global.theme);
     session_mgr.create_session(&project.name, effective_branch, layout, &theme)?;
     log::log_info(&logger, &format!("session {} created", target_session.name));
@@ -1151,7 +1151,7 @@ fn cmd_actions() -> z_core::error::Result<()> {
 /// Inject (or update) the Z stop hook in `.claude/settings.json` at `cwd`.
 ///
 /// Best-effort: failures are silently ignored so they never block session creation.
-fn inject_claude_stop_hook(cwd: &std::path::Path) {
+fn inject_claude_stop_hook(cwd: &std::path::Path, session_name: &str) {
     let settings_dir = cwd.join(".claude");
     let settings_path = settings_dir.join("settings.json");
 
@@ -1159,10 +1159,8 @@ fn inject_claude_stop_hook(cwd: &std::path::Path) {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
 
-    let merged = z_core::claude_hook::merge_stop_hook(
-        existing,
-        "z notify \"Claude a terminé: $ZELLIJ_SESSION_NAME\"",
-    );
+    let hook_cmd = format!("z notify \"{}\" \"Claude a terminé\"", session_name);
+    let merged = z_core::claude_hook::merge_stop_hook(existing, &hook_cmd);
 
     let _ = std::fs::create_dir_all(&settings_dir);
     let _ = std::fs::write(
