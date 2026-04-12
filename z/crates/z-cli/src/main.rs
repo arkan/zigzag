@@ -618,7 +618,7 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
 }
 
 /// Open a session on a remote project by SSH/Mosh-ing into the host and running
-/// `z open <project> -b <branch>` there. Zellij runs on the remote machine.
+/// `z open <project> <branch>` there. Zellij runs on the remote machine.
 fn cmd_open_remote(
     project: &z_core::domain::Project,
     host: &str,
