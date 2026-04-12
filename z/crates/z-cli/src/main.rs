@@ -292,28 +292,36 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     .kill_session(&sess)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
             },
-            add_project_fn: &|path, name, host, token| {
+            add_project_fn: &|path, name, host, transport| {
+                let transport = match transport {
+                    Some("mosh") => Some(z_core::domain::Transport::Mosh),
+                    Some("ssh") => Some(z_core::domain::Transport::Ssh),
+                    _ => None,
+                };
                 let project = z_core::domain::Project {
                     name: name.to_string(),
                     path: std::path::PathBuf::from(path),
                     host: host.map(String::from),
-                    token: token.map(String::from),
-                    transport: None,
+                    transport,
                 };
                 let mut s = config_store::KdlProjectStore::new();
                 s.add_project(&project)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
             },
-            edit_project_fn: &|original_name, path, name, host, token| {
+            edit_project_fn: &|original_name, path, name, host, transport| {
                 let mut s = config_store::KdlProjectStore::new();
                 s.remove_project(original_name)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                let transport = match transport {
+                    Some("mosh") => Some(z_core::domain::Transport::Mosh),
+                    Some("ssh") => Some(z_core::domain::Transport::Ssh),
+                    _ => None,
+                };
                 let project = z_core::domain::Project {
                     name: name.to_string(),
                     path: std::path::PathBuf::from(path),
                     host: host.map(String::from),
-                    token: token.map(String::from),
-                    transport: None,
+                    transport,
                 };
                 s.add_project(&project)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
@@ -609,43 +617,42 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
     Ok(())
 }
 
-/// Open a session on a remote project:
-/// 1. SSH to the remote host and run `wt switch -c <branch>` to set up the worktree.
-/// 2. Attach to the remote Zellij session via HTTPS.
+/// Open a session on a remote project by SSH/Mosh-ing into the host and running
+/// `z open <project> -b <branch>` there. Zellij runs on the remote machine.
 fn cmd_open_remote(
     project: &z_core::domain::Project,
     host: &str,
     branch: &str,
 ) -> z_core::error::Result<()> {
-    let ssh_host = remote::extract_ssh_host(host)?;
-
-    // SSH: set up (or reuse) the worktree on the remote machine.
-    let ssh_cmd = format!(
-        "cd {} && wt switch -c {}",
+    let remote_cmd = format!(
+        "cd {} && z open {} {}",
         remote::shell_quote(&project.path.display().to_string()),
-        remote::shell_quote(branch)
+        remote::shell_quote(&project.name),
+        remote::shell_quote(branch),
     );
-    remote::ssh_run_remote(&ssh_host, &ssh_cmd)?;
 
-    // Build session name and HTTPS attach URL.
-    let session = z_core::domain::Session::new(&project.name, branch);
-    let url = remote::build_remote_attach_url(host, &session.name);
+    let use_mosh = matches!(project.transport, Some(z_core::domain::Transport::Mosh));
 
-    // Attach via Zellij HTTPS (with optional token).
-    let mut cmd = std::process::Command::new("zellij");
-    cmd.args(["attach", &url]);
-    if let Some(token) = &project.token {
-        if !token.is_empty() {
-            cmd.args(["--token", token]);
-        }
+    // Wrap in login shell so nix/direnv PATH is available on the remote.
+    let wrapped = format!("bash -l -c {}", remote::shell_quote(&remote_cmd));
+
+    let status = if use_mosh {
+        std::process::Command::new("mosh")
+            .args([host, "--", &wrapped])
+            .status()
+    } else {
+        // -t: allocate TTY for interactive Zellij session.
+        std::process::Command::new("ssh")
+            .args(["-t", "-o", "ConnectTimeout=10", host, &wrapped])
+            .status()
     }
-    let status = cmd
-        .status()
-        .map_err(|e| z_core::error::ZError::Session(e.to_string()))?;
+    .map_err(|e| z_core::error::ZError::Session(e.to_string()))?;
+
     if !status.success() {
+        let transport = if use_mosh { "mosh" } else { "ssh" };
         return Err(z_core::error::ZError::Session(format!(
-            "zellij attach {} failed with status {}",
-            url, status
+            "{} to {} failed with status {}",
+            transport, host, status
         )));
     }
     Ok(())
@@ -743,9 +750,7 @@ fn cmd_delete_remote(
     session_name: &str,
     branch: &str,
 ) -> z_core::error::Result<()> {
-    let ssh_host = remote::extract_ssh_host(host)?;
-
-    remote::delete_remote_session(&ssh_host, session_name)?;
+    remote::delete_remote_session(host, session_name)?;
     println!("Session {} killed.", session_name);
 
     // Prompt user to optionally remove the worktree on the remote machine.
@@ -759,7 +764,7 @@ fn cmd_delete_remote(
 
     if parse_confirm_response(&response) {
         let project_path = project.path.to_string_lossy();
-        remote::remove_remote_worktree(&ssh_host, &project_path, branch)?;
+        remote::remove_remote_worktree(host, &project_path, branch)?;
         println!("Remote worktree {} removed.", branch);
     } else {
         println!("Remote worktree kept.");
@@ -1772,8 +1777,7 @@ fn cmd_list() -> z_core::error::Result<()> {
         // Remote projects: list sessions on the remote host via SSH.
         // Local projects: query the local Zellij instance.
         let sessions = if let Some(host) = &project.host {
-            match remote::extract_ssh_host(host)
-                .and_then(|ssh_host| remote::list_remote_sessions(&ssh_host, &project.name))
+            match remote::list_remote_sessions(host, &project.name)
             {
                 Ok(s) => s,
                 Err(e) => {

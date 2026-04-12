@@ -86,7 +86,6 @@ mod tests {
             name: name.to_string(),
             path: PathBuf::from(format!("/tmp/{}", name)),
             host: None,
-            token: None,
             transport: None,
         }
     }

@@ -183,7 +183,7 @@ pub struct FormField {
     pub warning: Option<String>,
 }
 
-/// State for the "Add Project" form (4 fields: path, name, host, token).
+/// State for the "Add Project" form (4 fields: path, name, host, transport).
 #[derive(Debug, Clone)]
 pub struct ProjectForm {
     pub fields: Vec<FormField>,
@@ -215,7 +215,7 @@ impl ProjectForm {
                     warning: None,
                 },
                 FormField {
-                    label: "Token".to_string(),
+                    label: "Transport".to_string(),
                     value: String::new(),
                     required: false,
                     warning: None,
@@ -300,14 +300,14 @@ enum ModalOutcome {
         path: String,
         name: String,
         host: Option<String>,
-        token: Option<String>,
+        transport: Option<String>,
     },
     SubmitEdit {
         original_name: String,
         path: String,
         name: String,
         host: Option<String>,
-        token: Option<String>,
+        transport: Option<String>,
     },
     DeleteConfirmed { project: String },
     SessionDeleteConfirmed { session: String },
@@ -1220,12 +1220,22 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
                         valid = false;
                     }
                 }
+                // Validate transport field value.
+                let transport_raw = form.fields[3].value.trim().to_lowercase();
+                if !transport_raw.is_empty()
+                    && transport_raw != "ssh"
+                    && transport_raw != "mosh"
+                {
+                    form.fields[3].warning =
+                        Some("Must be \"ssh\" or \"mosh\"".to_string());
+                    valid = false;
+                }
                 if valid {
                     let path = expand_tilde_path(form.fields[0].value.trim());
                     let name = form.fields[1].value.trim().to_string();
                     let host = non_empty_opt(&form.fields[2].value);
-                    let token = non_empty_opt(&form.fields[3].value);
-                    ModalOutcome::Submit { path, name, host, token }
+                    let transport = non_empty_opt(&form.fields[3].value);
+                    ModalOutcome::Submit { path, name, host, transport }
                 } else {
                     ModalOutcome::Continue
                 }
@@ -1286,17 +1296,27 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
                         valid = false;
                     }
                 }
+                // Validate transport field value.
+                let transport_raw = form.fields[3].value.trim().to_lowercase();
+                if !transport_raw.is_empty()
+                    && transport_raw != "ssh"
+                    && transport_raw != "mosh"
+                {
+                    form.fields[3].warning =
+                        Some("Must be \"ssh\" or \"mosh\"".to_string());
+                    valid = false;
+                }
                 if valid {
                     let path = expand_tilde_path(form.fields[0].value.trim());
                     let name = form.fields[1].value.trim().to_string();
                     let host = non_empty_opt(&form.fields[2].value);
-                    let token = non_empty_opt(&form.fields[3].value);
+                    let transport = non_empty_opt(&form.fields[3].value);
                     ModalOutcome::SubmitEdit {
                         original_name: original_name.clone(),
                         path,
                         name,
                         host,
-                        token,
+                        transport,
                     }
                 } else {
                     ModalOutcome::Continue
@@ -1707,24 +1727,26 @@ fn event_loop<B: Backend>(
                     ModalOutcome::Close => {
                         state.modal = None;
                     }
-                    ModalOutcome::Submit { path, name, host, token } => {
+                    ModalOutcome::Submit { path, name, host, transport } => {
                         state.modal = None;
                         apply_add_project(
                             state,
                             cb.add_project_fn,
                             cb.reload_fn,
                             &path, &name,
-                            host.as_deref(), token.as_deref(),
+                            host.as_deref(),
+                            transport.as_deref(),
                         );
                     }
-                    ModalOutcome::SubmitEdit { original_name, path, name, host, token } => {
+                    ModalOutcome::SubmitEdit { original_name, path, name, host, transport } => {
                         state.modal = None;
                         apply_edit_project(
                             state,
                             cb.edit_project_fn,
                             cb.reload_fn,
                             &original_name, &path, &name,
-                            host.as_deref(), token.as_deref(),
+                            host.as_deref(),
+                            transport.as_deref(),
                         );
                     }
                     ModalOutcome::DeleteConfirmed { project } => {
@@ -2038,8 +2060,11 @@ fn event_loop<B: Backend>(
                                 form.fields[1].value = project.name.clone();
                                 form.fields[2].value =
                                     project.host.clone().unwrap_or_default();
-                                form.fields[3].value =
-                                    project.token.clone().unwrap_or_default();
+                                form.fields[3].value = match &project.transport {
+                                    Some(z_core::domain::Transport::Mosh) => "mosh".to_string(),
+                                    Some(z_core::domain::Transport::Ssh) => "ssh".to_string(),
+                                    None => String::new(),
+                                };
                                 // Suppress path-basename autofill: name is already set.
                                 form.name_was_modified = true;
                                 let original_name = project.name.clone();
@@ -2107,9 +2132,9 @@ fn apply_edit_project(
     path: &str,
     name: &str,
     host: Option<&str>,
-    token: Option<&str>,
+    transport: Option<&str>,
 ) {
-    match edit_project_fn(original_name, path, name, host, token) {
+    match edit_project_fn(original_name, path, name, host, transport) {
         Ok(()) => {
             state.status_message = Some(format!("Project {} saved.", name));
             if let Ok((entries, notifications)) = reload_fn() {
@@ -2134,9 +2159,9 @@ fn apply_add_project(
     path: &str,
     name: &str,
     host: Option<&str>,
-    token: Option<&str>,
+    transport: Option<&str>,
 ) {
-    match add_project_fn(path, name, host, token) {
+    match add_project_fn(path, name, host, transport) {
         Ok(()) => {
             state.status_message = Some(format!("Project {} added.", name));
             if let Ok((entries, notifications)) = reload_fn() {
@@ -3529,7 +3554,6 @@ mod tests {
             } else {
                 None
             },
-            token: None,
             transport: None,
         }
     }
@@ -5033,7 +5057,7 @@ mod tests {
     #[test]
     fn advance_modal_backtab_wraps_from_first_to_last() {
         let mut modal = Modal::AddProject(ProjectForm::new());
-        advance_modal(&mut modal, KeyCode::BackTab); // wraps to field 3
+        advance_modal(&mut modal, KeyCode::BackTab); // wraps to field 3 (Transport)
         let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
         assert_eq!(form.active_field, 3);
     }
@@ -5055,7 +5079,7 @@ mod tests {
         assert!(form.fields[0].warning.is_some(), "path field should have warning");
         assert!(form.fields[1].warning.is_some(), "name field should have warning");
         assert!(form.fields[2].warning.is_none(), "host field is optional, no warning");
-        assert!(form.fields[3].warning.is_none(), "token field is optional, no warning");
+        assert!(form.fields[3].warning.is_none(), "transport field is optional, no warning");
     }
 
     #[test]
@@ -5070,11 +5094,10 @@ mod tests {
         }
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
-            ModalOutcome::Submit { path, name, host, token } => {
+            ModalOutcome::Submit { path, name, host, .. } => {
                 assert_eq!(path, "/code/myapp");
                 assert_eq!(name, "myapp");
                 assert!(host.is_none());
-                assert!(token.is_none());
             }
             _ => panic!("expected Submit outcome"),
         }
@@ -5087,18 +5110,85 @@ mod tests {
             if let Modal::AddProject(ref mut form) = modal {
                 form.fields[0].value = "/code/app".to_string();
                 form.fields[1].value = "app".to_string();
-                form.fields[2].value = "https://vps.example.com".to_string();
-                form.fields[3].value = "mytoken".to_string();
+                form.fields[2].value = "vps".to_string();
+                form.fields[3].value = "mosh".to_string();
             }
         }
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
-            ModalOutcome::Submit { host, token, .. } => {
-                assert_eq!(host, Some("https://vps.example.com".to_string()));
-                assert_eq!(token, Some("mytoken".to_string()));
+            ModalOutcome::Submit { host, transport, .. } => {
+                assert_eq!(host, Some("vps".to_string()));
+                assert_eq!(transport, Some("mosh".to_string()));
             }
             _ => panic!("expected Submit outcome"),
         }
+    }
+
+    // --- Transport field tests ---
+
+    #[test]
+    fn submit_includes_transport_mosh() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = "/code/app".to_string();
+            form.fields[1].value = "app".to_string();
+            form.fields[3].value = "mosh".to_string();
+        }
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::Submit { transport, .. } => {
+                assert_eq!(transport, Some("mosh".to_string()));
+            }
+            _ => panic!("expected Submit outcome"),
+        }
+    }
+
+    #[test]
+    fn submit_includes_transport_ssh() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = "/code/app".to_string();
+            form.fields[1].value = "app".to_string();
+            form.fields[3].value = "ssh".to_string();
+        }
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::Submit { transport, .. } => {
+                assert_eq!(transport, Some("ssh".to_string()));
+            }
+            _ => panic!("expected Submit outcome"),
+        }
+    }
+
+    #[test]
+    fn submit_transport_empty_is_none() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = "/code/app".to_string();
+            form.fields[1].value = "app".to_string();
+            // field[3] left empty
+        }
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        match outcome {
+            ModalOutcome::Submit { transport, .. } => {
+                assert!(transport.is_none());
+            }
+            _ => panic!("expected Submit outcome"),
+        }
+    }
+
+    #[test]
+    fn submit_rejects_invalid_transport() {
+        let mut modal = Modal::AddProject(ProjectForm::new());
+        if let Modal::AddProject(ref mut form) = modal {
+            form.fields[0].value = "/code/app".to_string();
+            form.fields[1].value = "app".to_string();
+            form.fields[3].value = "pigeons".to_string();
+        }
+        let outcome = advance_modal(&mut modal, KeyCode::Enter);
+        assert!(matches!(outcome, ModalOutcome::Continue));
+        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        assert!(form.fields[3].warning.is_some());
     }
 
     #[test]
@@ -5169,7 +5259,7 @@ mod tests {
         assert!(out.contains("Path"), "should show Path field label");
         assert!(out.contains("Name"), "should show Name field label");
         assert!(out.contains("Host"), "should show Host field label");
-        assert!(out.contains("Token"), "should show Token field label");
+        assert!(out.contains("Transport"), "should show Transport field label");
     }
 
     #[test]
@@ -5372,7 +5462,6 @@ mod tests {
         form.fields[0].value = project.path.to_string_lossy().to_string();
         form.fields[1].value = project.name.clone();
         form.fields[2].value = project.host.clone().unwrap_or_default();
-        form.fields[3].value = project.token.clone().unwrap_or_default();
         form.name_was_modified = true;
         let original_name = project.name.clone();
         let modal = Modal::EditProject(form, original_name);
@@ -5443,12 +5532,11 @@ mod tests {
         let mut modal = make_edit_modal("myapp", "/code/myapp");
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
-            ModalOutcome::SubmitEdit { original_name, path, name, host, token } => {
+            ModalOutcome::SubmitEdit { original_name, path, name, host, .. } => {
                 assert_eq!(original_name, "myapp");
                 assert_eq!(path, "/code/myapp");
                 assert_eq!(name, "myapp");
                 assert!(host.is_none());
-                assert!(token.is_none());
             }
             _ => panic!("expected SubmitEdit outcome"),
         }
@@ -5627,19 +5715,19 @@ mod tests {
     }
 
     #[test]
-    fn edit_modal_submit_preserves_host_and_token() {
+    fn edit_modal_submit_preserves_host_and_transport() {
         let mut form = ProjectForm::new();
         form.fields[0].value = "/code/myapp".to_string();
         form.fields[1].value = "myapp".to_string();
         form.fields[2].value = "  github.com  ".to_string();
-        form.fields[3].value = "  tok_123  ".to_string();
+        form.fields[3].value = "  mosh  ".to_string();
         form.name_was_modified = true;
         let mut modal = Modal::EditProject(form, "myapp".to_string());
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
-            ModalOutcome::SubmitEdit { host, token, .. } => {
+            ModalOutcome::SubmitEdit { host, transport, .. } => {
                 assert_eq!(host, Some("github.com".to_string()), "host should be trimmed and preserved");
-                assert_eq!(token, Some("tok_123".to_string()), "token should be trimmed and preserved");
+                assert_eq!(transport, Some("mosh".to_string()), "transport should be trimmed and preserved");
             }
             _ => panic!("expected SubmitEdit"),
         }
@@ -5822,7 +5910,7 @@ mod tests {
     #[test]
     fn edit_modal_backtab_cycles_fields_backward() {
         let mut modal = make_edit_modal("myapp", "/code/myapp");
-        // Start on field 0. BackTab should wrap to field 3.
+        // Start on field 0. BackTab should wrap to field 3 (Transport).
         advance_modal(&mut modal, KeyCode::BackTab);
         if let Modal::EditProject(ref form, _) = modal {
             assert_eq!(form.active_field, 3, "BackTab from field 0 should wrap to last field");

@@ -12,10 +12,8 @@ pub enum Transport {
 pub struct Project {
     pub name: String,
     pub path: PathBuf,
-    /// Remote host URL for remote projects (e.g. `https://vps.example.com:8082`).
+    /// SSH host for remote projects (e.g. `"vps"`, `"user@vps"`).
     pub host: Option<String>,
-    /// Authentication token for remote hosts, resolved from `env:VAR` at parse time.
-    pub token: Option<String>,
     /// Transport protocol for interactive sessions (`ssh` default, `mosh` for iOS).
     pub transport: Option<Transport>,
 }
