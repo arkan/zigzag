@@ -638,7 +638,7 @@ fn cmd_open_remote(
 
     let status = if use_mosh {
         std::process::Command::new("mosh")
-            .args([host, "--", &wrapped])
+            .args([host, "--", "bash", "-l", "-c", &remote_cmd])
             .status()
     } else {
         // -t: allocate TTY for interactive Zellij session.
