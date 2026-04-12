@@ -3530,6 +3530,7 @@ mod tests {
                 None
             },
             token: None,
+            transport: None,
         }
     }
 

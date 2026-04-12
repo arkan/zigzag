@@ -318,6 +318,36 @@ pub fn parse_zellij_sessions(output: &str, project: &str) -> Vec<Session> {
         .collect()
 }
 
+/// Separator used in the combined SSH command for remote session + notification fetch.
+pub const REMOTE_SEP: &str = "---SEP---";
+
+/// Parse the combined SSH output that contains both session list and notification names.
+///
+/// Format:
+/// ```text
+/// session1 [Created 2h ago]
+/// session2 [Created 5m ago]
+/// ---SEP---
+/// project:branch1
+/// project:branch2
+/// ```
+///
+/// Returns `(sessions_raw, notification_names)`.
+pub fn parse_combined_remote_output(output: &str) -> (&str, Vec<String>) {
+    match output.split_once(REMOTE_SEP) {
+        Some((sessions_part, notif_part)) => {
+            let notifications = notif_part
+                .trim()
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.trim().to_string())
+                .collect();
+            (sessions_part, notifications)
+        }
+        None => (output, Vec::new()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,5 +764,39 @@ mod tests {
             "UNSET",
             "ZELLIJ env var must not be passed to child subprocess"
         );
+    }
+
+    // --- parse_combined_remote_output ---
+
+    #[test]
+    fn parse_combined_remote_output_both_present() {
+        let output = "myapp:main [Created 2h ago]\nmyapp:feat [Created 5m ago]\n---SEP---\nmyapp:main\nmyapp:feat\n";
+        let (sessions, notifs) = parse_combined_remote_output(output);
+        assert!(sessions.contains("myapp:main"));
+        assert!(sessions.contains("myapp:feat"));
+        assert_eq!(notifs, vec!["myapp:main", "myapp:feat"]);
+    }
+
+    #[test]
+    fn parse_combined_remote_output_no_notifications() {
+        let output = "myapp:main [Created 2h ago]\n";
+        let (sessions, notifs) = parse_combined_remote_output(output);
+        assert!(sessions.contains("myapp:main"));
+        assert!(notifs.is_empty());
+    }
+
+    #[test]
+    fn parse_combined_remote_output_empty() {
+        let (sessions, notifs) = parse_combined_remote_output("");
+        assert!(sessions.is_empty());
+        assert!(notifs.is_empty());
+    }
+
+    #[test]
+    fn parse_combined_remote_output_only_notifications() {
+        let output = "---SEP---\nmyapp:main\n";
+        let (sessions, notifs) = parse_combined_remote_output(output);
+        assert!(sessions.trim().is_empty());
+        assert_eq!(notifs, vec!["myapp:main"]);
     }
 }

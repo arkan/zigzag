@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use kdl::{KdlDocument, KdlNode};
 
 use crate::action::{self, ActionDef};
-use crate::domain::{Layout, Pane, Project, Tab};
+use crate::domain::{Layout, Pane, Project, Tab, Transport};
 use crate::error::{Result, ZError};
 use crate::layout::default_layout;
 use crate::theme::ThemeName;
@@ -134,6 +134,7 @@ fn parse_project_node(node: &KdlNode) -> Result<Project> {
     let mut path: Option<PathBuf> = None;
     let mut host: Option<String> = None;
     let mut token: Option<String> = None;
+    let mut transport: Option<Transport> = None;
 
     if let Some(children) = node.children() {
         for child in children.nodes() {
@@ -177,6 +178,28 @@ fn parse_project_node(node: &KdlNode) -> Result<Project> {
                         })?;
                     token = Some(resolve_env_token(raw)?);
                 }
+                "transport" => {
+                    let val = child
+                        .entries()
+                        .first()
+                        .and_then(|e| e.value().as_string())
+                        .ok_or_else(|| {
+                            ZError::ConfigParse(format!(
+                                "project '{}': transport node missing value",
+                                name
+                            ))
+                        })?;
+                    transport = Some(match val {
+                        "ssh" => Transport::Ssh,
+                        "mosh" => Transport::Mosh,
+                        other => {
+                            return Err(ZError::ConfigParse(format!(
+                                "project '{}': unknown transport {:?} (expected \"ssh\" or \"mosh\")",
+                                name, other
+                            )));
+                        }
+                    });
+                }
                 "layout" => {} // layout reference, handled later
                 _ => {}        // forward-compatible: ignore unknown nodes
             }
@@ -191,6 +214,7 @@ fn parse_project_node(node: &KdlNode) -> Result<Project> {
         path,
         host,
         token,
+        transport,
     })
 }
 
@@ -1595,5 +1619,58 @@ pr-prompt-template "repo pr {number}: {title}"
             ..Default::default()
         };
         assert_eq!(effective_pr_prompt_template(&global, &per_repo), "repo pr");
+    }
+
+    // --- transport field ---
+
+    #[test]
+    fn parse_projects_with_transport_mosh() {
+        let kdl = r#"
+project "ios-app" {
+    path "/code/ios"
+    host "https://vps.example.com:8082"
+    transport "mosh"
+}
+"#;
+        let projects = parse_projects_kdl(kdl).unwrap();
+        assert_eq!(projects[0].transport, Some(Transport::Mosh));
+    }
+
+    #[test]
+    fn parse_projects_with_transport_ssh() {
+        let kdl = r#"
+project "api" {
+    path "/code/api"
+    host "https://vps.example.com:8082"
+    transport "ssh"
+}
+"#;
+        let projects = parse_projects_kdl(kdl).unwrap();
+        assert_eq!(projects[0].transport, Some(Transport::Ssh));
+    }
+
+    #[test]
+    fn parse_projects_without_transport() {
+        let kdl = r#"
+project "local" {
+    path "/code/local"
+}
+"#;
+        let projects = parse_projects_kdl(kdl).unwrap();
+        assert!(projects[0].transport.is_none());
+    }
+
+    #[test]
+    fn parse_projects_with_invalid_transport() {
+        let kdl = r#"
+project "bad" {
+    path "/code/bad"
+    transport "pigeons"
+}
+"#;
+        assert!(matches!(
+            parse_projects_kdl(kdl).unwrap_err(),
+            ZError::ConfigParse(_)
+        ));
     }
 }

@@ -45,6 +45,8 @@ pub enum WorkflowStatus {
 pub struct WorkflowRun {
     pub workflow_name: String,
     pub project: String,
+    /// Remote host this workflow targets (None = local).
+    pub host: Option<String>,
     pub status: WorkflowStatus,
     pub current_step: Option<String>,
     pub retry_count: u32,
@@ -56,11 +58,18 @@ impl WorkflowRun {
         WorkflowRun {
             workflow_name: workflow_name.into(),
             project: project.into(),
+            host: None,
             status: WorkflowStatus::Running,
             current_step: Some(first_step.into()),
             retry_count: 0,
             history: Vec::new(),
         }
+    }
+
+    /// Set the remote host for this workflow run.
+    pub fn with_host(mut self, host: impl Into<String>) -> Self {
+        self.host = Some(host.into());
+        self
     }
 }
 
@@ -573,5 +582,33 @@ autopilot "test" {
         assert_eq!(run.status, WorkflowStatus::Running);
         assert_eq!(run.retry_count, 0);
         assert!(run.history.is_empty());
+    }
+
+    #[test]
+    fn test_workflow_run_new_has_no_host() {
+        let run = WorkflowRun::new("wf", "proj", "step1");
+        assert!(run.host.is_none());
+    }
+
+    #[test]
+    fn test_workflow_run_with_host_serializes() {
+        let run = WorkflowRun::new("wf", "proj", "step1")
+            .with_host("vps.example.com");
+        assert_eq!(run.host.as_deref(), Some("vps.example.com"));
+
+        let json = serde_json::to_string(&run).unwrap();
+        let deserialized: WorkflowRun = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.host.as_deref(), Some("vps.example.com"));
+        assert_eq!(deserialized.workflow_name, "wf");
+    }
+
+    #[test]
+    fn test_advance_works_with_host_set() {
+        let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
+        let mut run = WorkflowRun::new("pr-ci-fix", "myproject", "monitor-ci")
+            .with_host("vps.example.com");
+        let next = advance(&wf, &mut run, StepResult::Success { output: None }).unwrap();
+        assert_eq!(next.as_deref(), Some("notify-done"));
+        assert_eq!(run.host.as_deref(), Some("vps.example.com"));
     }
 }
