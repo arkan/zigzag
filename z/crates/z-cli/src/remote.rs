@@ -1,10 +1,9 @@
 use std::process::Command;
 
-use z_core::domain::{Session, Worktree};
+use z_core::domain::Session;
 use z_core::error::{Result, ZError};
 
 use crate::session_manager::parse_zellij_sessions;
-use crate::worktree_manager::parse_git_worktree_porcelain;
 
 // ---------------------------------------------------------------------------
 // Remote git info
@@ -134,32 +133,6 @@ pub fn build_ssh_command(ssh_host: &str, command: &str) -> Command {
     cmd
 }
 
-/// Build an SSH health-check command with a shorter timeout.
-pub fn build_ssh_health_command(ssh_host: &str) -> Command {
-    let mut cmd = Command::new("ssh");
-    cmd.args(["-o", "ConnectTimeout=5", ssh_host, "echo ok"]);
-    cmd
-}
-
-/// Check SSH connectivity to a remote host.
-///
-/// Runs `echo ok` with a 5-second timeout. Returns a clear error on failure.
-pub fn check_ssh_health(ssh_host: &str) -> Result<()> {
-    let output = build_ssh_health_command(ssh_host)
-        .output()
-        .map_err(|e| ZError::Session(format!(
-            "SSH health check to {} failed to launch: {}. Check your SSH config.",
-            ssh_host, e
-        )))?;
-    if !output.status.success() {
-        return Err(ZError::Session(format!(
-            "SSH health check to {} failed (exit {}). Check your SSH config and that the host is reachable.",
-            ssh_host, output.status
-        )));
-    }
-    Ok(())
-}
-
 /// Run a shell command on a remote host via SSH and wait for it to complete.
 ///
 /// Returns an error if SSH fails to launch or exits non-zero.
@@ -198,27 +171,6 @@ pub fn list_remote_sessions(ssh_host: &str, project: &str) -> Result<Vec<Session
 pub fn delete_remote_session(ssh_host: &str, session_name: &str) -> Result<()> {
     let cmd = format!("zellij delete-session {}", shell_quote(session_name));
     ssh_run_remote(ssh_host, &cmd)
-}
-
-/// List worktrees on a remote host via SSH.
-///
-/// Runs `git worktree list --porcelain` on the remote and parses the output
-/// using the same parser as local worktree discovery.
-pub fn list_remote_worktrees(ssh_host: &str, project_path: &str, project_name: &str) -> Result<Vec<Worktree>> {
-    let cmd = format!(
-        "cd {} && git worktree list --porcelain",
-        shell_quote(project_path)
-    );
-    let output = build_ssh_command(ssh_host, &cmd)
-        .output()
-        .map_err(|e| {
-            ZError::Worktree(format!(
-                "SSH to {} failed while listing worktrees: {}",
-                ssh_host, e
-            ))
-        })?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_git_worktree_porcelain(&stdout, project_name))
 }
 
 /// Remove a worktree on a remote host via SSH.
@@ -266,18 +218,6 @@ mod tests {
         assert!(joined.contains("ls -la"), "should contain the original command");
     }
 
-    // --- build_ssh_health_command ---
-
-    #[test]
-    fn build_ssh_health_command_has_short_timeout() {
-        let cmd = build_ssh_health_command("myhost");
-        let args: Vec<&OsStr> = cmd.get_args().collect();
-        assert!(
-            args.contains(&OsStr::new("ConnectTimeout=5")),
-            "health check should use 5s timeout, not 10s"
-        );
-    }
-
     // --- parse_remote_git_output ---
 
     #[test]
@@ -316,35 +256,6 @@ mod tests {
         let output = "main\n---GIT-SEP---\n\n---GIT-SEP---\n\n---GIT-SEP---\n0\t0\n";
         let info = parse_remote_git_output(output).unwrap();
         assert!(info.commits.is_empty());
-    }
-
-    // --- list_remote_worktrees command ---
-
-    #[test]
-    fn list_remote_worktrees_builds_correct_command() {
-        // We can't test actual SSH, but verify the shell command is correct.
-        let cmd = format!(
-            "cd {} && git worktree list --porcelain",
-            shell_quote("/home/user/myapp")
-        );
-        assert_eq!(cmd, "cd '/home/user/myapp' && git worktree list --porcelain");
-    }
-
-    #[test]
-    fn list_remote_worktrees_shell_quotes_path_with_spaces() {
-        let cmd = format!(
-            "cd {} && git worktree list --porcelain",
-            shell_quote("/home/user/my app")
-        );
-        assert_eq!(cmd, "cd '/home/user/my app' && git worktree list --porcelain");
-    }
-
-    #[test]
-    fn build_ssh_health_command_runs_echo_ok() {
-        let cmd = build_ssh_health_command("myhost");
-        let args: Vec<&OsStr> = cmd.get_args().collect();
-        assert!(args.contains(&OsStr::new("echo ok")));
-        assert!(args.contains(&OsStr::new("myhost")));
     }
 
     // --- shell_quote ---

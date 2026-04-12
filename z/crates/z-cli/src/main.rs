@@ -50,14 +50,9 @@ fn main() {
 
     let mut failed = false;
     for result in &results {
-        match &result.status {
-            DepCheckStatus::Ok { version } => {
-                eprintln!("  ✓ {} {}", result.tool, version);
-            }
-            _ => {
-                eprintln!("{}", format_dep_error(result));
-                failed = true;
-            }
+        if !matches!(result.status, DepCheckStatus::Ok { .. }) {
+            eprintln!("{}", format_dep_error(result));
+            failed = true;
         }
     }
 
@@ -186,7 +181,6 @@ fn run() {
 /// Loops back into the TUI after adding a project so the user stays in context.
 fn cmd_tui() -> z_core::error::Result<()> {
     let store = KdlProjectStore::new();
-    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
     let global = load_global_config();
 
     let navigation = match global.navigation.as_deref() {
@@ -204,13 +198,12 @@ fn cmd_tui() -> z_core::error::Result<()> {
     /// Build a fresh list of project entries with sessions, worktrees, and workflows.
     fn build_entries(
         store: &KdlProjectStore,
-        session_mgr: &ZellijSessionManager,
         builtin: &[AutopilotWorkflow],
     ) -> z_core::error::Result<Vec<ProjectEntry>> {
         let projects = store.list_projects()?;
         let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
         for project in &projects {
-            let sessions = session_mgr.list_sessions(&project.name)?;
+            let sessions: Vec<z_core::domain::Session> = Vec::new();
             let worktree_count = WtWorktreeManager::new(project.path.clone())
                 .list_worktrees(&project.name)
                 .map(|wts| wts.len())
@@ -250,7 +243,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
     }
 
     loop {
-        let entries = build_entries(&store, &session_mgr, &builtin)?;
+        let entries = build_entries(&store, &builtin)?;
 
         // Load pending notifications so the TUI can display 🔔 badges.
         let notifications: HashSet<String> =
@@ -333,8 +326,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
             },
             reload_fn: &|| {
                 let s = config_store::KdlProjectStore::new();
-                let sm = ZellijSessionManager { bin_path: resolve_bin_path() };
-                let entries = build_entries(&s, &sm, &builtin)
+                let entries = build_entries(&s, &builtin)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
                 let notifications: HashSet<String> =
                     z_core::notification::sessions_with_notifications().into_iter().collect();
