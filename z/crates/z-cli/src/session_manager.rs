@@ -153,18 +153,32 @@ impl SessionRefresher for ZellijSessionRefresher {
             results.push((p.name.clone(), sessions));
         }
 
-        // Remote: SSH into each host to list sessions.
-        for p in &remote {
-            let host = p.host.as_deref().unwrap_or("");
-            let remote_name = p
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&p.name);
-            let sessions = crate::remote::list_remote_sessions(host, remote_name)
-                .unwrap_or_default();
-            results.push((p.name.clone(), sessions));
-        }
+        // Remote: SSH into each host in parallel to avoid blocking on slow connections.
+        std::thread::scope(|s| {
+            let handles: Vec<_> = remote
+                .iter()
+                .map(|p| {
+                    let name = p.name.clone();
+                    let host = p.host.as_deref().unwrap_or("").to_string();
+                    let remote_name = p
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(&p.name)
+                        .to_string();
+                    s.spawn(move || {
+                        let sessions = crate::remote::list_remote_sessions(&host, &remote_name)
+                            .unwrap_or_default();
+                        (name, sessions)
+                    })
+                })
+                .collect();
+            for h in handles {
+                if let Ok(result) = h.join() {
+                    results.push(result);
+                }
+            }
+        });
 
         results
     }
