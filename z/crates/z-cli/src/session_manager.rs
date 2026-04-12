@@ -131,19 +131,42 @@ pub struct ZellijSessionRefresher;
 
 impl SessionRefresher for ZellijSessionRefresher {
     fn fetch_all_sessions(&self, projects: &[Project]) -> Vec<(String, Vec<Session>)> {
-        let output = match Command::new("zellij").arg("list-sessions").output() {
-            Ok(o) => o,
-            Err(_) => return projects.iter().map(|p| (p.name.clone(), Vec::new())).collect(),
-        };
-        let raw = String::from_utf8_lossy(&output.stdout);
-        let stdout = strip_ansi(&raw);
-        projects
-            .iter()
-            .map(|p| {
-                let sessions = parse_zellij_sessions(&stdout, &p.name);
-                (p.name.clone(), sessions)
-            })
-            .collect()
+        // Split into local and remote projects.
+        let (local, remote): (Vec<_>, Vec<_>) =
+            projects.iter().partition(|p| p.host.is_none());
+
+        // Local: one `zellij list-sessions` call, parse per project.
+        let mut results: Vec<(String, Vec<Session>)> = Vec::with_capacity(projects.len());
+        let local_stdout = Command::new("zellij")
+            .arg("list-sessions")
+            .output()
+            .ok()
+            .map(|o| {
+                let raw = String::from_utf8_lossy(&o.stdout);
+                strip_ansi(&raw)
+            });
+        for p in &local {
+            let sessions = local_stdout
+                .as_deref()
+                .map(|s| parse_zellij_sessions(s, &p.name))
+                .unwrap_or_default();
+            results.push((p.name.clone(), sessions));
+        }
+
+        // Remote: SSH into each host to list sessions.
+        for p in &remote {
+            let host = p.host.as_deref().unwrap_or("");
+            let remote_name = p
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&p.name);
+            let sessions = crate::remote::list_remote_sessions(host, remote_name)
+                .unwrap_or_default();
+            results.push((p.name.clone(), sessions));
+        }
+
+        results
     }
 
     fn fetch_notifications(&self) -> HashSet<String> {

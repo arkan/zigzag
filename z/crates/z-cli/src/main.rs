@@ -342,6 +342,24 @@ fn cmd_tui() -> z_core::error::Result<()> {
             },
         };
 
+        let remote_preview: std::sync::Arc<dyn Fn(&str, &str) -> Result<z_tui::GitInfo, String> + Send + Sync> =
+            std::sync::Arc::new(|host: &str, path: &str| {
+                let info = remote::fetch_remote_git_info(host, path)
+                    .map_err(|e| e.to_string())?;
+                Ok(z_tui::GitInfo {
+                    branch: info.branch,
+                    is_dirty: info.is_dirty,
+                    ahead: info.ahead,
+                    behind: info.behind,
+                    commits: info.commits.into_iter()
+                        .map(|(hash, msg)| z_tui::CommitInfo { hash, message: msg })
+                        .collect(),
+                    pr: None,
+                    ci: None,
+                    zellij: None,
+                    review: None,
+                })
+            });
         let action = z_tui::run_tui(
             entries,
             navigation.clone(),
@@ -350,6 +368,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
             status_message.take(),
             callbacks,
             Box::new(forge::GhForgeClient),
+            remote_preview,
             Box::new(ZellijSessionRefresher),
             theme,
             global.actions.clone(),
