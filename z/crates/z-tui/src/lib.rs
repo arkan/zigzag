@@ -466,7 +466,7 @@ impl TuiState {
             review_tool: "codex".to_string(),
             refresher,
             refresh_rx: None,
-            last_refresh: Instant::now(),
+            last_refresh: Instant::now() - Duration::from_secs(10),
             gh_tx: None,
             gh_rx: None,
         }
