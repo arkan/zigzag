@@ -637,8 +637,9 @@ fn cmd_open_remote(
     let wrapped = format!("bash -l -c {}", remote::shell_quote(&remote_cmd));
 
     let status = if use_mosh {
+        // mosh passes trailing args as the remote command (single string).
         std::process::Command::new("mosh")
-            .args([host, "--", "bash", "-l", "-c", &remote_cmd])
+            .args([host, &wrapped])
             .status()
     } else {
         // -t: allocate TTY for interactive Zellij session.
