@@ -196,14 +196,36 @@ fn cmd_tui() -> z_core::error::Result<()> {
     let builtin: Vec<AutopilotWorkflow> = builtin_workflows().unwrap_or_default();
 
     /// Build a fresh list of project entries with sessions, worktrees, and workflows.
+    ///
+    /// Local sessions are loaded with a single `zellij list-sessions` call
+    /// (not one per project). Remote sessions are left empty — the TUI's
+    /// background refresher populates them asynchronously.
     fn build_entries(
         store: &KdlProjectStore,
         builtin: &[AutopilotWorkflow],
     ) -> z_core::error::Result<Vec<ProjectEntry>> {
         let projects = store.list_projects()?;
+
+        // One subprocess call for all local sessions, then filter per project.
+        let local_stdout = std::process::Command::new("zellij")
+            .arg("list-sessions")
+            .output()
+            .ok()
+            .map(|o| {
+                let raw = String::from_utf8_lossy(&o.stdout);
+                session_manager::strip_ansi(&raw)
+            });
+
         let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
         for project in &projects {
-            let sessions: Vec<z_core::domain::Session> = Vec::new();
+            let sessions = if project.host.is_none() {
+                local_stdout
+                    .as_deref()
+                    .map(|s| session_manager::parse_zellij_sessions(s, &project.name))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let worktree_count = WtWorktreeManager::new(project.path.clone())
                 .list_worktrees(&project.name)
                 .map(|wts| wts.len())
