@@ -16,7 +16,7 @@ help:
 	@echo "  docker        Build Docker image only"
 
 install:
-	cargo install --path z/crates/z-cli
+	cargo install --path z/crates/z-cli --root ~/.local --force
 
 docker:
 	docker build -t $(IMAGE) .sandcastle/
