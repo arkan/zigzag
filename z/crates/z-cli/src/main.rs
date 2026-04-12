@@ -298,6 +298,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     path: std::path::PathBuf::from(path),
                     host: host.map(String::from),
                     token: token.map(String::from),
+                    transport: None,
                 };
                 let mut s = config_store::KdlProjectStore::new();
                 s.add_project(&project)
@@ -312,6 +313,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     path: std::path::PathBuf::from(path),
                     host: host.map(String::from),
                     token: token.map(String::from),
+                    transport: None,
                 };
                 s.add_project(&project)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))

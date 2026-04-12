@@ -1,5 +1,12 @@
 use std::path::PathBuf;
 
+/// Transport protocol for remote connections.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Transport {
+    Ssh,
+    Mosh,
+}
+
 /// A project managed by z.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
@@ -9,6 +16,8 @@ pub struct Project {
     pub host: Option<String>,
     /// Authentication token for remote hosts, resolved from `env:VAR` at parse time.
     pub token: Option<String>,
+    /// Transport protocol for interactive sessions (`ssh` default, `mosh` for iOS).
+    pub transport: Option<Transport>,
 }
 
 /// A Zellij session, named `{project}:{branch}` (slashes in branch replaced by `-`).

@@ -284,6 +284,7 @@ project "alpha" {
             path: std::path::PathBuf::from(path),
             host: None,
             token: None,
+            transport: None,
         }
     }
 
@@ -366,6 +367,7 @@ project "alpha" {
             path: std::path::PathBuf::from("/code/remote-app"),
             host: Some("https://vps.example.com:8082".to_string()),
             token: Some("mytoken".to_string()),
+            transport: None,
         };
         store.add_project(&project).unwrap();
 
@@ -449,6 +451,7 @@ project "alpha" {
             path: std::path::PathBuf::from("/code/my \"app\""),
             host: None,
             token: None,
+            transport: None,
         };
         let kdl = format_project_kdl(&project);
         assert!(kdl.contains(r#"path "/code/my \"app\"""#), "quotes in path should be escaped");
@@ -466,6 +469,7 @@ project "alpha" {
             path: std::path::PathBuf::from("/code/new"),
             host: None,
             token: None,
+            transport: None,
         };
         store.update_project(&updated).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
@@ -489,6 +493,7 @@ project "alpha" {
             path: std::path::PathBuf::from("/code/app"),
             host: None,
             token: None,
+            transport: None,
         };
         store.add_project(&renamed).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
@@ -511,6 +516,7 @@ project "alpha" {
             path: std::path::PathBuf::from("/code/new"),
             host: None,
             token: None,
+            transport: None,
         };
         store.update_project(&updated).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
@@ -527,6 +533,7 @@ project "alpha" {
             path: std::path::PathBuf::from("/code/app"),
             host: None,
             token: None,
+            transport: None,
         };
         let kdl = format_project_kdl(&project);
         assert!(kdl.contains(r#"project "back\\slash""#), "backslash in name should be escaped");
