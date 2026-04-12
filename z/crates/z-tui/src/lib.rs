@@ -629,18 +629,33 @@ impl TuiState {
         self.preview_data = PreviewData::Loading;
 
         // Phase 1 — git info (local or remote via SSH)
+        // Worktree resolution happens inside the background thread to avoid
+        // blocking the UI (especially for remote projects where it needs SSH).
         let (tx1, rx1) = mpsc::channel();
         self.preview_rx = Some(rx1);
         let path1 = path.clone();
+        let branch1 = branch.clone();
         if let Some(ssh_host) = host.clone() {
             let remote_fn = Arc::clone(&self.remote_preview_fn);
             std::thread::spawn(move || {
-                let result = remote_fn(&ssh_host, &path1.to_string_lossy());
+                let effective = if !branch1.is_empty() {
+                    resolve_worktree_path(&path1, &branch1, Some(&ssh_host))
+                        .unwrap_or(path1)
+                } else {
+                    path1
+                };
+                let result = remote_fn(&ssh_host, &effective.to_string_lossy());
                 let _ = tx1.send(result);
             });
         } else {
             std::thread::spawn(move || {
-                let result = fetch_git_info(&path1.to_string_lossy());
+                let effective = if !branch1.is_empty() {
+                    resolve_worktree_path(&path1, &branch1, None)
+                        .unwrap_or(path1)
+                } else {
+                    path1
+                };
+                let result = fetch_git_info(&effective.to_string_lossy());
                 let _ = tx1.send(result);
             });
         }
@@ -865,6 +880,52 @@ fn fetch_git_info(path: &str) -> Result<GitInfo, String> {
         zellij: None,
         review: None,
     })
+}
+
+/// Resolve the worktree path for a given branch by parsing `git worktree list --porcelain`.
+/// For remote projects, runs the command via SSH.
+/// Returns `None` if no matching worktree is found.
+fn resolve_worktree_path(
+    project_path: &std::path::Path,
+    branch: &str,
+    ssh_host: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    use std::process::Command;
+    let stdout = if let Some(host) = ssh_host {
+        let path_str = project_path.to_string_lossy();
+        let remote_cmd = format!(
+            "cd '{}' && git worktree list --porcelain",
+            path_str.replace('\'', "'\\''")
+        );
+        let wrapped = format!(
+            "bash -l -c '{}'",
+            remote_cmd.replace('\'', "'\\''")
+        );
+        let output = Command::new("ssh")
+            .args(["-o", "ConnectTimeout=10", host, &wrapped])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&output.stdout).to_string()
+    } else {
+        let output = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(project_path)
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+    let mut current_path: Option<std::path::PathBuf> = None;
+    for line in stdout.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            current_path = Some(std::path::PathBuf::from(p));
+        } else if let Some(git_branch) = line.strip_prefix("branch refs/heads/") {
+            // Session branch names are sanitized (/ → -), so compare sanitized forms.
+            if z_core::domain::sanitize_branch_name(git_branch) == branch {
+                return current_path;
+            }
+        }
+    }
+    None
 }
 
 /// Returns (ahead, behind) counts for HEAD vs its upstream; (0, 0) on failure.
