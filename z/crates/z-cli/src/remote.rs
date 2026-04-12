@@ -189,7 +189,8 @@ pub fn list_remote_sessions(ssh_host: &str, project: &str) -> Result<Vec<Session
                 ssh_host, e
             ))
         })?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let stdout = crate::session_manager::strip_ansi(&raw);
     Ok(parse_zellij_sessions(&stdout, project))
 }
 

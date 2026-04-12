@@ -11,7 +11,7 @@ use z_core::traits::{SessionManager, SessionRefresher};
 ///
 /// Zellij's `list-sessions` output contains color codes (e.g. `\x1b[32;1m`)
 /// that must be removed before parsing session names and status.
-fn strip_ansi(s: &str) -> String {
+pub(crate) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_escape = false;
     for c in s.chars() {
