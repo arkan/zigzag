@@ -71,8 +71,12 @@ fn format_project_kdl(project: &Project) -> String {
     if let Some(host) = &project.host {
         s.push_str(&format!("    host \"{}\"\n", escape_kdl_string(host)));
     }
-    if let Some(token) = &project.token {
-        s.push_str(&format!("    token \"{}\"\n", escape_kdl_string(token)));
+    if let Some(transport) = &project.transport {
+        let val = match transport {
+            z_core::domain::Transport::Ssh => "ssh",
+            z_core::domain::Transport::Mosh => "mosh",
+        };
+        s.push_str(&format!("    transport \"{}\"\n", val));
     }
     s.push_str("}\n");
     s
@@ -283,7 +287,6 @@ project "alpha" {
             name: name.to_string(),
             path: std::path::PathBuf::from(path),
             host: None,
-            token: None,
             transport: None,
         }
     }
@@ -365,15 +368,13 @@ project "alpha" {
         let project = Project {
             name: "remote-app".to_string(),
             path: std::path::PathBuf::from("/code/remote-app"),
-            host: Some("https://vps.example.com:8082".to_string()),
-            token: Some("mytoken".to_string()),
+            host: Some("vps".to_string()),
             transport: None,
         };
         store.add_project(&project).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("host \"https://vps.example.com:8082\""));
-        assert!(content.contains("token \"mytoken\""));
+        assert!(content.contains("host \"vps\""));
         std::fs::remove_file(path).ok();
     }
 
@@ -450,7 +451,6 @@ project "alpha" {
             name: "app".to_string(),
             path: std::path::PathBuf::from("/code/my \"app\""),
             host: None,
-            token: None,
             transport: None,
         };
         let kdl = format_project_kdl(&project);
@@ -468,7 +468,6 @@ project "alpha" {
             name: "myapp".to_string(),
             path: std::path::PathBuf::from("/code/new"),
             host: None,
-            token: None,
             transport: None,
         };
         store.update_project(&updated).unwrap();
@@ -492,7 +491,6 @@ project "alpha" {
             name: "new-name".to_string(),
             path: std::path::PathBuf::from("/code/app"),
             host: None,
-            token: None,
             transport: None,
         };
         store.add_project(&renamed).unwrap();
@@ -515,7 +513,6 @@ project "alpha" {
             name: "myapp".to_string(),
             path: std::path::PathBuf::from("/code/new"),
             host: None,
-            token: None,
             transport: None,
         };
         store.update_project(&updated).unwrap();
@@ -532,10 +529,47 @@ project "alpha" {
             name: r"back\slash".to_string(),
             path: std::path::PathBuf::from("/code/app"),
             host: None,
-            token: None,
             transport: None,
         };
         let kdl = format_project_kdl(&project);
         assert!(kdl.contains(r#"project "back\\slash""#), "backslash in name should be escaped");
+    }
+
+    // --- transport in KDL output ---
+
+    #[test]
+    fn format_project_kdl_writes_transport_mosh() {
+        let project = Project {
+            name: "app".to_string(),
+            path: std::path::PathBuf::from("/code/app"),
+            host: Some("vps".to_string()),
+            transport: Some(z_core::domain::Transport::Mosh),
+        };
+        let kdl = format_project_kdl(&project);
+        assert!(kdl.contains("transport \"mosh\""), "should write transport mosh");
+    }
+
+    #[test]
+    fn format_project_kdl_writes_transport_ssh() {
+        let project = Project {
+            name: "app".to_string(),
+            path: std::path::PathBuf::from("/code/app"),
+            host: None,
+            transport: Some(z_core::domain::Transport::Ssh),
+        };
+        let kdl = format_project_kdl(&project);
+        assert!(kdl.contains("transport \"ssh\""), "should write transport ssh");
+    }
+
+    #[test]
+    fn format_project_kdl_omits_transport_when_none() {
+        let project = Project {
+            name: "app".to_string(),
+            path: std::path::PathBuf::from("/code/app"),
+            host: None,
+            transport: None,
+        };
+        let kdl = format_project_kdl(&project);
+        assert!(!kdl.contains("transport"), "should not write transport when None");
     }
 }

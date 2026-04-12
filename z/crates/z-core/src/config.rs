@@ -133,7 +133,6 @@ fn parse_project_node(node: &KdlNode) -> Result<Project> {
 
     let mut path: Option<PathBuf> = None;
     let mut host: Option<String> = None;
-    let mut token: Option<String> = None;
     let mut transport: Option<Transport> = None;
 
     if let Some(children) = node.children() {
@@ -165,19 +164,7 @@ fn parse_project_node(node: &KdlNode) -> Result<Project> {
                         })?;
                     host = Some(h.to_string());
                 }
-                "token" => {
-                    let raw = child
-                        .entries()
-                        .first()
-                        .and_then(|e| e.value().as_string())
-                        .ok_or_else(|| {
-                            ZError::ConfigParse(format!(
-                                "project '{}': token node missing value",
-                                name
-                            ))
-                        })?;
-                    token = Some(resolve_env_token(raw)?);
-                }
+                "token" => {} // deprecated, ignored for backward compatibility
                 "transport" => {
                     let val = child
                         .entries()
@@ -213,7 +200,6 @@ fn parse_project_node(node: &KdlNode) -> Result<Project> {
         name,
         path,
         host,
-        token,
         transport,
     })
 }
@@ -672,7 +658,6 @@ project "myapp" {
         // tilde should expand (or at least be a non-empty path)
         assert!(p.path.to_str().unwrap().contains("myapp"));
         assert!(p.host.is_none());
-        assert!(p.token.is_none());
     }
 
     #[test]
@@ -696,41 +681,11 @@ project "beta" {
         let kdl = r#"
 project "prod-api" {
     path "/code/prod-api"
-    host "https://vps.example.com:8082"
+    host "vps.example.com"
 }
 "#;
         let projects = parse_projects_kdl(kdl).unwrap();
-        assert_eq!(projects[0].host.as_deref(), Some("https://vps.example.com:8082"));
-    }
-
-    #[test]
-    fn parse_projects_with_token_env_var() {
-        std::env::set_var("Z_TEST_VPS_TOKEN", "tok_abc");
-        let kdl = r#"
-project "prod-api" {
-    path "/code/prod-api"
-    host "https://vps.example.com:8082"
-    token "env:Z_TEST_VPS_TOKEN"
-}
-"#;
-        let projects = parse_projects_kdl(kdl).unwrap();
-        assert_eq!(projects[0].token.as_deref(), Some("tok_abc"));
-        std::env::remove_var("Z_TEST_VPS_TOKEN");
-    }
-
-    #[test]
-    fn parse_projects_token_missing_env_var_is_error() {
-        std::env::remove_var("Z_TEST_TOKEN_GONE");
-        let kdl = r#"
-project "prod-api" {
-    path "/code/prod-api"
-    token "env:Z_TEST_TOKEN_GONE"
-}
-"#;
-        assert!(matches!(
-            parse_projects_kdl(kdl).unwrap_err(),
-            ZError::EnvVarNotFound(_)
-        ));
+        assert_eq!(projects[0].host.as_deref(), Some("vps.example.com"));
     }
 
     #[test]
@@ -939,7 +894,7 @@ config {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn parse_projects_with_plain_token() {
+    fn parse_projects_token_field_is_ignored() {
         let kdl = r#"
 project "myapp" {
     path "/code/myapp"
@@ -947,7 +902,8 @@ project "myapp" {
 }
 "#;
         let projects = parse_projects_kdl(kdl).unwrap();
-        assert_eq!(projects[0].token.as_deref(), Some("literal-token-value"));
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "myapp");
     }
 
     #[test]
@@ -1628,7 +1584,7 @@ pr-prompt-template "repo pr {number}: {title}"
         let kdl = r#"
 project "ios-app" {
     path "/code/ios"
-    host "https://vps.example.com:8082"
+    host "vps.example.com"
     transport "mosh"
 }
 "#;
@@ -1641,7 +1597,7 @@ project "ios-app" {
         let kdl = r#"
 project "api" {
     path "/code/api"
-    host "https://vps.example.com:8082"
+    host "vps.example.com"
     transport "ssh"
 }
 "#;
