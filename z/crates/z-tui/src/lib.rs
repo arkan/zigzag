@@ -1829,30 +1829,35 @@ fn event_loop<B: Backend>(
                     ModalOutcome::OpenGhPicker { project, kind } => {
                         // Spawn background gh fetch
                         let kind_clone = kind.clone();
-                        let project_path = state.entries.iter()
+                        let entry_info = state.entries.iter()
                             .find(|e| e.project.name == project)
-                            .map(|e| e.project.path.clone());
+                            .map(|e| (e.project.path.clone(), e.project.host.clone()));
                         let tx = state.gh_tx.clone();
-                        if let (Some(path), Some(tx)) = (project_path, tx) {
+                        if let (Some((path, host)), Some(tx)) = (entry_info, tx) {
                             let kind_for_thread = kind_clone.clone();
                             std::thread::spawn(move || {
-                                let json = match kind_for_thread {
-                                    GhPickerKind::Issue => {
-                                        std::process::Command::new("gh")
-                                            .args(["issue", "list", "--json", "number,title,body,url", "--limit", "50"])
-                                            .current_dir(&path)
-                                            .output()
-                                    }
-                                    GhPickerKind::Pr => {
-                                        std::process::Command::new("gh")
-                                            .args(["pr", "list", "--json", "number,title,body,url,headRefName", "--limit", "50"])
-                                            .current_dir(&path)
-                                            .output()
-                                    }
+                                let gh_args = match kind_for_thread {
+                                    GhPickerKind::Issue => "gh issue list --json number,title,body,url --limit 50",
+                                    GhPickerKind::Pr => "gh pr list --json number,title,body,url,headRefName --limit 50",
                                 };
-                                if let Ok(output) = json {
-                                    let _ = tx.send(String::from_utf8_lossy(&output.stdout).to_string());
-                                }
+                                let output = if let Some(ssh_host) = host {
+                                    let path_str = path.to_string_lossy();
+                                    let remote_cmd = format!("cd '{}' && {}", path_str.replace('\'', "'\\''"), gh_args);
+                                    let wrapped = format!("bash -l -c '{}'", remote_cmd.replace('\'', "'\\''"));
+                                    std::process::Command::new("ssh")
+                                        .args(["-o", "ConnectTimeout=10", &ssh_host, &wrapped])
+                                        .output()
+                                } else {
+                                    let args: Vec<&str> = gh_args.split_whitespace().skip(1).collect();
+                                    std::process::Command::new("gh")
+                                        .args(&args)
+                                        .current_dir(&path)
+                                        .output()
+                                };
+                                let text = output
+                                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                                    .unwrap_or_else(|_| "[]".to_string());
+                                let _ = tx.send(text);
                             });
                         }
                         state.modal = Some(Modal::GhPicker {
@@ -3056,7 +3061,11 @@ fn render_gh_picker_modal(
     if loading {
         lines_vec.push(Line::from(Span::styled(" Loading...", dim)));
     } else if items.is_empty() {
-        lines_vec.push(Line::from(Span::styled(" No items found", dim)));
+        let msg = match kind {
+            GhPickerKind::Issue => " No issues",
+            GhPickerKind::Pr => " No PRs",
+        };
+        lines_vec.push(Line::from(Span::styled(msg, dim)));
     } else {
         let filtered: Vec<&GhPickerItem> = items
             .iter()
