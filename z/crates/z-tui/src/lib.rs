@@ -2039,7 +2039,7 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('x') => {
+                    KeyCode::Char('d') => {
                         let session_name = state
                             .filtered_sessions()
                             .get(state.selected_session)
@@ -2094,7 +2094,7 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('d') | KeyCode::Char('D') => {
+                    KeyCode::Char('D') => {
                         if state.focused_panel == Panel::Projects {
                             if let Some(entry) = state.selected_entry() {
                                 let project_name = entry.project.name.clone();
