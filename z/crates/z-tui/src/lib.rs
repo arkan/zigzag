@@ -3251,11 +3251,23 @@ pub struct SwitchPickerState {
 }
 
 impl SwitchPickerState {
+    /// Pick the initial highlighted index: skip past the current session so
+    /// pressing Enter alternates to the most-recent *other* project.
+    fn initial_selection(sessions: &[String], current: &str) -> usize {
+        if sessions.is_empty() {
+            return 0;
+        }
+        match sessions.iter().position(|s| s == current) {
+            Some(i) if i + 1 < sessions.len() => i + 1,
+            Some(i) if i > 0 => i - 1,
+            Some(_) => 0,
+            None if sessions.len() >= 2 => 1,
+            None => 0,
+        }
+    }
+
     pub fn new(sessions: Vec<String>, current_session: String) -> Self {
-        let selected = sessions
-            .iter()
-            .position(|s| s == &current_session)
-            .unwrap_or(0);
+        let selected = Self::initial_selection(&sessions, &current_session);
         let ages = vec![None; sessions.len()];
         let notification_counts = vec![0; sessions.len()];
         Self { sessions, ages, notification_counts, selected, current_session }
@@ -3272,10 +3284,7 @@ impl SwitchPickerState {
             ages.len(),
             "sessions and ages must have the same length"
         );
-        let selected = sessions
-            .iter()
-            .position(|s| s == &current_session)
-            .unwrap_or(0);
+        let selected = Self::initial_selection(&sessions, &current_session);
         let notification_counts = vec![0; sessions.len()];
         Self { sessions, ages, notification_counts, selected, current_session }
     }
@@ -3297,10 +3306,7 @@ impl SwitchPickerState {
             notification_counts.len(),
             "sessions and notification_counts must have the same length"
         );
-        let selected = sessions
-            .iter()
-            .position(|s| s == &current_session)
-            .unwrap_or(0);
+        let selected = Self::initial_selection(&sessions, &current_session);
         Self { sessions, ages, notification_counts, selected, current_session }
     }
 
@@ -3331,20 +3337,13 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
         .fg(rgb_to_color(theme.foreground));
     f.render_widget(Block::default().style(bg_style), area);
 
-    let modal_width = area.width.saturating_sub(4).min(60).max(40.min(area.width));
-    let content_rows = state.sessions.len().min(20) as u16;
-    let modal_height = content_rows.saturating_add(3).min(area.height);
-    let rect = modal_rect(modal_width, modal_height, area);
-
-    f.render_widget(Clear, rect);
-
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Switch Session ")
         .title_style(theme_style_to_style(&theme.modal_title))
         .border_style(theme_style_to_style(&theme.modal_border));
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     if inner.height < 2 {
         return;
@@ -3355,7 +3354,7 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    let inner_width = modal_width.saturating_sub(2) as usize;
+    let inner_width = area.width.saturating_sub(2) as usize;
     let right_cols = 10;
     let items: Vec<ListItem> = state
         .sessions
@@ -7281,18 +7280,61 @@ mod tests {
     }
 
     #[test]
-    fn switch_picker_initial_selection_on_current_session() {
+    fn switch_picker_initial_selection_skips_current_session() {
         let state = SwitchPickerState::new(
             vec!["alpha:main".to_string(), "beta:dev".to_string(), "myapp:main".to_string()],
             "beta:dev".to_string(),
         );
-        assert_eq!(state.selected, 1, "should start on the current session");
+        assert_eq!(
+            state.selected, 2,
+            "should skip past current to enable quick alternation"
+        );
     }
 
     #[test]
-    fn switch_picker_initial_selection_defaults_to_zero_when_not_found() {
+    fn switch_picker_initial_selection_when_current_is_first() {
+        // Sessions are sorted by last-attach desc, so current is typically at
+        // index 0 — selecting index 1 lets Enter jump to the previous project.
+        let state = SwitchPickerState::new(
+            vec!["alpha:main".to_string(), "beta:dev".to_string(), "myapp:main".to_string()],
+            "alpha:main".to_string(),
+        );
+        assert_eq!(state.selected, 1);
+    }
+
+    #[test]
+    fn switch_picker_initial_selection_when_current_is_last() {
+        // No "next" session, so fall back to the previous one rather than
+        // landing on the current session.
         let state = SwitchPickerState::new(
             vec!["alpha:main".to_string(), "beta:dev".to_string()],
+            "beta:dev".to_string(),
+        );
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn switch_picker_initial_selection_single_session_is_current() {
+        let state = SwitchPickerState::new(
+            vec!["alpha:main".to_string()],
+            "alpha:main".to_string(),
+        );
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn switch_picker_initial_selection_defaults_when_not_found() {
+        let state = SwitchPickerState::new(
+            vec!["alpha:main".to_string(), "beta:dev".to_string()],
+            "unknown:session".to_string(),
+        );
+        assert_eq!(state.selected, 1, "with 2+ sessions, default to second");
+    }
+
+    #[test]
+    fn switch_picker_initial_selection_single_session_not_current() {
+        let state = SwitchPickerState::new(
+            vec!["alpha:main".to_string()],
             "unknown:session".to_string(),
         );
         assert_eq!(state.selected, 0);
@@ -7312,9 +7354,10 @@ mod tests {
     #[test]
     fn switch_picker_move_down_increments() {
         let mut state = SwitchPickerState::new(
-            vec!["alpha:main".to_string(), "beta:dev".to_string()],
+            vec!["alpha:main".to_string(), "beta:dev".to_string(), "gamma:x".to_string()],
             "alpha:main".to_string(),
         );
+        state.selected = 0;
         state.move_down();
         assert_eq!(state.selected, 1);
     }
@@ -7341,10 +7384,11 @@ mod tests {
 
     #[test]
     fn switch_picker_selected_session_returns_name() {
-        let state = SwitchPickerState::new(
+        let mut state = SwitchPickerState::new(
             vec!["alpha:main".to_string(), "beta:dev".to_string()],
             "alpha:main".to_string(),
         );
+        state.selected = 0;
         assert_eq!(state.selected_session(), Some("alpha:main"));
     }
 
@@ -7566,13 +7610,16 @@ mod tests {
     }
 
     #[test]
-    fn switch_picker_with_ages_initial_selection_on_current() {
+    fn switch_picker_with_ages_initial_selection_skips_current() {
         let state = SwitchPickerState::with_ages(
             vec!["alpha:main".to_string(), "beta:dev".to_string()],
             vec![Some("1h".to_string()), Some("5m".to_string())],
             "beta:dev".to_string(),
         );
-        assert_eq!(state.selected, 1, "should start on beta:dev");
+        assert_eq!(
+            state.selected, 0,
+            "current is last, fall back to previous so Enter alternates"
+        );
     }
 
     #[test]
