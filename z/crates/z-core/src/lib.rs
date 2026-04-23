@@ -1,4 +1,5 @@
 pub mod action;
+pub mod activity;
 pub mod claude_hook;
 pub mod config;
 pub mod depcheck;

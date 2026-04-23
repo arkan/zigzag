@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use z_core::domain::Session;
 
@@ -10,6 +10,9 @@ pub struct RefreshData {
     pub sessions: Vec<(String, Vec<Session>)>,
     /// Session names with pending notifications.
     pub notifications: HashSet<String>,
+    /// Session name → last-attach unix timestamp. Used to sort sessions with
+    /// the most recently attached first.
+    pub activity: HashMap<String, u64>,
 }
 
 /// Result of merging refresh data into existing entries.
@@ -38,9 +41,10 @@ pub fn merge_refresh(
             .map(|s| s.name.clone())
     });
 
-    // Update sessions per project.
-    for (proj_name, new_sessions) in data.sessions {
+    // Update sessions per project, sorting by most-recent attach.
+    for (proj_name, mut new_sessions) in data.sessions {
         if let Some(entry) = entries.iter_mut().find(|e| e.project.name == proj_name) {
+            z_core::activity::sort_sessions_by_recent_attach(&mut new_sessions, &data.activity);
             entry.sessions = new_sessions;
         }
     }
@@ -116,6 +120,7 @@ mod tests {
                 })
                 .collect(),
             notifications: HashSet::new(),
+            activity: HashMap::new(),
         }
     }
 
@@ -220,6 +225,24 @@ mod tests {
         // "feat" is now at index 1
         assert_eq!(result.selected_session, 1);
         assert_eq!(entries[0].sessions.len(), 2);
+    }
+
+    #[test]
+    fn sessions_sorted_by_activity_after_merge() {
+        use std::collections::HashMap;
+        let mut entries = vec![make_entry("alpha", &[])];
+        let mut notifications = HashSet::new();
+        let mut data = make_refresh(vec![("alpha", vec!["old", "new", "mid"])]);
+        let mut activity: HashMap<String, u64> = HashMap::new();
+        activity.insert("alpha:old".to_string(), 100);
+        activity.insert("alpha:new".to_string(), 300);
+        activity.insert("alpha:mid".to_string(), 200);
+        data.activity = activity;
+
+        merge_refresh(&mut entries, &mut notifications, data, 0, 0);
+
+        let names: Vec<&str> = entries[0].sessions.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha:new", "alpha:mid", "alpha:old"]);
     }
 
     #[test]
