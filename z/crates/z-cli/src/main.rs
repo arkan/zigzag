@@ -216,9 +216,10 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 session_manager::strip_ansi(&raw)
             });
 
+        let activity = z_core::activity::load_activity();
         let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
         for project in &projects {
-            let sessions = if project.host.is_none() {
+            let mut sessions = if project.host.is_none() {
                 local_stdout
                     .as_deref()
                     .map(|s| session_manager::parse_zellij_sessions(s, &project.name))
@@ -226,6 +227,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
             } else {
                 Vec::new()
             };
+            z_core::activity::sort_sessions_by_recent_attach(&mut sessions, &activity);
             let worktree_count = WtWorktreeManager::new(project.path.clone())
                 .list_worktrees(&project.name)
                 .map(|wts| wts.len())
@@ -305,7 +307,9 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 };
                 (ZellijSessionManager { bin_path: resolve_bin_path() })
                     .kill_session(&sess)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                z_core::activity::remove_entry(session_name);
+                Ok(())
             },
             add_project_fn: &|path, name, host, transport| {
                 let transport = match transport {
@@ -602,6 +606,7 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
 
     // Build the expected session name (branch "/" → "-" normalization applied).
     let target_session = z_core::domain::Session::new(&project.name, effective_branch);
+    z_core::activity::record_attach(&target_session.name);
 
     let logger = log::FileLogger::new();
 
@@ -665,6 +670,13 @@ fn cmd_open_remote(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(&project.name);
+
+    let session_name = format!(
+        "{}:{}",
+        remote_name,
+        z_core::domain::sanitize_branch_name(branch)
+    );
+    z_core::activity::record_attach(&session_name);
 
     let remote_cmd = format!(
         "cd {} && z open {} {}",
@@ -767,6 +779,7 @@ fn cmd_delete(session_name: &str) -> z_core::error::Result<()> {
     };
 
     session_mgr.kill_session(&session)?;
+    z_core::activity::remove_entry(session_name);
     println!("Session {} killed.", session_name);
 
     // Prompt user to optionally remove the worktree.
@@ -796,6 +809,7 @@ fn cmd_delete_remote(
     branch: &str,
 ) -> z_core::error::Result<()> {
     remote::delete_remote_session(host, session_name)?;
+    z_core::activity::remove_entry(session_name);
     println!("Session {} killed.", session_name);
 
     // Prompt user to optionally remove the worktree on the remote machine.
@@ -911,6 +925,7 @@ fn cmd_prune(dry_run: bool) -> z_core::error::Result<()> {
 
     for session in &all_orphaned_sessions {
         session_mgr.kill_session(session)?;
+        z_core::activity::remove_entry(&session.name);
         println!("Killed session: {}", session.name);
         killed += 1;
     }
@@ -969,6 +984,7 @@ fn prune_summary(force: bool) -> z_core::error::Result<String> {
     for session in &all_orphaned_sessions {
         match session_mgr.kill_session(session) {
             Ok(()) => {
+                z_core::activity::remove_entry(&session.name);
                 log::log_info(&logger, &format!("PRUNE KILL {}", session.name));
                 killed += 1;
             }
@@ -1059,19 +1075,22 @@ fn cmd_switch() -> z_core::error::Result<()> {
     }
     let _lock = LockGuard;
 
-    let sessions: Vec<(String, Option<String>, usize)> = list_all_z_sessions_with_ages()
+    let activity = z_core::activity::load_activity();
+    let mut sessions: Vec<(String, Option<String>, usize)> = list_all_z_sessions_with_ages()
         .into_iter()
         .map(|(name, age)| {
             let count = z_core::notification::count_notifications(&name);
             (name, age, count)
         })
         .collect();
+    z_core::activity::sort_by_recent_attach(&mut sessions, &activity, |s| s.0.as_str());
 
     let selected = z_tui::run_switch_picker(sessions, current_session)
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
     if let Some(session_name) = selected {
         let _ = z_core::notification::clear_notifications(&session_name);
+        z_core::activity::record_attach(&session_name);
         let output = std::process::Command::new("zellij")
             .args(["action", "switch-session", &session_name])
             .output()

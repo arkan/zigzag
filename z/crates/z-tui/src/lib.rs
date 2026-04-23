@@ -775,9 +775,11 @@ impl TuiState {
         std::thread::spawn(move || {
             let sessions = refresher.fetch_all_sessions(&projects);
             let notifications = refresher.fetch_notifications();
+            let activity = z_core::activity::load_activity();
             let _ = tx.send(refresh::RefreshData {
                 sessions,
                 notifications,
+                activity,
             });
         });
     }
