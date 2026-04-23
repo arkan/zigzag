@@ -27,6 +27,10 @@ fn keybinds_block(bin_path: &str) -> String {
             bind \"Alt k\" {{\n\
                 Run \"{bin}\" \"switch\" {{\n\
                     floating true\n\
+                    width \"80%\"\n\
+                    height \"80%\"\n\
+                    x \"10%\"\n\
+                    y \"10%\"\n\
                     close_on_exit true\n\
                 }}\n\
             }}\n\
@@ -473,6 +477,26 @@ mod tests {
         // lazygit removed from keybinds — now in action menu
         assert!(kdl.contains("floating true"), "binding must set floating true");
         assert!(kdl.contains("close_on_exit true"), "binding must set close_on_exit true");
+    }
+
+    #[test]
+    fn alt_k_switcher_uses_wide_floating_pane() {
+        let layout = default_layout();
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let alt_k_start = kdl.find("bind \"Alt k\"").expect("Alt k binding missing");
+        let alt_k_block = &kdl[alt_k_start..];
+        let alt_k_end = alt_k_block.find("bind \"Alt l\"").unwrap_or(alt_k_block.len());
+        let alt_k_block = &alt_k_block[..alt_k_end];
+        assert!(
+            alt_k_block.contains("width"),
+            "Alt k binding must specify a width to widen the switcher; got:\n{}",
+            alt_k_block
+        );
+        assert!(
+            alt_k_block.contains("height"),
+            "Alt k binding must specify a height; got:\n{}",
+            alt_k_block
+        );
     }
 
     #[test]
