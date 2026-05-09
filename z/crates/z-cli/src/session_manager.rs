@@ -3,6 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::collections::HashSet;
 
+use crate::activity_store::FileActivityStore;
+use crate::notification_store::FileNotificationStore;
+use z_core::activity::SessionActivity;
 use z_core::domain::{Layout, Project, Session};
 use z_core::error::{Result, ZError};
 use z_core::traits::{SessionManager, SessionRefresher};
@@ -184,9 +187,13 @@ impl SessionRefresher for ZellijSessionRefresher {
     }
 
     fn fetch_notifications(&self) -> HashSet<String> {
-        z_core::notification::sessions_with_notifications()
+        FileNotificationStore::default().sessions_with_notifications()
             .into_iter()
             .collect()
+    }
+
+    fn fetch_activity(&self) -> SessionActivity {
+        FileActivityStore::default().load_activity()
     }
 }
 

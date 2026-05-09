@@ -1,13 +1,18 @@
+mod activity_store;
 mod config_store;
 mod depcheck_impl;
 mod forge;
 mod log;
 mod notify;
+mod notification_store;
+mod preview;
 mod prune;
 mod remote;
 mod session_manager;
+mod session_open;
 mod workspace;
 mod worktree_manager;
+mod zellij_action;
 
 use std::collections::HashSet;
 use std::io::{self, Write as _};
@@ -228,7 +233,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 session_manager::strip_ansi(&raw)
             });
 
-        let activity = z_core::activity::load_activity();
+        let activity = activity_store::FileActivityStore::default().load_activity();
         let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
         for project in &projects {
             let sessions = if project.host.is_none() {
@@ -269,7 +274,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
 
         // Load pending notifications so the TUI can display 🔔 badges.
         let notifications: HashSet<String> =
-            z_core::notification::sessions_with_notifications().into_iter().collect();
+            notification_store::FileNotificationStore::default().sessions_with_notifications().into_iter().collect();
 
         // Auto-select the newly added project if one was just added.
         let initial_idx = initial_project
@@ -306,7 +311,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 (ZellijSessionManager { bin_path: resolve_bin_path() })
                     .kill_session(&sess)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-                z_core::activity::remove_entry(session_name);
+                let _ = activity_store::FileActivityStore::default().remove_entry(session_name);
                 Ok(())
             },
             add_project_fn: &|path, name, host, transport| {
@@ -353,29 +358,11 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 let entries = build_entries(&s, &builtin)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
                 let notifications: HashSet<String> =
-                    z_core::notification::sessions_with_notifications().into_iter().collect();
+                    notification_store::FileNotificationStore::default().sessions_with_notifications().into_iter().collect();
                 Ok((entries, notifications))
             },
         };
 
-        let remote_preview: std::sync::Arc<dyn Fn(&str, &str) -> Result<z_tui::GitInfo, String> + Send + Sync> =
-            std::sync::Arc::new(|host: &str, path: &str| {
-                let info = remote::fetch_remote_git_info(host, path)
-                    .map_err(|e| e.to_string())?;
-                Ok(z_tui::GitInfo {
-                    branch: info.branch,
-                    is_dirty: info.is_dirty,
-                    ahead: info.ahead,
-                    behind: info.behind,
-                    commits: info.commits.into_iter()
-                        .map(|(hash, msg)| z_tui::CommitInfo { hash, message: msg })
-                        .collect(),
-                    pr: None,
-                    ci: None,
-                    zellij: None,
-                    review: None,
-                })
-            });
         let action = z_tui::run_tui(
             entries,
             navigation.clone(),
@@ -383,8 +370,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
             initial_idx,
             status_message.take(),
             callbacks,
-            Box::new(forge::GhForgeClient),
-            remote_preview,
+            Box::new(preview::CliPreviewDataSource::new(Box::new(forge::GhForgeClient))),
             Box::new(ZellijSessionRefresher),
             theme,
             global.actions.clone(),
@@ -399,21 +385,21 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 let session_name = session.clone().unwrap_or_else(|| {
                     z_core::domain::Session::new(&project, "main").name
                 });
-                let _ = z_core::notification::clear_notifications(&session_name);
+                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
                 let branch_owned: Option<String> = session
                     .as_deref()
                     .and_then(|s| parse_session_name(s))
                     .map(|(_, b)| b);
                 cmd_open(&project, branch_owned.as_deref(), None)?;
-                let _ = z_core::notification::clear_notifications(&session_name);
+                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
                 initial_project = Some(project);
             }
 
             TuiAction::New { project, branch } => {
                 let session_name = z_core::domain::Session::new(&project, &branch).name;
-                let _ = z_core::notification::clear_notifications(&session_name);
+                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
                 cmd_open(&project, Some(&branch), None)?;
-                let _ = z_core::notification::clear_notifications(&session_name);
+                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
                 initial_project = Some(project);
             }
 
@@ -428,9 +414,9 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 vars.insert("title", title.as_str());
                 let prompt = z_core::template::resolve_template(&template, &vars);
                 let session_name = z_core::domain::Session::new(&project, &branch).name;
-                let _ = z_core::notification::clear_notifications(&session_name);
+                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
                 cmd_open(&project, Some(&branch), Some(&prompt))?;
-                let _ = z_core::notification::clear_notifications(&session_name);
+                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
                 initial_project = Some(project);
             }
 
@@ -445,9 +431,9 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 vars.insert("branch", branch.as_str());
                 let prompt = z_core::template::resolve_template(&template, &vars);
                 let session_name = z_core::domain::Session::new(&project, &branch).name;
-                let _ = z_core::notification::clear_notifications(&session_name);
+                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
                 cmd_open(&project, Some(&branch), Some(&prompt))?;
-                let _ = z_core::notification::clear_notifications(&session_name);
+                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
                 initial_project = Some(project);
             }
 
@@ -456,43 +442,21 @@ fn cmd_tui() -> z_core::error::Result<()> {
             }
 
             TuiAction::RunAction { session, command, pane_type } => {
-                let mut pane_args: Vec<&str> = vec!["-s", &session, "run"];
-                match pane_type {
-                    z_core::action::PaneType::Float => {
-                        pane_args.extend(["--floating", "-c"]);
-                    }
-                    z_core::action::PaneType::FloatFullscreen => {
-                        pane_args.extend(["--floating", "-c", "--width", "100%", "--height", "100%"]);
-                    }
-                    z_core::action::PaneType::Split => {
-                        pane_args.push("-c");
-                    }
-                    z_core::action::PaneType::Tab => {
-                        // For Tab, we use new-tab directly instead of run
-                        let result = std::process::Command::new("zellij")
-                            .args(["-s", &session, "action", "new-tab", "--", "sh", "-c", &command])
-                            .status();
-                        match result {
-                            Ok(s) if s.success() => {
-                                status_message = Some("Action launched in new tab.".to_string());
-                            }
-                            Ok(_) => {
-                                status_message = Some("Action failed to launch.".to_string());
-                            }
-                            Err(e) => {
-                                status_message = Some(format!("Failed to run action: {e}"));
-                            }
-                        }
-                        continue;
-                    }
-                }
-                pane_args.extend(["--", "sh", "-c", &command]);
-                let result = std::process::Command::new("zellij")
-                    .args(&pane_args)
-                    .status();
+                let request = zellij_action::ZellijActionRequest {
+                    session: Some(session),
+                    tab_name: None,
+                    pane_type,
+                    command,
+                };
+                let is_tab = matches!(request.pane_type, z_core::action::PaneType::Tab);
+                let result = zellij_action::run_action(&request);
                 match result {
                     Ok(s) if s.success() => {
-                        status_message = Some("Action launched.".to_string());
+                        status_message = Some(if is_tab {
+                            "Action launched in new tab.".to_string()
+                        } else {
+                            "Action launched.".to_string()
+                        });
                     }
                     Ok(_) => {
                         status_message = Some("Action failed to launch.".to_string());
@@ -602,15 +566,15 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
         return cmd_open_remote(&project, &host, effective_branch);
     }
 
-    // Build the expected session name (branch "/" → "-" normalization applied).
-    let target_session = z_core::domain::Session::new(&project.name, effective_branch);
-    z_core::activity::record_attach(&target_session.name);
+    // Build the expected Session name (branch "/" -> "-" normalization applied).
+    let sessions = session_mgr.list_sessions(&project.name)?;
+    let open_plan = session_open::plan_open_session(&project, effective_branch, &sessions);
+    let _ = activity_store::FileActivityStore::default().record_attach(&open_plan.target_session.name);
 
     let logger = log::FileLogger::new();
 
-    // Check for an existing live session.
-    let sessions = session_mgr.list_sessions(&project.name)?;
-    if let Some(existing) = sessions.iter().find(|s| s.name == target_session.name) {
+    // Check for an existing live Session.
+    if let Some(existing) = &open_plan.existing_session {
         log::log_info(&logger, &format!("session {} attached", existing.name));
         return session_mgr.attach_session(existing);
     }
@@ -642,14 +606,14 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
     let per_repo = load_per_repo_config(&project.path);
     let mut layout = effective_layout(&global, &per_repo);
     layout.cwd = Some(cwd.clone());
-    layout.session_name_env = Some(target_session.name.clone());
+    layout.session_name_env = Some(open_plan.target_session.name.clone());
     if let Some(prompt_text) = prompt {
         z_core::layout::inject_prompt_into_layout(&mut layout, prompt_text);
     }
     inject_claude_stop_hook(&cwd);
     let theme = z_core::theme::Theme::from_name(global.theme);
     session_mgr.create_session(&project.name, effective_branch, layout, &theme)?;
-    log::log_info(&logger, &format!("session {} created", target_session.name));
+    log::log_info(&logger, &format!("session {} created", open_plan.target_session.name));
 
     Ok(())
 }
@@ -675,7 +639,7 @@ fn cmd_open_remote(
         remote_name,
         z_core::domain::sanitize_branch_name(branch)
     );
-    z_core::activity::record_attach(&session_name);
+    let _ = activity_store::FileActivityStore::default().record_attach(&session_name);
 
     let remote_cmd = format!(
         "cd {} && z open {} {}",
@@ -778,7 +742,7 @@ fn cmd_delete(session_name: &str) -> z_core::error::Result<()> {
     };
 
     session_mgr.kill_session(&session)?;
-    z_core::activity::remove_entry(session_name);
+    let _ = activity_store::FileActivityStore::default().remove_entry(session_name);
     println!("Session {} killed.", session_name);
 
     // Prompt user to optionally remove the worktree.
@@ -808,7 +772,7 @@ fn cmd_delete_remote(
     branch: &str,
 ) -> z_core::error::Result<()> {
     remote::delete_remote_session(host, session_name)?;
-    z_core::activity::remove_entry(session_name);
+    let _ = activity_store::FileActivityStore::default().remove_entry(session_name);
     println!("Session {} killed.", session_name);
 
     // Prompt user to optionally remove the worktree on the remote machine.
@@ -924,7 +888,7 @@ fn cmd_prune(dry_run: bool) -> z_core::error::Result<()> {
 
     for session in &all_orphaned_sessions {
         session_mgr.kill_session(session)?;
-        z_core::activity::remove_entry(&session.name);
+        let _ = activity_store::FileActivityStore::default().remove_entry(&session.name);
         println!("Killed session: {}", session.name);
         killed += 1;
     }
@@ -983,7 +947,7 @@ fn prune_summary(force: bool) -> z_core::error::Result<String> {
     for session in &all_orphaned_sessions {
         match session_mgr.kill_session(session) {
             Ok(()) => {
-                z_core::activity::remove_entry(&session.name);
+                let _ = activity_store::FileActivityStore::default().remove_entry(&session.name);
                 log::log_info(&logger, &format!("PRUNE KILL {}", session.name));
                 killed += 1;
             }
@@ -1074,11 +1038,11 @@ fn cmd_switch() -> z_core::error::Result<()> {
     }
     let _lock = LockGuard;
 
-    let activity = z_core::activity::load_activity();
+    let activity = activity_store::FileActivityStore::default().load_activity();
     let mut sessions: Vec<(String, Option<String>, usize)> = list_all_z_sessions_with_ages()
         .into_iter()
         .map(|(name, age)| {
-            let count = z_core::notification::count_notifications(&name);
+            let count = notification_store::FileNotificationStore::default().count_notifications(&name);
             (name, age, count)
         })
         .collect();
@@ -1088,8 +1052,8 @@ fn cmd_switch() -> z_core::error::Result<()> {
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
     if let Some(session_name) = selected {
-        let _ = z_core::notification::clear_notifications(&session_name);
-        z_core::activity::record_attach(&session_name);
+        let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
+        let _ = activity_store::FileActivityStore::default().record_attach(&session_name);
         let output = std::process::Command::new("zellij")
             .args(["action", "switch-session", &session_name])
             .output()
@@ -1175,28 +1139,13 @@ fn cmd_actions() -> z_core::error::Result<()> {
     if let Some(action) = selected {
         match &action.action {
             z_core::action::ActionType::Run { command } => {
-                let status = match action.pane {
-                    z_core::action::PaneType::Tab => {
-                        std::process::Command::new("zellij")
-                            .args(["action", "new-tab", "-n", &action.name, "--", "sh", "-c", command])
-                            .status()
-                            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?
-                    }
-                    _ => {
-                        let mut pane_args: Vec<&str> = vec!["run"];
-                        match action.pane {
-                            z_core::action::PaneType::Float => pane_args.extend(["--floating", "-c"]),
-                            z_core::action::PaneType::FloatFullscreen => pane_args.extend(["--floating", "-c", "--width", "100%", "--height", "100%"]),
-                            z_core::action::PaneType::Split => pane_args.push("-c"),
-                            _ => {}
-                        }
-                        pane_args.extend(["--", "sh", "-c", command]);
-                        std::process::Command::new("zellij")
-                            .args(&pane_args)
-                            .status()
-                            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?
-                    }
-                };
+                let status = zellij_action::run_action(&zellij_action::ZellijActionRequest {
+                    session: None,
+                    tab_name: Some(action.name.clone()),
+                    pane_type: action.pane.clone(),
+                    command: command.clone(),
+                })
+                .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
                 if !status.success() {
                     return Err(z_core::error::ZError::Io(
                         "action command failed".into(),

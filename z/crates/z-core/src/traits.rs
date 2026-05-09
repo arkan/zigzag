@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::activity::SessionActivity;
 use crate::domain::{CiStatus, Layout, NotifyLevel, PullRequest, Project, ReviewStatus, Session, Worktree};
 use crate::error::Result;
 use crate::theme::Theme;
@@ -43,4 +44,5 @@ pub trait Notifier {
 pub trait SessionRefresher: Send + Sync {
     fn fetch_all_sessions(&self, projects: &[Project]) -> Vec<(String, Vec<Session>)>;
     fn fetch_notifications(&self) -> HashSet<String>;
+    fn fetch_activity(&self) -> SessionActivity;
 }

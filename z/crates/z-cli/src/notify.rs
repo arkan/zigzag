@@ -10,6 +10,8 @@ use z_core::domain::NotifyLevel;
 use z_core::error::{Result, ZError};
 use z_core::traits::Notifier;
 
+use crate::notification_store::FileNotificationStore;
+
 // ---------------------------------------------------------------------------
 // FileNotifier
 // ---------------------------------------------------------------------------
@@ -21,7 +23,7 @@ pub struct FileNotifier {
 
 impl Notifier for FileNotifier {
     fn notify(&self, message: &str, level: NotifyLevel) -> Result<()> {
-        z_core::notification::write_notification(&self.session, message, level)
+        FileNotificationStore::default().write_notification(&self.session, message, level)
     }
 }
 
@@ -244,7 +246,7 @@ mod tests {
     }
 
     fn cleanup(session: &str) {
-        let _ = z_core::notification::clear_notifications(session);
+        let _ = FileNotificationStore::default().clear_notifications(session);
     }
 
     // ── FileNotifier tests ────────────────────────────────────────────────
@@ -257,7 +259,7 @@ mod tests {
         let n = FileNotifier { session: session.clone() };
         n.notify("hello", NotifyLevel::Info).unwrap();
 
-        assert!(z_core::notification::has_notifications(&session));
+        assert!(FileNotificationStore::default().has_notifications(&session));
         cleanup(&session);
     }
 
@@ -323,7 +325,7 @@ mod tests {
         dispatcher.notify("test msg", NotifyLevel::Info).unwrap();
 
         assert!(
-            z_core::notification::has_notifications(&session),
+            FileNotificationStore::default().has_notifications(&session),
             "file notifier should always be included"
         );
         cleanup(&session);
