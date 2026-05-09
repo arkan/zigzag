@@ -99,9 +99,30 @@ pub struct NotificationsConfig {
 /// Resolve an `env:VAR` token to the actual env var value.
 /// Returns the original string unchanged if it doesn't start with `env:`.
 pub fn resolve_env_token(value: &str) -> Result<String> {
+    resolve_env_token_with_environment(value, &ProcessConfigEnvironment)
+}
+
+/// Environment Interface used by config parsing.
+pub trait ConfigEnvironment {
+    fn var(&self, name: &str) -> Option<String>;
+}
+
+/// Adapter backed by the current process environment.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ProcessConfigEnvironment;
+
+impl ConfigEnvironment for ProcessConfigEnvironment {
+    fn var(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+}
+
+/// Resolve an `env:VAR` token through an injected environment.
+pub fn resolve_env_token_with_environment(value: &str, env: &impl ConfigEnvironment) -> Result<String> {
     match value.strip_prefix("env:") {
-        Some(var_name) => std::env::var(var_name)
-            .map_err(|_| ZError::EnvVarNotFound(var_name.to_string())),
+        Some(var_name) => env
+            .var(var_name)
+            .ok_or_else(|| ZError::EnvVarNotFound(var_name.to_string())),
         None => Ok(value.to_string()),
     }
 }
@@ -112,6 +133,11 @@ pub fn resolve_env_token(value: &str) -> Result<String> {
 
 /// Parse the contents of `~/.config/z/projects.kdl` into a list of projects.
 pub fn parse_projects_kdl(content: &str) -> Result<Vec<Project>> {
+    parse_projects_kdl_with_environment(content, &ProcessConfigEnvironment)
+}
+
+/// Parse projects through an injected environment for deterministic path expansion.
+pub fn parse_projects_kdl_with_environment(content: &str, env: &impl ConfigEnvironment) -> Result<Vec<Project>> {
     let doc: KdlDocument = content
         .parse()
         .map_err(|e| ZError::ConfigParse(format!("{}", e)))?;
@@ -119,11 +145,11 @@ pub fn parse_projects_kdl(content: &str) -> Result<Vec<Project>> {
     doc.nodes()
         .iter()
         .filter(|n| n.name().value() == "project")
-        .map(parse_project_node)
+        .map(|node| parse_project_node(node, env))
         .collect()
 }
 
-fn parse_project_node(node: &KdlNode) -> Result<Project> {
+fn parse_project_node(node: &KdlNode, env: &impl ConfigEnvironment) -> Result<Project> {
     let name = node
         .entries()
         .first()
@@ -149,7 +175,7 @@ fn parse_project_node(node: &KdlNode) -> Result<Project> {
                                 name
                             ))
                         })?;
-                    path = Some(expand_tilde(raw));
+                    path = Some(expand_tilde_with_environment(raw, env));
                 }
                 "host" => {
                     let h = child
@@ -204,13 +230,18 @@ fn parse_project_node(node: &KdlNode) -> Result<Project> {
     })
 }
 
+#[cfg(test)]
 fn expand_tilde(path: &str) -> PathBuf {
+    expand_tilde_with_environment(path, &ProcessConfigEnvironment)
+}
+
+fn expand_tilde_with_environment(path: &str, env: &impl ConfigEnvironment) -> PathBuf {
     if path == "~" {
-        if let Ok(home) = std::env::var("HOME") {
+        if let Some(home) = env.var("HOME") {
             return PathBuf::from(home);
         }
     } else if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
+        if let Some(home) = env.var("HOME") {
             return PathBuf::from(home).join(rest);
         }
     }
@@ -364,7 +395,7 @@ fn parse_layout_node(node: &KdlNode) -> Result<Layout> {
             }
         }
     }
-    Ok(Layout { tabs, cwd: None })
+    Ok(Layout { tabs, cwd: None, session_name_env: None })
 }
 
 fn parse_tab_node(node: &KdlNode) -> Result<Tab> {
@@ -614,6 +645,24 @@ pub fn effective_pr_prompt_template(global: &GlobalConfig, per_repo: &PerRepoCon
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct TestEnvironment {
+        vars: HashMap<String, String>,
+    }
+
+    impl TestEnvironment {
+        fn with_var(mut self, name: &str, value: &str) -> Self {
+            self.vars.insert(name.to_string(), value.to_string());
+            self
+        }
+    }
+
+    impl ConfigEnvironment for TestEnvironment {
+        fn var(&self, name: &str) -> Option<String> {
+            self.vars.get(name).cloned()
+        }
+    }
+
     // -----------------------------------------------------------------------
     // resolve_env_token
     // -----------------------------------------------------------------------
@@ -638,6 +687,15 @@ mod tests {
         std::env::remove_var("Z_TEST_TOKEN_MISSING_XYZ");
         let err = resolve_env_token("env:Z_TEST_TOKEN_MISSING_XYZ").unwrap_err();
         assert!(matches!(err, ZError::EnvVarNotFound(ref v) if v == "Z_TEST_TOKEN_MISSING_XYZ"));
+    }
+
+    #[test]
+    fn resolve_env_token_with_environment_uses_injected_value() {
+        let env = TestEnvironment::default().with_var("TOKEN", "secret123");
+        assert_eq!(
+            resolve_env_token_with_environment("env:TOKEN", &env).unwrap(),
+            "secret123"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -736,6 +794,18 @@ project "myapp" {
             projects[0].path,
             PathBuf::from("/home/testuser/Code/myapp")
         );
+    }
+
+    #[test]
+    fn parse_projects_kdl_with_environment_expands_tilde() {
+        let env = TestEnvironment::default().with_var("HOME", "/home/testuser");
+        let kdl = r#"
+project "myapp" {
+    path "~/Code/myapp"
+}
+"#;
+        let projects = parse_projects_kdl_with_environment(kdl, &env).unwrap();
+        assert_eq!(projects[0].path, PathBuf::from("/home/testuser/Code/myapp"));
     }
 
     #[test]
@@ -867,6 +937,12 @@ config {
     fn expand_tilde_bare_tilde() {
         std::env::set_var("HOME", "/home/testuser");
         assert_eq!(expand_tilde("~"), PathBuf::from("/home/testuser"));
+    }
+
+    #[test]
+    fn expand_tilde_with_environment_missing_home_leaves_path() {
+        let env = TestEnvironment::default();
+        assert_eq!(expand_tilde_with_environment("~/Code", &env), PathBuf::from("~/Code"));
     }
 
     #[test]
@@ -1146,6 +1222,7 @@ deploy {
                     panes: vec![],
                 }],
                 cwd: None,
+                session_name_env: None,
             }),
             ..Default::default()
         };
@@ -1164,6 +1241,7 @@ deploy {
                     panes: vec![],
                 }],
                 cwd: None,
+                session_name_env: None,
             }),
             ..Default::default()
         };
@@ -1183,6 +1261,7 @@ deploy {
                     },
                 ],
                 cwd: None,
+                session_name_env: None,
             }),
             ..Default::default()
         };
@@ -1206,6 +1285,7 @@ deploy {
                     }],
                 }],
                 cwd: None,
+                session_name_env: None,
             }),
             ..Default::default()
         };

@@ -1,22 +1,39 @@
 IMAGE := sandcastle:z
 AUTH_VOLUME := sandcastle-claude-auth
+CARGO ?= cargo
+Z_MANIFEST := z/Cargo.toml
+Z_PACKAGE := z-cli
+Z_BIN := z
+Z_CLI_PATH := z/crates/z-cli
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install docker login auth-status sandcastle
+.PHONY: help run build install clean docker login auth-status sandcastle
 
 help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Targets:"
+	@echo "  run           Run z via cargo (pass args with ARGS='...')"
+	@echo "  build         Build z binary"
+	@echo "  install       Install z binary via cargo"
+	@echo "  clean         Clean Rust build artifacts"
 	@echo "  sandcastle    Build Docker image and run Sandcastle"
 	@echo "  login         Authenticate Claude Code in container (Claude Max/Pro)"
 	@echo "  auth-status   Check authentication status"
-	@echo "  install       Install z binary via cargo"
 	@echo "  docker        Build Docker image only"
 
+run:
+	$(CARGO) run --manifest-path $(Z_MANIFEST) --package $(Z_PACKAGE) --bin $(Z_BIN) -- $(ARGS)
+
+build:
+	$(CARGO) build --manifest-path $(Z_MANIFEST) --package $(Z_PACKAGE) --bin $(Z_BIN)
+
 install:
-	cargo install --path z/crates/z-cli --root ~/.local --force
+	$(CARGO) install --path $(Z_CLI_PATH) --root ~/.local --force
+
+clean:
+	$(CARGO) clean --manifest-path $(Z_MANIFEST)
 
 docker:
 	docker build -t $(IMAGE) .sandcastle/

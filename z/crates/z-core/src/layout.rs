@@ -71,15 +71,30 @@ fn keybinds_block(bin_path: &str) -> String {
 /// ```
 pub fn generate_layout_kdl(layout: &Layout, bin_path: &str, theme: &Theme) -> String {
     let mut out = if let Some(ref cwd) = layout.cwd {
-        format!("layout cwd=\"{}\" {{\n", escape_kdl_string(&cwd.to_string_lossy()))
+        format!(
+            "layout cwd=\"{}\" {{\n",
+            escape_kdl_string(&cwd.to_string_lossy())
+        )
     } else {
         String::from("layout {\n")
     };
+
     out.push_str(DEFAULT_TAB_TEMPLATE);
     for tab in &layout.tabs {
         out.push_str(&generate_tab_kdl(tab));
     }
     out.push_str("}\n");
+
+    // Emit env block at layout-file root so Zellij's config parser can
+    // set environment variables on the session. Placing it inside the
+    // `layout { }` block causes "Unknown layout node: 'env'" from Zellij.
+    if let Some(ref session_name) = layout.session_name_env {
+        out.push_str(&format!(
+            "env {{\n    Z_SESSION_NAME \"{}\"\n}}\n",
+            escape_kdl_string(session_name)
+        ));
+    }
+
     out.push_str(&keybinds_block(bin_path));
     out.push_str(&theme.to_zellij_kdl());
     out
@@ -155,6 +170,7 @@ pub fn default_layout() -> Layout {
             },
         ],
         cwd: None,
+        session_name_env: None,
     }
 }
 
@@ -164,7 +180,11 @@ mod tests {
 
     #[test]
     fn generate_kdl_empty_layout() {
-        let layout = Layout { tabs: vec![], cwd: None };
+        let layout = Layout {
+            tabs: vec![],
+            cwd: None,
+            session_name_env: None,
+        };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.starts_with("layout {\n"));
         assert!(kdl.contains("theme \"dracula\""));
@@ -175,7 +195,10 @@ mod tests {
     fn generate_kdl_with_cwd() {
         let layout = Layout {
             tabs: vec![],
-            cwd: Some(std::path::PathBuf::from("/home/user/projects/myapp-feat-login")),
+            cwd: Some(std::path::PathBuf::from(
+                "/home/user/projects/myapp-feat-login",
+            )),
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.starts_with("layout cwd=\"/home/user/projects/myapp-feat-login\" {\n"));
@@ -188,6 +211,7 @@ mod tests {
         let layout = Layout {
             tabs: vec![],
             cwd: Some(std::path::PathBuf::from(r#"/home/user/my "project""#)),
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.starts_with("layout cwd=\"/home/user/my \\\"project\\\"\""));
@@ -204,6 +228,7 @@ mod tests {
                 }],
             }],
             cwd: None,
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.starts_with("layout {\n"));
@@ -223,6 +248,7 @@ mod tests {
                 }],
             }],
             cwd: None,
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains("pane command=\"claude\""));
@@ -240,6 +266,7 @@ mod tests {
                 }],
             }],
             cwd: None,
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains("pane command=\"nvim\" {\n            args \"--headless\"\n        }"));
@@ -271,9 +298,7 @@ mod tests {
         assert!(kdl.contains("pane command=\"claude\""));
         assert!(kdl.contains("tab name=\"shell\""));
         // shell tab has a plain pane (no command)
-        let shell_section = kdl
-            .find("tab name=\"shell\"")
-            .expect("shell tab in kdl");
+        let shell_section = kdl.find("tab name=\"shell\"").expect("shell tab in kdl");
         assert!(kdl[shell_section..].contains("pane\n"));
     }
 
@@ -295,6 +320,7 @@ mod tests {
                 panes: vec![],
             }],
             cwd: None,
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.starts_with("layout {\n"));
@@ -313,6 +339,7 @@ mod tests {
                 }],
             }],
             cwd: None,
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains(r#"tab name="my \"tab\"""#));
@@ -329,6 +356,7 @@ mod tests {
                 }],
             }],
             cwd: None,
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains(r#"pane command="C:\\bin\\tool""#));
@@ -345,6 +373,7 @@ mod tests {
                 }],
             }],
             cwd: None,
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains("args \"hello \\\"world\\\"\""));
@@ -367,6 +396,7 @@ mod tests {
                 ],
             }],
             cwd: None,
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains("pane command=\"htop\""));
@@ -384,9 +414,12 @@ mod tests {
                 }],
             }],
             cwd: None,
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
-        assert!(kdl.contains("pane command=\"nvim\" {\n            args \"-u\" \"NONE\" \"file.txt\"\n        }"));
+        assert!(kdl.contains(
+            "pane command=\"nvim\" {\n            args \"-u\" \"NONE\" \"file.txt\"\n        }"
+        ));
     }
 
     #[test]
@@ -400,6 +433,7 @@ mod tests {
                 }],
             }],
             cwd: Some(std::path::PathBuf::from("/home/user/myapp-feat")),
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.starts_with("layout cwd=\"/home/user/myapp-feat\" {\n"));
@@ -466,8 +500,14 @@ mod tests {
     fn generate_kdl_includes_keybinds_block() {
         let layout = default_layout();
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
-        assert!(kdl.contains("keybinds {"), "layout must include keybinds block");
-        assert!(kdl.contains("shared {"), "keybinds must include shared block");
+        assert!(
+            kdl.contains("keybinds {"),
+            "layout must include keybinds block"
+        );
+        assert!(
+            kdl.contains("shared {"),
+            "keybinds must include shared block"
+        );
         assert!(kdl.contains("bind \"Alt k\""), "keybinds must bind Alt k");
         assert!(kdl.contains("bind \"Alt l\""), "keybinds must bind Alt l");
         // Alt g removed — lazygit is now in the action menu
@@ -475,8 +515,14 @@ mod tests {
         assert!(kdl.contains("\"switch\""), "binding must run z switch");
         assert!(kdl.contains("\"actions\""), "binding must run z actions");
         // lazygit removed from keybinds — now in action menu
-        assert!(kdl.contains("floating true"), "binding must set floating true");
-        assert!(kdl.contains("close_on_exit true"), "binding must set close_on_exit true");
+        assert!(
+            kdl.contains("floating true"),
+            "binding must set floating true"
+        );
+        assert!(
+            kdl.contains("close_on_exit true"),
+            "binding must set close_on_exit true"
+        );
     }
 
     #[test]
@@ -485,7 +531,9 @@ mod tests {
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         let alt_k_start = kdl.find("bind \"Alt k\"").expect("Alt k binding missing");
         let alt_k_block = &kdl[alt_k_start..];
-        let alt_k_end = alt_k_block.find("bind \"Alt l\"").unwrap_or(alt_k_block.len());
+        let alt_k_end = alt_k_block
+            .find("bind \"Alt l\"")
+            .unwrap_or(alt_k_block.len());
         let alt_k_block = &alt_k_block[..alt_k_end];
         assert!(
             alt_k_block.contains("width"),
@@ -519,7 +567,11 @@ mod tests {
 
     #[test]
     fn generate_kdl_keybinds_present_in_empty_layout() {
-        let layout = Layout { tabs: vec![], cwd: None };
+        let layout = Layout {
+            tabs: vec![],
+            cwd: None,
+            session_name_env: None,
+        };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains("keybinds {"));
         assert!(kdl.contains("bind \"Alt k\""));
@@ -530,9 +582,13 @@ mod tests {
         let layout = Layout {
             tabs: vec![Tab {
                 name: "work".to_string(),
-                panes: vec![Pane { command: Some("vim".to_string()), args: vec![] }],
+                panes: vec![Pane {
+                    command: Some("vim".to_string()),
+                    args: vec![],
+                }],
             }],
             cwd: Some(std::path::PathBuf::from("/some/path")),
+            session_name_env: None,
         };
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains("keybinds {"));
@@ -581,7 +637,9 @@ mod tests {
         let mut layout = default_layout();
         inject_prompt_into_layout(&mut layout, "test");
         let claude_pane = &layout.tabs[0].panes[0];
-        assert!(claude_pane.args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(claude_pane
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
     }
 
     #[test]
@@ -589,9 +647,13 @@ mod tests {
         let mut layout = Layout {
             tabs: vec![Tab {
                 name: "shell".to_string(),
-                panes: vec![Pane { command: None, args: vec![] }],
+                panes: vec![Pane {
+                    command: None,
+                    args: vec![],
+                }],
             }],
             cwd: None,
+            session_name_env: None,
         };
         inject_prompt_into_layout(&mut layout, "test");
         // No panic, no change
@@ -604,7 +666,10 @@ mod tests {
             tabs: vec![
                 Tab {
                     name: "shell".to_string(),
-                    panes: vec![Pane { command: None, args: vec![] }],
+                    panes: vec![Pane {
+                        command: None,
+                        args: vec![],
+                    }],
                 },
                 Tab {
                     name: "editor".to_string(),
@@ -615,9 +680,12 @@ mod tests {
                 },
             ],
             cwd: None,
+            session_name_env: None,
         };
         inject_prompt_into_layout(&mut layout, "found it");
-        assert!(layout.tabs[1].panes[0].args.contains(&"found it".to_string()));
+        assert!(layout.tabs[1].panes[0]
+            .args
+            .contains(&"found it".to_string()));
     }
 
     #[test]
@@ -626,5 +694,88 @@ mod tests {
         inject_prompt_into_layout(&mut layout, "/grill-me issue #42");
         let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
         assert!(kdl.contains("\"/grill-me issue #42\""));
+    }
+
+    // -----------------------------------------------------------------------
+    // session_name_env (env block)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn generate_kdl_no_env_block_when_not_set() {
+        let layout = Layout {
+            tabs: vec![],
+            cwd: None,
+            session_name_env: None,
+        };
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        assert!(
+            !kdl.contains("env {"),
+            "should not contain env block when session_name_env is None"
+        );
+    }
+
+    #[test]
+    fn generate_kdl_env_block_with_session_name() {
+        let layout = Layout {
+            tabs: vec![],
+            cwd: None,
+            session_name_env: Some("myapp:feat-login".to_string()),
+        };
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        assert!(kdl.contains("env {"), "should contain env block");
+        assert!(
+            kdl.contains(r#"Z_SESSION_NAME "myapp:feat-login""#),
+            "should set Z_SESSION_NAME"
+        );
+    }
+
+    #[test]
+    fn generate_kdl_env_block_appears_outside_layout_block() {
+        let layout = Layout {
+            tabs: vec![],
+            cwd: None,
+            session_name_env: Some("myapp:main".to_string()),
+        };
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let layout_close = kdl.find("layout {").expect("layout block opening");
+        // Find the "}\n" that closes the layout block (first `}\n` after layout {)
+        let layout_block_end = kdl[layout_close..].find("}\n").expect("layout block end");
+        let layout_block_end_abs = layout_close + layout_block_end;
+        let env_pos = kdl.find("env {").expect("env block");
+        let keybinds_pos = kdl.find("keybinds {").expect("keybinds block");
+        assert!(
+            env_pos > layout_block_end_abs,
+            "env block must appear after the layout block closes"
+        );
+        assert!(
+            env_pos < keybinds_pos,
+            "env block must appear before keybinds block"
+        );
+    }
+
+    #[test]
+    fn generate_kdl_env_block_with_cwd_and_session() {
+        let layout = Layout {
+            tabs: vec![],
+            cwd: Some(std::path::PathBuf::from("/work/path")),
+            session_name_env: Some("proj:branch".to_string()),
+        };
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        assert!(kdl.starts_with("layout cwd=\"/work/path\" {"));
+        assert!(kdl.contains(r#"Z_SESSION_NAME "proj:branch""#));
+    }
+
+    #[test]
+    fn generate_kdl_env_block_escapes_session_name() {
+        let layout = Layout {
+            tabs: vec![],
+            cwd: None,
+            session_name_env: Some(r#"my"app:feat"#.to_string()),
+        };
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        assert!(
+            kdl.contains(r#"Z_SESSION_NAME "my\"app:feat""#),
+            "should escape quotes in session name"
+        );
     }
 }

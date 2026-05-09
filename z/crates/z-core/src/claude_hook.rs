@@ -93,7 +93,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const CMD: &str = "z notify \"Claude a terminé\"";
+    const CMD: &str = "z notify \"Claude a terminé: ${Z_SESSION_NAME:-$ZELLIJ_SESSION_NAME}\"";
 
     fn z_hook_entry(cmd: &str) -> Value {
         json!({
@@ -142,10 +142,7 @@ mod tests {
             result["hooks"]["PreToolUse"],
             json!([{ "matcher": "", "hooks": [{ "type": "command", "command": "echo pre" }] }])
         );
-        assert_eq!(
-            result["hooks"]["Stop"],
-            json!([z_hook_entry(CMD)])
-        );
+        assert_eq!(result["hooks"]["Stop"], json!([z_hook_entry(CMD)]));
     }
 
     #[test]

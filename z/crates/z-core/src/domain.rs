@@ -77,6 +77,9 @@ pub struct Layout {
     pub tabs: Vec<Tab>,
     /// Optional working directory for the session. When set, all panes open in this directory.
     pub cwd: Option<PathBuf>,
+    /// Optional session name to set as `Z_SESSION_NAME` in the layout env block,
+    /// so child processes (e.g. OpenCode plugins) can identify the session.
+    pub session_name_env: Option<String>,
 }
 
 /// Normalize a branch name to a session-safe string (replace `/` with `-`).
@@ -216,10 +219,7 @@ mod tests {
         // Verify Session::new produces the same result as sanitize_branch_name
         let branch = "feat/complex/nested/branch";
         let s = Session::new("proj", branch);
-        assert_eq!(
-            s.name,
-            format!("proj:{}", sanitize_branch_name(branch))
-        );
+        assert_eq!(s.name, format!("proj:{}", sanitize_branch_name(branch)));
     }
 
     // ---- slugify ----

@@ -6,6 +6,7 @@ mod notify;
 mod prune;
 mod remote;
 mod session_manager;
+mod workspace;
 mod worktree_manager;
 
 use std::collections::HashSet;
@@ -33,7 +34,7 @@ use crate::session_manager::{
 };
 use crate::worktree_manager::WtWorktreeManager;
 
-use z_tui::{Navigation, ProjectEntry, TuiAction, WorkflowInfo};
+use z_tui::{Navigation, ProjectEntry, TuiAction};
 
 /// Resolve the absolute path to the current `z` binary.
 /// Falls back to `"z"` (assumes PATH) if `current_exe()` fails.
@@ -42,6 +43,17 @@ fn resolve_bin_path() -> String {
         .ok()
         .and_then(|p| p.to_str().map(String::from))
         .unwrap_or_else(|| "z".to_string())
+}
+
+/// Resolve the session name from the environment.
+///
+/// Checks `Z_SESSION_NAME` first (set by Zellij layout env block),
+/// then falls back to `ZELLIJ_SESSION_NAME` (set by Zellij itself).
+/// Returns `None` if neither is set.
+fn resolve_session_env() -> Option<String> {
+    std::env::var("Z_SESSION_NAME")
+        .ok()
+        .or_else(|| std::env::var("ZELLIJ_SESSION_NAME").ok())
 }
 
 fn main() {
@@ -118,7 +130,7 @@ fn run() {
         }
         Some("notify") => {
             // Usage: z notify [session] <message> [--level info|warning|error]
-            let env_session = std::env::var("ZELLIJ_SESSION_NAME").ok();
+            let env_session = resolve_session_env();
             match resolve_notify_args(&args[1..], env_session.as_deref()) {
                 Ok((session, message, level)) => {
                     if let Err(e) = cmd_notify(&session, &message, level) {
@@ -219,7 +231,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
         let activity = z_core::activity::load_activity();
         let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
         for project in &projects {
-            let mut sessions = if project.host.is_none() {
+            let sessions = if project.host.is_none() {
                 local_stdout
                     .as_deref()
                     .map(|s| session_manager::parse_zellij_sessions(s, &project.name))
@@ -227,41 +239,27 @@ fn cmd_tui() -> z_core::error::Result<()> {
             } else {
                 Vec::new()
             };
-            z_core::activity::sort_sessions_by_recent_attach(&mut sessions, &activity);
             let worktree_count = WtWorktreeManager::new(project.path.clone())
                 .list_worktrees(&project.name)
                 .map(|wts| wts.len())
                 .unwrap_or(0);
 
-            let mut all_workflows: Vec<AutopilotWorkflow> = builtin.to_vec();
             let repo_config_path = project.path.join(".config").join("z.kdl");
-            if let Ok(content) = fs::read_to_string(&repo_config_path) {
-                if let Ok(custom) = z_autopilot::dsl::parse_autopilot_workflows(&content) {
-                    all_workflows.extend(custom);
-                }
-            }
+            let repo_config = fs::read_to_string(&repo_config_path)
+                .map(|content| workspace::parse_repo_workspace_config(&content))
+                .unwrap_or_default();
 
-            let workflows: Vec<WorkflowInfo> = all_workflows
-                .iter()
-                .map(|wf| WorkflowInfo {
-                    name: wf.name.clone(),
-                    trigger: wf.trigger.as_str().to_string(),
-                    description: wf.description.clone().unwrap_or_default(),
-                })
-                .collect();
-
-            let repo_actions = {
-                let repo_config_path = project.path.join(".config").join("z.kdl");
-                if let Ok(content) = fs::read_to_string(&repo_config_path) {
-                    z_core::config::parse_per_repo_config_kdl(&content)
-                        .map(|c| c.actions)
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                }
-            };
-
-            entries.push(ProjectEntry { project: project.clone(), sessions, worktree_count, workflows, repo_actions });
+            entries.push(workspace::build_project_entry(
+                workspace::WorkspaceEntryInput {
+                    project: project.clone(),
+                    sessions,
+                    worktree_count,
+                    custom_workflows: repo_config.custom_workflows,
+                    repo_actions: repo_config.repo_actions,
+                },
+                builtin,
+                &activity,
+            ));
         }
         Ok(entries)
     }
@@ -644,6 +642,7 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
     let per_repo = load_per_repo_config(&project.path);
     let mut layout = effective_layout(&global, &per_repo);
     layout.cwd = Some(cwd.clone());
+    layout.session_name_env = Some(target_session.name.clone());
     if let Some(prompt_text) = prompt {
         z_core::layout::inject_prompt_into_layout(&mut layout, prompt_text);
     }
@@ -1232,7 +1231,7 @@ fn inject_claude_stop_hook(cwd: &std::path::Path) {
 
     let merged = z_core::claude_hook::merge_stop_hook(
         existing,
-        "z notify \"Claude a terminé: $ZELLIJ_SESSION_NAME\"",
+        "z notify \"Claude a terminé: ${Z_SESSION_NAME:-$ZELLIJ_SESSION_NAME}\"",
     );
 
     let _ = std::fs::create_dir_all(&settings_dir);
@@ -1278,7 +1277,8 @@ fn parse_notify_level<'a>(mut args: impl Iterator<Item = &'a String>) -> NotifyL
 /// Parse notify arguments and resolve the session.
 ///
 /// `args` — everything after the `notify` subcommand.
-/// `env_session` — value of `ZELLIJ_SESSION_NAME`, if set.
+/// `env_session` — resolved session name from environment
+/// (`Z_SESSION_NAME` with `ZELLIJ_SESSION_NAME` fallback), if any.
 ///
 /// Returns `(session, message, level)` or an error string.
 fn resolve_notify_args(
@@ -1301,7 +1301,8 @@ fn resolve_notify_args(
         2 => (positional[0].to_string(), positional[1].to_string()),
         1 => {
             let s = env_session.ok_or_else(|| {
-                "no session specified and ZELLIJ_SESSION_NAME is not set".to_string()
+                "no session specified and neither Z_SESSION_NAME nor ZELLIJ_SESSION_NAME is set"
+                    .to_string()
             })?;
             (s.to_string(), positional[0].to_string())
         }
@@ -1324,6 +1325,14 @@ mod tests {
     /// Mutex to serialize tests that mutate the EDITOR environment variable,
     /// preventing race conditions when the test suite runs in parallel.
     static EDITOR_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// Mutex to serialize tests that mutate session environment variables.
+    static SESSION_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn clear_session_env() {
+        std::env::remove_var("Z_SESSION_NAME");
+        std::env::remove_var("ZELLIJ_SESSION_NAME");
+    }
 
     #[test]
     fn confirm_response_y_returns_true() {
@@ -1444,7 +1453,7 @@ mod tests {
     fn resolve_notify_args_one_positional_no_env_returns_error() {
         let args = vec!["hello world".into()];
         let err = resolve_notify_args(&args, None).unwrap_err();
-        assert!(err.contains("ZELLIJ_SESSION_NAME"), "error should mention env var: {err}");
+        assert!(err.contains("Z_SESSION_NAME"), "error should mention env var: {err}");
     }
 
     #[test]
@@ -1480,6 +1489,40 @@ mod tests {
         assert_eq!(session, "env-session");
         assert_eq!(message, "deploy done");
         assert_eq!(level, NotifyLevel::Error);
+    }
+
+    #[test]
+    fn resolve_session_env_uses_z_session_name() {
+        let _guard = SESSION_ENV_MUTEX.lock().unwrap();
+        clear_session_env();
+        std::env::set_var("Z_SESSION_NAME", "z-session");
+
+        assert_eq!(resolve_session_env().as_deref(), Some("z-session"));
+
+        clear_session_env();
+    }
+
+    #[test]
+    fn resolve_session_env_falls_back_to_zellij_session_name() {
+        let _guard = SESSION_ENV_MUTEX.lock().unwrap();
+        clear_session_env();
+        std::env::set_var("ZELLIJ_SESSION_NAME", "zellij-session");
+
+        assert_eq!(resolve_session_env().as_deref(), Some("zellij-session"));
+
+        clear_session_env();
+    }
+
+    #[test]
+    fn resolve_session_env_prefers_z_session_name() {
+        let _guard = SESSION_ENV_MUTEX.lock().unwrap();
+        clear_session_env();
+        std::env::set_var("Z_SESSION_NAME", "z-session");
+        std::env::set_var("ZELLIJ_SESSION_NAME", "zellij-session");
+
+        assert_eq!(resolve_session_env().as_deref(), Some("z-session"));
+
+        clear_session_env();
     }
 
     // ── format_workflow_list tests ────────────────────────────────────────────
