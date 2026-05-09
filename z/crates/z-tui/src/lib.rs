@@ -362,12 +362,61 @@ pub struct GitInfo {
     pub review: Option<z_core::domain::ReviewStatus>,
 }
 
-/// Combined PR/CI/Zellij data from the forge/session background thread.
-struct ForgeData {
-    pr: Option<PullRequest>,
-    ci: CiStatus,
-    zellij: Option<ZellijInfo>,
-    review: Option<z_core::domain::ReviewStatus>,
+/// Preview acquisition context selected by the TUI.
+#[derive(Debug, Clone)]
+pub struct PreviewContext {
+    pub project_path: std::path::PathBuf,
+    pub host: Option<String>,
+    pub project_name: String,
+    pub branch: String,
+    pub session_name: String,
+}
+
+/// Combined PR/CI/Zellij data from the Preview background thread.
+pub struct PreviewExtraData {
+    pub pr: Option<PullRequest>,
+    pub ci: CiStatus,
+    pub zellij: Option<ZellijInfo>,
+    pub review: Option<z_core::domain::ReviewStatus>,
+}
+
+/// Preview data Interface. Concrete Adapters live outside the TUI.
+pub trait PreviewDataSource: Send + Sync {
+    fn load_git_preview(&self, context: &PreviewContext) -> Result<GitInfo, String>;
+    fn load_extra_preview(&self, context: &PreviewContext) -> Result<PreviewExtraData, String>;
+}
+
+struct NoopPreviewDataSource;
+
+impl PreviewDataSource for NoopPreviewDataSource {
+    fn load_git_preview(&self, _: &PreviewContext) -> Result<GitInfo, String> {
+        Err("preview data source not configured".to_string())
+    }
+
+    fn load_extra_preview(&self, _: &PreviewContext) -> Result<PreviewExtraData, String> {
+        Ok(PreviewExtraData {
+            pr: None,
+            ci: CiStatus::Unknown,
+            zellij: None,
+            review: None,
+        })
+    }
+}
+
+struct NoopForgeClient;
+
+impl z_core::traits::ForgeClient for NoopForgeClient {
+    fn get_pr(&self, _: &str, _: &str) -> z_core::error::Result<Option<PullRequest>> {
+        Ok(None)
+    }
+
+    fn get_ci_status(&self, _: &str, _: &str) -> z_core::error::Result<CiStatus> {
+        Ok(CiStatus::Unknown)
+    }
+
+    fn get_review_status(&self, _: &str, _: &str) -> z_core::error::Result<Option<z_core::domain::ReviewStatus>> {
+        Ok(None)
+    }
 }
 
 /// State of the preview pane data.
@@ -402,7 +451,7 @@ pub struct TuiState {
     /// Receiver for the in-flight async git fetch, if any.
     pub preview_rx: Option<mpsc::Receiver<Result<GitInfo, String>>>,
     /// Receiver for the in-flight async forge/Zellij fetch (PR, CI, session info).
-    pub(crate) forge_rx: Option<mpsc::Receiver<Result<ForgeData, String>>>,
+    pub(crate) forge_rx: Option<mpsc::Receiver<Result<PreviewExtraData, String>>>,
     /// Session names (e.g. `"myapp:feat-login"`) that have pending notifications.
     /// Sessions in this set render with a 🔔 badge in the SESSIONS panel.
     pub notifications: HashSet<String>,
@@ -423,6 +472,8 @@ pub struct TuiState {
     pub review_tool: String,
     /// Fetches git info from a remote host via SSH. `(ssh_host, project_path) -> GitInfo`.
     pub remote_preview_fn: Arc<dyn Fn(&str, &str) -> Result<GitInfo, String> + Send + Sync>,
+    /// Preview data source used by background preview workers.
+    pub preview_source: Arc<dyn PreviewDataSource>,
     /// Session refresher used to poll sessions/notifications in background.
     pub refresher: Arc<dyn SessionRefresher>,
     /// Receiver for the in-flight session refresh, if any.
@@ -453,6 +504,7 @@ impl TuiState {
             search_query: String::new(),
             forge_client,
             remote_preview_fn,
+            preview_source: Arc::new(NoopPreviewDataSource),
             preview_data: PreviewData::Loading,
             preview_key: String::new(),
             preview_rx: None,
@@ -469,6 +521,24 @@ impl TuiState {
             last_refresh: Instant::now() - Duration::from_secs(10),
             gh_tx: None,
             gh_rx: None,
+        }
+    }
+
+    pub fn with_preview_source(
+        entries: Vec<ProjectEntry>,
+        navigation: Navigation,
+        preview_source: Arc<dyn PreviewDataSource>,
+        refresher: Arc<dyn SessionRefresher>,
+    ) -> Self {
+        Self {
+            preview_source,
+            ..Self::new(
+                entries,
+                navigation,
+                Arc::new(NoopForgeClient),
+                Arc::new(|_, _| Err("remote preview function not configured".to_string())),
+                refresher,
+            )
         }
     }
 
@@ -595,7 +665,7 @@ impl TuiState {
             Some(e) => e,
             None => return,
         };
-        let path = entry.project.path.clone();
+        let project_path = entry.project.path.clone();
         let host = entry.project.host.clone();
         let project_name = entry.project.name.clone();
 
@@ -627,53 +697,31 @@ impl TuiState {
 
         self.preview_key = key;
         self.preview_data = PreviewData::Loading;
+        let context = PreviewContext {
+            project_path,
+            host,
+            project_name,
+            branch,
+            session_name,
+        };
 
-        // Phase 1 — git info (local or remote via SSH)
-        // Worktree resolution happens inside the background thread to avoid
-        // blocking the UI (especially for remote projects where it needs SSH).
+        // Phase 1 — git info.
         let (tx1, rx1) = mpsc::channel();
         self.preview_rx = Some(rx1);
-        let path1 = path.clone();
-        let branch1 = branch.clone();
-        if let Some(ssh_host) = host.clone() {
-            let remote_fn = Arc::clone(&self.remote_preview_fn);
-            std::thread::spawn(move || {
-                let effective = if !branch1.is_empty() {
-                    resolve_worktree_path(&path1, &branch1, Some(&ssh_host))
-                        .unwrap_or(path1)
-                } else {
-                    path1
-                };
-                let result = remote_fn(&ssh_host, &effective.to_string_lossy());
-                let _ = tx1.send(result);
-            });
-        } else {
-            std::thread::spawn(move || {
-                let effective = if !branch1.is_empty() {
-                    resolve_worktree_path(&path1, &branch1, None)
-                        .unwrap_or(path1)
-                } else {
-                    path1
-                };
-                let result = fetch_git_info(&effective.to_string_lossy());
-                let _ = tx1.send(result);
-            });
-        }
+        let preview_source = Arc::clone(&self.preview_source);
+        let git_context = context.clone();
+        std::thread::spawn(move || {
+            let result = preview_source.load_git_preview(&git_context);
+            let _ = tx1.send(result);
+        });
 
         // Phase 2 — PR/CI/Zellij (slow, network)
         let (tx2, rx2) = mpsc::channel();
         self.forge_rx = Some(rx2);
-        let forge_client = Arc::clone(&self.forge_client);
+        let preview_source = Arc::clone(&self.preview_source);
         std::thread::spawn(move || {
-            let forge = ForgeData {
-                pr: forge_client.get_pr(&project_name, &branch).ok().flatten(),
-                ci: forge_client
-                    .get_ci_status(&project_name, &branch)
-                    .unwrap_or(CiStatus::Unknown),
-                zellij: fetch_zellij_info(&session_name),
-                review: forge_client.get_review_status(&project_name, &branch).ok().flatten(),
-            };
-            let _ = tx2.send(Ok(forge));
+            let result = preview_source.load_extra_preview(&context);
+            let _ = tx2.send(result);
         });
     }
 
@@ -775,7 +823,7 @@ impl TuiState {
         std::thread::spawn(move || {
             let sessions = refresher.fetch_all_sessions(&projects);
             let notifications = refresher.fetch_notifications();
-            let activity = z_core::activity::load_activity();
+            let activity = refresher.fetch_activity();
             let _ = tx.send(refresh::RefreshData {
                 sessions,
                 notifications,
@@ -820,199 +868,11 @@ impl TuiState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Git data fetching (runs in a background thread)
-// ---------------------------------------------------------------------------
-
-/// Fetch git information for `path` using subprocess git commands.
-///
-/// Returns `Err` if the directory is not a git repository or git is not found.
-fn fetch_git_info(path: &str) -> Result<GitInfo, String> {
-    use std::process::Command;
-
-    // Current branch
-    let branch_out = Command::new("git")
-        .args(["-C", path, "symbolic-ref", "--short", "HEAD"])
-        .output()
-        .map_err(|e| format!("git error: {}", e))?;
-
-    if !branch_out.status.success() {
-        return Err("not a git repository".to_string());
-    }
-    let branch = String::from_utf8_lossy(&branch_out.stdout)
-        .trim()
-        .to_string();
-
-    // Dirty / clean status
-    let status_out = Command::new("git")
-        .args(["-C", path, "status", "--short"])
-        .output()
-        .map_err(|e| format!("git error: {}", e))?;
-    let is_dirty = !String::from_utf8_lossy(&status_out.stdout)
-        .trim()
-        .is_empty();
-
-    // Ahead / behind relative to upstream (best effort — 0/0 if no upstream)
-    let (ahead, behind) = fetch_ahead_behind(path);
-
-    // Recent commits
-    let log_out = Command::new("git")
-        .args(["-C", path, "log", "--oneline", "-5"])
-        .output()
-        .map_err(|e| format!("git error: {}", e))?;
-    let commits = String::from_utf8_lossy(&log_out.stdout)
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| {
-            let mut parts = l.splitn(2, ' ');
-            let hash = parts.next().unwrap_or("").to_string();
-            let message = parts.next().unwrap_or("").to_string();
-            CommitInfo { hash, message }
-        })
-        .collect();
-
-    Ok(GitInfo {
-        branch,
-        ahead,
-        behind,
-        is_dirty,
-        commits,
-        pr: None,
-        ci: None,
-        zellij: None,
-        review: None,
-    })
-}
-
-/// Resolve the worktree path for a given branch by parsing `git worktree list --porcelain`.
-/// For remote projects, runs the command via SSH.
-/// Returns `None` if no matching worktree is found.
-fn resolve_worktree_path(
-    project_path: &std::path::Path,
-    branch: &str,
-    ssh_host: Option<&str>,
-) -> Option<std::path::PathBuf> {
-    use std::process::Command;
-    let stdout = if let Some(host) = ssh_host {
-        let path_str = project_path.to_string_lossy();
-        let remote_cmd = format!(
-            "cd '{}' && git worktree list --porcelain",
-            path_str.replace('\'', "'\\''")
-        );
-        let wrapped = format!(
-            "bash -l -c '{}'",
-            remote_cmd.replace('\'', "'\\''")
-        );
-        let output = Command::new("ssh")
-            .args(["-o", "ConnectTimeout=10", host, &wrapped])
-            .output()
-            .ok()?;
-        String::from_utf8_lossy(&output.stdout).to_string()
-    } else {
-        let output = Command::new("git")
-            .args(["worktree", "list", "--porcelain"])
-            .current_dir(project_path)
-            .output()
-            .ok()?;
-        String::from_utf8_lossy(&output.stdout).to_string()
-    };
-    let mut current_path: Option<std::path::PathBuf> = None;
-    for line in stdout.lines() {
-        if let Some(p) = line.strip_prefix("worktree ") {
-            current_path = Some(std::path::PathBuf::from(p));
-        } else if let Some(git_branch) = line.strip_prefix("branch refs/heads/") {
-            // Session branch names are sanitized (/ → -), so compare sanitized forms.
-            if z_core::domain::sanitize_branch_name(git_branch) == branch {
-                return current_path;
-            }
-        }
-    }
-    None
-}
-
-/// Returns (ahead, behind) counts for HEAD vs its upstream; (0, 0) on failure.
-fn fetch_ahead_behind(path: &str) -> (usize, usize) {
-    use std::process::Command;
-
-    let out = Command::new("git")
-        .args([
-            "-C",
-            path,
-            "rev-list",
-            "--left-right",
-            "--count",
-            "HEAD...@{u}",
-        ])
-        .output();
-
-    match out {
-        Ok(output) if output.status.success() => {
-            let s = String::from_utf8_lossy(&output.stdout);
-            let mut parts = s.trim().split_whitespace();
-            let ahead = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-            let behind = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-            (ahead, behind)
-        }
-        _ => (0, 0),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Zellij session info fetching
-// ---------------------------------------------------------------------------
-
-/// Fetch Zellij session info for `session_name` via `zellij list-sessions`.
-///
-/// Returns `None` if Zellij is not running or the session is not found.
-fn fetch_zellij_info(session_name: &str) -> Option<ZellijInfo> {
-    use std::process::Command;
-    if session_name.is_empty() {
-        return None;
-    }
-
-    // Try JSON output (Zellij 0.40+)
-    let out = Command::new("zellij")
-        .args(["list-sessions", "--json"])
-        .output()
-        .ok()?;
-
-    if out.status.success() {
-        let json = String::from_utf8_lossy(&out.stdout);
-        if let Some(info) = parse_zellij_json_for_session(&json, session_name) {
-            return Some(info);
-        }
-    }
-
-    // Fallback: plain `zellij list-sessions` for uptime only
-    let out2 = Command::new("zellij")
-        .args(["list-sessions"])
-        .output()
-        .ok()?;
-
-    if !out2.status.success() {
-        return None;
-    }
-
-    let text = String::from_utf8_lossy(&out2.stdout);
-    for line in text.lines() {
-        if line.contains(session_name) {
-            let uptime = extract_zellij_uptime(line)
-                .unwrap_or_else(|| "unknown".to_string());
-            return Some(ZellijInfo {
-                tab_count: 0,
-                pane_count: 0,
-                uptime,
-            });
-        }
-    }
-
-    None
-}
-
 /// Parse `zellij list-sessions --json` output looking for `session_name`.
 ///
 /// Expected format (may vary by Zellij version):
 /// `[{"name":"myapp:feat-login","tabs":3,"panes":5,"created_at":"..."},...]`
+#[cfg(test)]
 fn parse_zellij_json_for_session(json: &str, session_name: &str) -> Option<ZellijInfo> {
     let info = z_core::zellij::parse_zellij_session_info(json, session_name)?;
     Some(ZellijInfo {
@@ -1025,6 +885,7 @@ fn parse_zellij_json_for_session(json: &str, session_name: &str) -> Option<Zelli
 /// Extract uptime string from a `zellij list-sessions` plain-text line.
 ///
 /// Looks for patterns like `[Created 2h34m ago]` or `(2h34m)`.
+#[cfg(test)]
 fn extract_zellij_uptime(line: &str) -> Option<String> {
     // Pattern: "[Created Xm ago]", "[Created Xh Ym ago]", etc.
     if let Some(start) = line.find("Created ") {
@@ -1612,8 +1473,7 @@ pub fn run_tui(
     initial_project: Option<usize>,
     status_message: Option<String>,
     callbacks: TuiCallbacks<'_>,
-    forge_client: Box<dyn z_core::traits::ForgeClient + Send + Sync>,
-    remote_preview_fn: Arc<dyn Fn(&str, &str) -> Result<GitInfo, String> + Send + Sync>,
+    preview_source: Box<dyn PreviewDataSource>,
     refresher: Box<dyn SessionRefresher>,
     theme: z_core::theme::Theme,
     global_actions: Vec<ActionDef>,
@@ -1625,7 +1485,12 @@ pub fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut state = TuiState::new(entries, navigation, Arc::from(forge_client), remote_preview_fn, Arc::from(refresher));
+    let mut state = TuiState::with_preview_source(
+        entries,
+        navigation,
+        Arc::from(preview_source),
+        Arc::from(refresher),
+    );
     let (gh_tx, gh_rx) = mpsc::channel();
     state.gh_tx = Some(gh_tx);
     state.gh_rx = Some(gh_rx);
@@ -3565,6 +3430,9 @@ mod tests {
         fn fetch_notifications(&self) -> HashSet<String> {
             HashSet::new()
         }
+        fn fetch_activity(&self) -> z_core::activity::SessionActivity {
+            z_core::activity::SessionActivity::new()
+        }
     }
 
     fn mock_refresher() -> Arc<dyn SessionRefresher> {
@@ -4844,10 +4712,10 @@ mod tests {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
         state.preview_data = PreviewData::Ready(make_git_info());
 
-        let (tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
+        let (tx, rx) = mpsc::channel::<Result<PreviewExtraData, String>>();
         state.forge_rx = Some(rx);
 
-        tx.send(Ok(ForgeData {
+        tx.send(Ok(PreviewExtraData {
             pr: Some(make_pull_request(42, PrState::Open)),
             ci: CiStatus::Passing,
             zellij: Some(make_zellij_info()),
@@ -4880,7 +4748,7 @@ mod tests {
     fn poll_forge_noop_when_channel_empty() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
         state.preview_data = PreviewData::Ready(make_git_info());
-        let (_tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
+        let (_tx, rx) = mpsc::channel::<Result<PreviewExtraData, String>>();
         state.forge_rx = Some(rx);
         state.poll_forge(); // nothing sent yet
         // preview_data unchanged, forge_rx still set
@@ -4892,9 +4760,9 @@ mod tests {
         // If git info hasn't arrived yet (still Loading), forge data is discarded
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
         // preview_data stays Loading (git not yet received)
-        let (tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
+        let (tx, rx) = mpsc::channel::<Result<PreviewExtraData, String>>();
         state.forge_rx = Some(rx);
-        tx.send(Ok(ForgeData {
+        tx.send(Ok(PreviewExtraData {
             pr: Some(make_pull_request(1, PrState::Open)),
             ci: CiStatus::Passing,
             zellij: None,
@@ -4910,7 +4778,7 @@ mod tests {
     #[test]
     fn poll_forge_handles_disconnected_channel() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
-        let (tx, rx) = mpsc::channel::<Result<ForgeData, String>>();
+        let (tx, rx) = mpsc::channel::<Result<PreviewExtraData, String>>();
         state.forge_rx = Some(rx);
         drop(tx); // simulate thread panic
         state.poll_forge();
