@@ -12,3 +12,4 @@ pub mod notification;
 pub mod template;
 pub mod theme;
 pub mod traits;
+pub mod zellij;

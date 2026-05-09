@@ -958,45 +958,6 @@ fn fetch_ahead_behind(path: &str) -> (usize, usize) {
 }
 
 // ---------------------------------------------------------------------------
-// Lightweight JSON helpers (used by Zellij info parser)
-// ---------------------------------------------------------------------------
-
-/// Extract a u64 value from a simple JSON object: `"key": 42`.
-fn extract_json_u64(json: &str, key: &str) -> Option<u64> {
-    let needle = format!("\"{}\":", key);
-    let start = json.find(&needle)? + needle.len();
-    let rest = json[start..].trim_start();
-    rest.split(|c: char| !c.is_ascii_digit())
-        .next()
-        .and_then(|s| s.parse().ok())
-}
-
-/// Extract a string value from a simple JSON object: `"key": "value"`.
-fn extract_json_string(json: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{}\":", key);
-    let after_colon = json.find(&needle)? + needle.len();
-    let trimmed = json[after_colon..].trim_start();
-    if !trimmed.starts_with('"') {
-        return None;
-    }
-    let rest = &trimmed[1..];
-    let mut result = String::new();
-    let mut chars = rest.chars().peekable();
-    loop {
-        match chars.next()? {
-            '"' => break,
-            '\\' => {
-                if let Some(c) = chars.next() {
-                    result.push(c);
-                }
-            }
-            c => result.push(c),
-        }
-    }
-    Some(result)
-}
-
-// ---------------------------------------------------------------------------
 // Zellij session info fetching
 // ---------------------------------------------------------------------------
 
@@ -1053,32 +1014,12 @@ fn fetch_zellij_info(session_name: &str) -> Option<ZellijInfo> {
 /// Expected format (may vary by Zellij version):
 /// `[{"name":"myapp:feat-login","tabs":3,"panes":5,"created_at":"..."},...]`
 fn parse_zellij_json_for_session(json: &str, session_name: &str) -> Option<ZellijInfo> {
-    // Find the object that contains `"name":"<session_name>"` (with or without space after colon).
-    let compact = format!("\"name\":\"{}\"", session_name);
-    let spaced = format!("\"name\": \"{}\"", session_name);
-    let obj_start = json.find(&compact).or_else(|| json.find(&spaced))?;
-
-    // Walk backwards to find the '{' that starts this object.
-    let before = &json[..obj_start];
-    let brace_pos = before.rfind('{')?;
-    // Find the matching closing '}' to avoid reading fields from later objects.
-    let after_brace = &json[brace_pos..];
-    let close = after_brace.find('}').unwrap_or(after_brace.len());
-    let obj = &after_brace[..=close.min(after_brace.len() - 1)];
-
-    let tab_count = extract_json_u64(obj, "tabs")
-        .or_else(|| extract_json_u64(obj, "tab_count"))
-        .unwrap_or(0) as usize;
-    let pane_count = extract_json_u64(obj, "panes")
-        .or_else(|| extract_json_u64(obj, "pane_count"))
-        .unwrap_or(0) as usize;
-
-    // Uptime: use raw created_at value as a hint; proper parsing requires chrono (not in deps).
-    // The Zellij JSON may include "exited" or other status fields that give us uptime text.
-    let uptime = extract_json_string(obj, "uptime")
-        .unwrap_or_else(|| "unknown".to_string());
-
-    Some(ZellijInfo { tab_count, pane_count, uptime })
+    let info = z_core::zellij::parse_zellij_session_info(json, session_name)?;
+    Some(ZellijInfo {
+        tab_count: info.tab_count,
+        pane_count: info.pane_count,
+        uptime: info.uptime,
+    })
 }
 
 /// Extract uptime string from a `zellij list-sessions` plain-text line.
@@ -4985,27 +4926,6 @@ mod tests {
     // ── Edge-case tests (review round) ──────────────────────────────────────
 
     #[test]
-    fn extract_json_string_handles_space_after_colon() {
-        // gh CLI may produce `"key": "value"` with a space after the colon.
-        let json = r#"{"state": "OPEN", "title": "my pr"}"#;
-        assert_eq!(
-            extract_json_string(json, "state"),
-            Some("OPEN".to_string())
-        );
-        assert_eq!(
-            extract_json_string(json, "title"),
-            Some("my pr".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_json_string_non_string_value_returns_none() {
-        // If the value is a number, not a string, should return None.
-        let json = r#"{"number": 42}"#;
-        assert_eq!(extract_json_string(json, "number"), None);
-    }
-
-    #[test]
     fn renders_ci_without_pr_no_orphaned_separator() {
         // When CI is shown but no PR exists, there should be no " | " prefix.
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
@@ -5058,26 +4978,11 @@ mod tests {
     }
 
     #[test]
-    fn extract_json_u64_missing_key() {
-        let json = r#"{"other":42}"#;
-        assert_eq!(extract_json_u64(json, "number"), None);
-    }
-
-    #[test]
     fn parse_zellij_json_with_spaces_after_colons() {
         let json = r#"[{"name": "target", "tabs": 2, "panes": 4}]"#;
         let info = parse_zellij_json_for_session(json, "target").unwrap();
         assert_eq!(info.tab_count, 2);
         assert_eq!(info.pane_count, 4);
-    }
-
-    #[test]
-    fn extract_json_string_with_escaped_quote() {
-        let json = r#"{"title":"fix: \"quoted\" thing"}"#;
-        assert_eq!(
-            extract_json_string(json, "title"),
-            Some("fix: \"quoted\" thing".to_string())
-        );
     }
 
     // ── Modal / ProjectForm tests ──────────────────────────────────────────
