@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use z_core::domain::Session;
+use z_core::domain::{derive_session_name, Session, SessionLink, WorktreeIdentity, WorktreeStatus};
 
 use crate::ProjectEntry;
 
@@ -45,6 +45,12 @@ pub fn merge_refresh(
     let sel_project_name = entries
         .get(selected_project)
         .map(|e| e.project.name.clone());
+    let sel_worktree_identity: Option<WorktreeIdentity> = sel_project_name.as_ref().and_then(|_| {
+        entries
+            .get(selected_project)
+            .and_then(|e| e.worktrees.get(selected_session))
+            .map(|w| w.discovered.identity.clone())
+    });
     let sel_session_name = sel_project_name.as_ref().and_then(|_| {
         entries
             .get(selected_project)
@@ -52,10 +58,30 @@ pub fn merge_refresh(
             .map(|s| s.name.clone())
     });
 
-    // Update sessions per project, sorting by most-recent attach.
+    // Update sessions and Worktree session links per project, sorting by most-recent attach.
     for (proj_name, mut new_sessions) in data.sessions {
         if let Some(entry) = entries.iter_mut().find(|e| e.project.name == proj_name) {
             z_core::activity::sort_sessions_by_recent_attach(&mut new_sessions, &data.activity);
+            let sessions_by_name: HashMap<String, Session> = new_sessions
+                .iter()
+                .map(|session| (session.name.clone(), session.clone()))
+                .collect();
+            for worktree in &mut entry.worktrees {
+                if matches!(worktree.status, WorktreeStatus::Conflict | WorktreeStatus::Unsupported) {
+                    continue;
+                }
+                let Some(branch) = worktree.discovered.branch.as_deref() else {
+                    continue;
+                };
+                let session_name = derive_session_name(&worktree.discovered.project_name, branch);
+                if let Some(session) = sessions_by_name.get(&session_name) {
+                    worktree.status = WorktreeStatus::Active;
+                    worktree.session_link = SessionLink::Active(session.clone());
+                } else {
+                    worktree.status = WorktreeStatus::Inactive;
+                    worktree.session_link = SessionLink::None;
+                }
+            }
             entry.sessions = new_sessions;
         }
     }
@@ -69,18 +95,27 @@ pub fn merge_refresh(
         .and_then(|name| entries.iter().position(|e| &e.project.name == name))
         .unwrap_or_else(|| selected_project.min(entries.len().saturating_sub(1)));
 
-    let new_session_idx = sel_session_name
-        .as_ref()
-        .and_then(|name| {
-            entries
-                .get(new_project_idx)
-                .and_then(|e| e.sessions.iter().position(|s| &s.name == name))
+    let new_session_idx = entries
+        .get(new_project_idx)
+        .and_then(|entry| {
+            if !entry.worktrees.is_empty() {
+                sel_worktree_identity
+                    .as_ref()
+                    .and_then(|identity| entry.worktrees.iter().position(|w| &w.discovered.identity == identity))
+            } else {
+                sel_session_name
+                    .as_ref()
+                    .and_then(|name| entry.sessions.iter().position(|s| &s.name == name))
+            }
         })
         .unwrap_or_else(|| {
-            let max = entries
-                .get(new_project_idx)
-                .map(|e| e.sessions.len().saturating_sub(1))
-                .unwrap_or(0);
+            let max = entries.get(new_project_idx).map(|e| {
+                if !e.worktrees.is_empty() {
+                    e.worktrees.len().saturating_sub(1)
+                } else {
+                    e.sessions.len().saturating_sub(1)
+                }
+            }).unwrap_or(0);
             selected_session.min(max)
         });
 
@@ -108,11 +143,11 @@ mod tests {
     fn make_entry(name: &str, sessions: &[&str]) -> ProjectEntry {
         ProjectEntry {
             project: make_project(name),
+            worktrees: vec![],
             sessions: sessions
                 .iter()
                 .map(|b| Session::new(name, b))
                 .collect(),
-            worktree_count: 0,
             workflows: vec![],
             repo_actions: vec![],
         }
@@ -230,7 +265,7 @@ mod tests {
         let result = merge_refresh(&mut entries, &mut notifications, data, 0, 2);
 
         assert_eq!(result.selected_project, 0);
-        // Clamped to last valid index (1)
+        // Legacy session-only entry clamps to last valid session index.
         assert_eq!(result.selected_session, 1);
     }
 
@@ -248,7 +283,7 @@ mod tests {
         let result = merge_refresh(&mut entries, &mut notifications, data, 0, 2);
 
         assert_eq!(result.selected_project, 0);
-        // "feat" is now at index 1
+        // Legacy session-only entry follows the selected session by name.
         assert_eq!(result.selected_session, 1);
         assert_eq!(entries[0].sessions.len(), 2);
     }

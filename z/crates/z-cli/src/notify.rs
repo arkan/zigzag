@@ -1,7 +1,7 @@
 /// Notifier implementations for z-cli.
 ///
 /// Provides concrete `Notifier` trait implementations:
-/// - `FileNotifier`   — writes to `/tmp/z/notifications/{session}/` (TUI badge source)
+/// - `FileNotifier`   — legacy `/tmp/z/notifications/{session}/` adapter used for migration tests
 /// - `MacosNotifier`  — sends a macOS native notification via `osascript`
 /// - `TelegramNotifier` — sends a Telegram message via `curl`
 /// - `DispatchNotifier` — fans out to all configured notifiers
@@ -10,6 +10,7 @@ use z_core::domain::NotifyLevel;
 use z_core::error::{Result, ZError};
 use z_core::traits::Notifier;
 
+#[cfg(test)]
 use crate::notification_store::FileNotificationStore;
 
 // ---------------------------------------------------------------------------
@@ -17,10 +18,12 @@ use crate::notification_store::FileNotificationStore;
 // ---------------------------------------------------------------------------
 
 /// Writes a notification event file so the TUI can display a 🔔 badge.
+#[cfg(test)]
 pub struct FileNotifier {
     pub session: String,
 }
 
+#[cfg(test)]
 impl Notifier for FileNotifier {
     fn notify(&self, message: &str, level: NotifyLevel) -> Result<()> {
         FileNotificationStore::default().write_notification(&self.session, message, level)
@@ -143,8 +146,8 @@ fn percent_encode(s: &str) -> String {
 
 /// Dispatches a notification to all configured channels.
 ///
-/// The `FileNotifier` (TUI badge) is always included. Additional channels
-/// (`MacosNotifier`, `TelegramNotifier`) are added based on `config`.
+/// Metadata-backed TUI badges are written by `cmd_notify`; this dispatcher only
+/// fans out to external channels based on `config`.
 ///
 /// If any notifier fails, the error is returned after attempting all of them
 /// (best-effort delivery).
@@ -153,13 +156,8 @@ pub struct DispatchNotifier {
 }
 
 impl DispatchNotifier {
-    pub fn from_config(config: &NotificationsConfig, session: &str) -> Self {
+    pub fn from_config(config: &NotificationsConfig, _session: &str) -> Self {
         let mut notifiers: Vec<Box<dyn Notifier>> = Vec::new();
-
-        // TUI badge: always write file notification (required by spec).
-        notifiers.push(Box::new(FileNotifier {
-            session: session.to_string(),
-        }));
 
         if config.macos_native {
             notifiers.push(Box::new(MacosNotifier));
@@ -310,8 +308,8 @@ mod tests {
     // ── DispatchNotifier channel selection tests ──────────────────────────
 
     #[test]
-    fn dispatch_always_includes_file_notifier() {
-        let session = unique_session("dispatch_file");
+    fn dispatch_does_not_write_legacy_file_notifications() {
+        let session = unique_session("dispatch_no_file");
         cleanup(&session);
 
         let config = NotificationsConfig {
@@ -325,15 +323,15 @@ mod tests {
         dispatcher.notify("test msg", NotifyLevel::Info).unwrap();
 
         assert!(
-            FileNotificationStore::default().has_notifications(&session),
-            "file notifier should always be included"
+            !FileNotificationStore::default().has_notifications(&session),
+            "metadata-backed notifications are written by cmd_notify, not DispatchNotifier"
         );
         cleanup(&session);
     }
 
     #[test]
     fn dispatch_telegram_skipped_when_disabled() {
-        // Telegram is configured but disabled — only file notifier runs.
+        // Telegram is configured but disabled — no external notifier runs.
         let session = unique_session("dispatch_no_tg");
         cleanup(&session);
 

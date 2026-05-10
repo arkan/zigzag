@@ -163,21 +163,16 @@ impl SessionRefresher for ZellijSessionRefresher {
                 .map(|p| {
                     let name = p.name.clone();
                     let host = p.host.as_deref().unwrap_or("").to_string();
-                    let remote_name = p
-                        .path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(&p.name)
-                        .to_string();
+                    let remote_name = p.name.clone();
                     s.spawn(move || {
-                        let sessions = crate::remote::list_remote_sessions(&host, &remote_name)
-                            .unwrap_or_default();
-                        (name, sessions)
+                        crate::remote::list_remote_sessions(&host, &remote_name)
+                            .ok()
+                            .map(|sessions| (name, sessions))
                     })
                 })
                 .collect();
             for h in handles {
-                if let Ok(result) = h.join() {
+                if let Ok(Some(result)) = h.join() {
                     results.push(result);
                 }
             }
@@ -187,9 +182,17 @@ impl SessionRefresher for ZellijSessionRefresher {
     }
 
     fn fetch_notifications(&self) -> HashSet<String> {
-        FileNotificationStore::default().sessions_with_notifications()
+        let mut notifications: HashSet<String> = FileNotificationStore::default()
+            .sessions_with_notifications()
             .into_iter()
-            .collect()
+            .collect();
+        if let Ok(metadata_notifications) =
+            crate::worktree_metadata_store::LocalWorktreeMetadataStore::default()
+                .notification_session_aliases()
+        {
+            notifications.extend(metadata_notifications);
+        }
+        notifications
     }
 
     fn fetch_activity(&self) -> SessionActivity {

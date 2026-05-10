@@ -13,4 +13,6 @@ pub mod session_entry;
 pub mod template;
 pub mod theme;
 pub mod traits;
+pub mod web;
+pub mod worktree_topology;
 pub mod zellij;

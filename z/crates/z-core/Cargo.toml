@@ -8,4 +8,5 @@ description = "z-core: I/O-agnostic business logic and traits for z"
 thiserror.workspace = true
 semver.workspace = true
 kdl.workspace = true
+serde.workspace = true
 serde_json.workspace = true

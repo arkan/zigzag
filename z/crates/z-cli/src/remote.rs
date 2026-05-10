@@ -1,4 +1,5 @@
-use std::process::Command;
+use std::io::Write as _;
+use std::process::{Command, Stdio};
 
 use z_core::domain::Session;
 use z_core::error::{Result, ZError};
@@ -51,10 +52,10 @@ pub fn ssh_run_remote(ssh_host: &str, command: &str) -> Result<()> {
 
 /// List Zellij sessions on a remote host for a given project, via SSH.
 ///
-/// Uses `zellij list-sessions` on the remote; ignores errors from Zellij
-/// not running (`|| true`). Returns an empty list if the remote is unreachable.
+/// Uses `zellij list-sessions` on the remote and returns an error on SSH or
+/// command failure so callers can surface remote-unavailable states.
 pub fn list_remote_sessions(ssh_host: &str, project: &str) -> Result<Vec<Session>> {
-    let output = build_ssh_command(ssh_host, "zellij list-sessions 2>/dev/null || true")
+    let output = build_ssh_command(ssh_host, "zellij list-sessions 2>/dev/null")
         .output()
         .map_err(|e| {
             ZError::Session(format!(
@@ -62,6 +63,12 @@ pub fn list_remote_sessions(ssh_host: &str, project: &str) -> Result<Vec<Session
                 ssh_host, e
             ))
         })?;
+    if !output.status.success() {
+        return Err(ZError::Session(format!(
+            "SSH to {} failed while listing sessions with status {}",
+            ssh_host, output.status
+        )));
+    }
     let raw = String::from_utf8_lossy(&output.stdout);
     let stdout = crate::session_manager::strip_ansi(&raw);
     Ok(parse_zellij_sessions(&stdout, project))
@@ -73,16 +80,53 @@ pub fn delete_remote_session(ssh_host: &str, session_name: &str) -> Result<()> {
     ssh_run_remote(ssh_host, &cmd)
 }
 
-/// Remove a worktree on a remote host via SSH.
-///
-/// Runs `cd {project_path} && wt remove {branch}` on the remote.
-pub fn remove_remote_worktree(ssh_host: &str, project_path: &str, branch: &str) -> Result<()> {
+/// Read a file under the remote `~/.config/z/` directory.
+pub fn read_remote_z_config_file(ssh_host: &str, filename: &str) -> Result<Option<String>> {
     let cmd = format!(
-        "cd {} && wt remove {}",
-        shell_quote(project_path),
-        shell_quote(branch)
+        "dir=\"${{XDG_CONFIG_HOME:-$HOME/.config}}/z\"; file=\"$dir/{}\"; if [ -f \"$file\" ]; then cat \"$file\"; else exit 3; fi",
+        filename.replace('"', "")
     );
-    ssh_run_remote(ssh_host, &cmd)
+    let output = build_ssh_command(ssh_host, &cmd)
+        .output()
+        .map_err(|e| ZError::Io(format!("SSH to {} failed while reading config: {}", ssh_host, e)))?;
+    if output.status.success() {
+        return Ok(Some(String::from_utf8_lossy(&output.stdout).to_string()));
+    }
+    if output.status.code() == Some(3) {
+        return Ok(None);
+    }
+    Err(ZError::Io(format!(
+        "remote config read on {} exited with status {}",
+        ssh_host, output.status
+    )))
+}
+
+/// Atomically write a file under the remote `~/.config/z/` directory with a mkdir lock.
+pub fn write_remote_z_config_file_atomic(ssh_host: &str, filename: &str, bytes: &[u8]) -> Result<()> {
+    let safe_filename = filename.replace('"', "");
+    let cmd = format!(
+        "set -e; dir=\"${{XDG_CONFIG_HOME:-$HOME/.config}}/z\"; mkdir -p \"$dir\"; file=\"$dir/{0}\"; lock=\"$dir/{0}.lock\"; tmp=\"$dir/{0}.tmp.$$\"; i=0; while ! mkdir \"$lock\" 2>/dev/null; do i=$((i+1)); if [ $i -ge 10 ]; then echo 'metadata lock unavailable' >&2; exit 4; fi; sleep 0.05; done; trap 'rm -rf \"$lock\" \"$tmp\"' EXIT; cat > \"$tmp\"; mv \"$tmp\" \"$file\"; rm -rf \"$lock\"; trap - EXIT",
+        safe_filename
+    );
+    let mut child = build_ssh_command(ssh_host, &cmd)
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| ZError::Io(format!("SSH to {} failed while writing config: {}", ssh_host, e)))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(bytes)
+            .map_err(|e| ZError::Io(format!("write remote config stdin: {e}")))?;
+    }
+    let status = child
+        .wait()
+        .map_err(|e| ZError::Io(format!("wait remote config write: {e}")))?;
+    if !status.success() {
+        return Err(ZError::Io(format!(
+            "remote config write on {} exited with status {}",
+            ssh_host, status
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
