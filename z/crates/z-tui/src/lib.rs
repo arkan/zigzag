@@ -2145,6 +2145,11 @@ fn event_loop<B: Backend>(
                         }
                     }
 
+                    KeyCode::Char('X') => {
+                        // Delete Project from the Projects panel. `D` is reserved for Doctor.
+                        open_delete_project_modal(state);
+                    }
+
                     KeyCode::Char('e') => {
                         if let Some(entry) = state.selected_entry() {
                             return Ok(TuiAction::EditPerRepoConfig {
@@ -2199,6 +2204,20 @@ fn event_loop<B: Backend>(
 // ---------------------------------------------------------------------------
 // In-place action helpers
 // ---------------------------------------------------------------------------
+
+fn open_delete_project_modal(state: &mut TuiState) {
+    if state.focused_panel != Panel::Projects {
+        return;
+    }
+
+    if let Some(entry) = state.selected_entry() {
+        state.modal = Some(Modal::DeleteConfirm {
+            project_name: entry.project.name.clone(),
+            session_count: entry.sessions.len(),
+            worktree_count: entry.worktrees.len(),
+        });
+    }
+}
 
 /// Edit a project in-place and reload the TUI state.
 ///
@@ -2694,7 +2713,7 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
             .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string())
     };
 
-    let hints = " [o]pen [n]ew [r]un action [K]ill session [d]el worktree [D]octor [a]utopilot [A]dd [E]dit [e]config [/]search [?]help [q]uit";
+    let hints = " [o]pen [n]ew [r]un action [K]ill session [d]el worktree [D]octor [A]dd [E]dit [X]del project [e]config [/]search [?]help [q]uit";
     let content = format!("{}\n{}", first_line, hints);
 
     let theme = &state.theme;
@@ -3058,8 +3077,7 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
         Line::from(Span::styled("   D                Doctor diagnostics", normal)),
         Line::from(""),
         Line::from(Span::styled(" Project Actions", heading)),
-        Line::from(Span::styled("   A                Add project", normal)),
-        Line::from(Span::styled("   E                Edit project", normal)),
+        Line::from(Span::styled("   A Add   E Edit   X Delete project", normal)),
         Line::from(Span::styled("   Alt+z r          Run action", normal)),
         Line::from(Span::styled("   Alt+z l          View logs", normal)),
         Line::from(Span::styled("   a                Autopilot workflows", normal)),
@@ -5841,6 +5859,7 @@ mod tests {
         let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
         let out = render_to_string(&state, 100, 24);
         assert!(out.contains("[E]"), "should show [E] edit project hint");
+        assert!(out.contains("[X]del project"), "should show [X] delete project hint");
     }
 
     #[test]
@@ -5853,22 +5872,12 @@ mod tests {
     // ── Delete Project modal tests ─────────────────────────────────────────
 
     #[test]
-    fn d_key_on_projects_panel_with_project_opens_delete_modal() {
+    fn x_key_on_projects_panel_with_project_opens_delete_modal() {
         let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
         state.focused_panel = Panel::Projects;
         assert!(state.modal.is_none());
 
-        // Simulate old delete logic (project delete, now not on D)
-        if let Some(entry) = state.selected_entry() {
-            let project_name = entry.project.name.clone();
-            let session_count = entry.sessions.len();
-            let worktree_count = entry.worktrees.len();
-            state.modal = Some(Modal::DeleteConfirm {
-                project_name: project_name.clone(),
-                session_count,
-                worktree_count,
-            });
-        }
+        open_delete_project_modal(&mut state);
 
         assert!(state.modal.is_some(), "modal should be opened");
         match &state.modal {
@@ -5881,18 +5890,21 @@ mod tests {
     }
 
     #[test]
-    fn d_key_with_no_projects_does_not_open_modal() {
+    fn x_key_with_no_projects_does_not_open_modal() {
         let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
         state.focused_panel = Panel::Projects;
-        // Simulate old delete logic (project delete, now not on D)
-        if let Some(entry) = state.selected_entry() {
-            state.modal = Some(Modal::DeleteConfirm {
-                project_name: entry.project.name.clone(),
-                session_count: entry.sessions.len(),
-                worktree_count: entry.worktrees.len(),
-            });
-        }
+        open_delete_project_modal(&mut state);
         assert!(state.modal.is_none(), "no modal when no projects");
+    }
+
+    #[test]
+    fn x_key_on_worktrees_panel_does_not_open_project_delete_modal() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        state.focused_panel = Panel::Worktrees;
+
+        open_delete_project_modal(&mut state);
+
+        assert!(state.modal.is_none(), "project delete is only available from Projects panel");
     }
 
     #[test]
@@ -6962,6 +6974,7 @@ mod tests {
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("Open/restore worktree"), "help modal should describe 'o' key");
         assert!(out.contains("Delete worktree"), "help modal should describe 'd' key");
+        assert!(out.contains("Delete project"), "help modal should describe 'X' key");
         assert!(out.contains("Fuzzy search"), "help modal should describe '/' key");
         assert!(out.contains("Kill active session"), "help modal should describe 'K' key");
     }

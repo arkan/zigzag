@@ -393,20 +393,6 @@ fn parse_ahead_behind_strict(output: &str) -> Result<(u32, u32)> {
     Ok((ahead, behind))
 }
 
-/// Parse `git rev-list --left-right --count HEAD...@{u}` output.
-///
-/// Format: `{ahead}\t{behind}\n`
-fn parse_ahead_behind(output: &str) -> (u32, u32) {
-    let trimmed = output.trim();
-    if trimmed.is_empty() {
-        return (0, 0);
-    }
-    let mut parts = trimmed.split_whitespace();
-    let ahead = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let behind = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-    (ahead, behind)
-}
-
 // =============================================================================
 // Tests
 // =============================================================================
@@ -714,28 +700,6 @@ mod tests {
         assert_eq!(old.len(), filtered.len());
         assert_eq!(old[0].branch, filtered[0].branch.as_deref().unwrap());
         assert_eq!(old[0].path, filtered[0].identity.worktree_path);
-    }
-
-    // ---- parse_ahead_behind ----
-
-    #[test]
-    fn parse_ahead_behind_typical() {
-        assert_eq!(parse_ahead_behind("5\t3\n"), (5, 3));
-    }
-
-    #[test]
-    fn parse_ahead_behind_zero() {
-        assert_eq!(parse_ahead_behind("0\t0\n"), (0, 0));
-    }
-
-    #[test]
-    fn parse_ahead_behind_empty() {
-        assert_eq!(parse_ahead_behind(""), (0, 0));
-    }
-
-    #[test]
-    fn parse_ahead_behind_whitespace_only() {
-        assert_eq!(parse_ahead_behind("  \n"), (0, 0));
     }
 
     #[test]
