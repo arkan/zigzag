@@ -1,6 +1,6 @@
 use kdl::{KdlDocument, KdlNode};
 
-use crate::domain::CiStatus;
+use crate::domain::{CiStatus, PullRequest, ReviewStatus};
 use crate::error::{Result, ZError};
 
 // ---------------------------------------------------------------------------
@@ -73,6 +73,21 @@ pub struct ActionPreview {
     pub pr_url: Option<String>,
     pub ci_status: Option<CiStatus>,
     pub has_new_comments: bool,
+}
+
+impl ActionPreview {
+    pub fn from_forge_data(
+        pr: Option<&PullRequest>,
+        ci_status: Option<CiStatus>,
+        review: Option<&ReviewStatus>,
+    ) -> Self {
+        Self {
+            pr_number: pr.map(|pr| pr.number),
+            pr_url: pr.map(|pr| pr.url.clone()),
+            ci_status,
+            has_new_comments: review.map_or(false, |review| review.has_new_comments),
+        }
+    }
 }
 
 impl ActionEnv {
@@ -968,6 +983,32 @@ action "Bad" {
 
         assert_eq!(env.branch, None);
         assert_eq!(env.session, None);
+    }
+
+    #[test]
+    fn action_preview_from_forge_data_maps_pr_ci_and_review() {
+        let pr = PullRequest {
+            number: 42,
+            title: "Fix CI".to_string(),
+            url: "https://example.com/pr/42".to_string(),
+            state: crate::domain::PrState::Open,
+        };
+        let review = ReviewStatus {
+            has_new_comments: true,
+            comment_count: 2,
+            last_review_at: Some("2026-05-10T09:00:00Z".to_string()),
+        };
+
+        let preview = ActionPreview::from_forge_data(
+            Some(&pr),
+            Some(CiStatus::Failing),
+            Some(&review),
+        );
+
+        assert_eq!(preview.pr_number, Some(42));
+        assert_eq!(preview.pr_url.as_deref(), Some("https://example.com/pr/42"));
+        assert_eq!(preview.ci_status, Some(CiStatus::Failing));
+        assert!(preview.has_new_comments);
     }
 
     #[test]

@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
-use z_core::error::{ZError, Result};
 use crate::state::WorkflowRun;
+use std::path::{Path, PathBuf};
+use z_core::error::{Result, ZError};
 
 /// Return the file path for a workflow run's persisted state.
 /// Format: `{state_dir}/{project}/{workflow_name}.json`
@@ -37,6 +37,16 @@ pub fn load_run(project: &str, workflow_name: &str, state_dir: &Path) -> Result<
     Ok(Some(run))
 }
 
+/// Delete a persisted workflow run. Missing files are treated as already deleted.
+pub fn delete_run(project: &str, workflow_name: &str, state_dir: &Path) -> Result<()> {
+    let path = run_path(state_dir, project, workflow_name);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(ZError::Io(format!("delete {}: {e}", path.display()))),
+    }
+}
+
 /// List all persisted workflow runs under `state_dir`.
 pub fn list_runs(state_dir: &Path) -> Result<Vec<WorkflowRun>> {
     if !state_dir.exists() {
@@ -45,6 +55,26 @@ pub fn list_runs(state_dir: &Path) -> Result<Vec<WorkflowRun>> {
     let mut runs = Vec::new();
     collect_runs(state_dir, &mut runs)?;
     Ok(runs)
+}
+
+/// Delete terminal workflow runs and return the runs that were removed.
+pub fn prune_terminal_runs(state_dir: &Path, project_filter: Option<&str>) -> Result<Vec<WorkflowRun>> {
+    let runs = list_runs(state_dir)?;
+    let mut removed = Vec::new();
+    for run in runs {
+        if project_filter.map_or(false, |project| run.project != project) {
+            continue;
+        }
+        if is_terminal_run(&run) {
+            delete_run(&run.project, &run.workflow_name, state_dir)?;
+            removed.push(run);
+        }
+    }
+    Ok(removed)
+}
+
+fn is_terminal_run(run: &WorkflowRun) -> bool {
+    !matches!(run.status, crate::state::WorkflowStatus::Running)
 }
 
 fn collect_runs(dir: &Path, runs: &mut Vec<WorkflowRun>) -> Result<()> {
@@ -110,6 +140,24 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_run_removes_file() {
+        let dir = temp_dir();
+        let run = sample_run();
+        save_run(&run, &dir).unwrap();
+
+        delete_run("myproject", "pr-ci-fix", &dir).unwrap();
+
+        assert!(load_run("myproject", "pr-ci-fix", &dir).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_delete_run_missing_file_is_ok() {
+        let dir = temp_dir();
+
+        delete_run("missing", "missing", &dir).unwrap();
+    }
+
+    #[test]
     fn test_save_overwrites_existing() {
         let dir = temp_dir();
         let mut run = sample_run();
@@ -152,6 +200,44 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].workflow_name, "wf1");
         assert_eq!(runs[1].workflow_name, "wf2");
+    }
+
+    #[test]
+    fn test_prune_terminal_runs_keeps_running_runs() {
+        let dir = temp_dir();
+        let running = WorkflowRun::new("running", "myproject", "step1");
+        let mut completed = WorkflowRun::new("completed", "myproject", "step1");
+        completed.status = WorkflowStatus::Completed;
+        completed.current_step = None;
+        save_run(&running, &dir).unwrap();
+        save_run(&completed, &dir).unwrap();
+
+        let removed = prune_terminal_runs(&dir, None).unwrap();
+
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].workflow_name, "completed");
+        assert!(load_run("myproject", "running", &dir).unwrap().is_some());
+        assert!(load_run("myproject", "completed", &dir).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_prune_terminal_runs_respects_project_filter() {
+        let dir = temp_dir();
+        let mut keep = WorkflowRun::new("done", "keep", "step1");
+        keep.status = WorkflowStatus::Completed;
+        keep.current_step = None;
+        let mut remove = WorkflowRun::new("done", "remove", "step1");
+        remove.status = WorkflowStatus::Completed;
+        remove.current_step = None;
+        save_run(&keep, &dir).unwrap();
+        save_run(&remove, &dir).unwrap();
+
+        let removed = prune_terminal_runs(&dir, Some("remove")).unwrap();
+
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].project, "remove");
+        assert!(load_run("keep", "done", &dir).unwrap().is_some());
+        assert!(load_run("remove", "done", &dir).unwrap().is_none());
     }
 
     #[test]

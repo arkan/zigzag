@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use z_autopilot::lifecycle::StepExecutor;
-use z_autopilot::persist::{load_run, save_run};
+use z_autopilot::persist::{delete_run, load_run, save_run};
 use z_autopilot::run_loop::RunStore;
 use z_autopilot::state::{StepResult, WorkflowRun};
 use z_core::domain::NotifyLevel;
@@ -30,6 +30,10 @@ impl RunStore for FileRunStore {
 
     fn save_run(&self, run: &WorkflowRun) -> Result<()> {
         save_run(run, &self.state_dir)
+    }
+
+    fn delete_run(&self, project: &str, workflow_name: &str) -> Result<()> {
+        delete_run(project, workflow_name, &self.state_dir)
     }
 }
 

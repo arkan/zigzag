@@ -5,6 +5,8 @@ use z_core::domain::Worktree;
 use z_core::error::{Result, ZError};
 use z_core::traits::WorktreeManager;
 
+use crate::remote;
+
 /// A `WorktreeManager` that delegates to `wt` (worktrunk) and `git worktree`.
 ///
 /// Worktree creation uses `wt switch -c <branch>` run from the project directory.
@@ -156,6 +158,38 @@ pub fn parse_git_worktree_porcelain(output: &str, project: &str) -> Vec<Worktree
     worktrees
 }
 
+/// Find the path for a branch in a list of discovered Worktrees.
+pub fn find_worktree_path_for_branch(worktrees: &[Worktree], branch: &str) -> Option<PathBuf> {
+    worktrees
+        .iter()
+        .find(|worktree| z_core::domain::sanitize_branch_name(&worktree.branch) == branch)
+        .map(|worktree| worktree.path.clone())
+}
+
+/// Discover Worktrees on a remote host via SSH, reusing the same porcelain parser as local Worktrees.
+pub fn list_remote_worktrees(ssh_host: &str, project_path: &std::path::Path, project: &str) -> Result<Vec<Worktree>> {
+    let cmd = format!(
+        "cd {} && git worktree list --porcelain",
+        remote::shell_quote(&project_path.to_string_lossy())
+    );
+    let output = remote::build_ssh_command(ssh_host, &cmd)
+        .output()
+        .map_err(|e| {
+            ZError::Worktree(format!(
+                "SSH to {} failed while listing worktrees: {}",
+                ssh_host, e
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(ZError::Worktree(format!(
+            "remote git worktree list exited with status {}",
+            output.status
+        )));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_git_worktree_porcelain(&stdout, project))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +257,38 @@ mod tests {
         let worktrees = parse_git_worktree_porcelain(output, "myapp");
         assert_eq!(worktrees.len(), 1);
         assert_eq!(worktrees[0].branch, "feat/user/auth");
+    }
+
+    #[test]
+    fn find_worktree_path_for_sanitized_branch() {
+        let worktrees = vec![
+            Worktree {
+                path: PathBuf::from("/repo/main"),
+                branch: "main".to_string(),
+                project: "myapp".to_string(),
+            },
+            Worktree {
+                path: PathBuf::from("/repo/feat-login"),
+                branch: "feat/login".to_string(),
+                project: "myapp".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            find_worktree_path_for_branch(&worktrees, "feat-login"),
+            Some(PathBuf::from("/repo/feat-login"))
+        );
+    }
+
+    #[test]
+    fn find_worktree_path_returns_none_for_missing_branch() {
+        let worktrees = vec![Worktree {
+            path: PathBuf::from("/repo/main"),
+            branch: "main".to_string(),
+            project: "myapp".to_string(),
+        }];
+
+        assert!(find_worktree_path_for_branch(&worktrees, "missing").is_none());
     }
 
     #[test]

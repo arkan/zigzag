@@ -261,6 +261,11 @@ pub fn parse_autopilot_workflows(content: &str) -> Result<Vec<AutopilotWorkflow>
         ZError::ConfigParse(format!("KDL parse error: {e}"))
     })?;
 
+    parse_autopilot_workflows_doc(&doc)
+}
+
+/// Parse all workflow `autopilot` nodes from an already-parsed KDL document.
+pub fn parse_autopilot_workflows_doc(doc: &KdlDocument) -> Result<Vec<AutopilotWorkflow>> {
     let mut workflows = Vec::new();
     for node in doc.nodes() {
         if node.name().value() == "autopilot" {

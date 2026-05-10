@@ -9,6 +9,7 @@ use z_core::traits::Notifier;
 pub trait RunStore {
     fn load_run(&self, project: &str, workflow_name: &str) -> Result<Option<WorkflowRun>>;
     fn save_run(&self, run: &WorkflowRun) -> Result<()>;
+    fn delete_run(&self, project: &str, workflow_name: &str) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +48,7 @@ pub fn load_or_start_run(
         if run.status == WorkflowStatus::Running && run.current_step.is_some() {
             return Ok(run);
         }
+        store.delete_run(project, &workflow.name)?;
     }
 
     let first_step = workflow.steps.first().ok_or_else(|| {
@@ -132,6 +134,7 @@ autopilot "manual-check" {
     struct FakeStore {
         loaded: RefCell<Option<WorkflowRun>>,
         saved: RefCell<Vec<WorkflowRun>>,
+        deleted: RefCell<Vec<(String, String)>>,
     }
 
     impl FakeStore {
@@ -139,6 +142,7 @@ autopilot "manual-check" {
             Self {
                 loaded: RefCell::new(None),
                 saved: RefCell::new(Vec::new()),
+                deleted: RefCell::new(Vec::new()),
             }
         }
 
@@ -146,6 +150,7 @@ autopilot "manual-check" {
             Self {
                 loaded: RefCell::new(Some(run)),
                 saved: RefCell::new(Vec::new()),
+                deleted: RefCell::new(Vec::new()),
             }
         }
     }
@@ -157,6 +162,13 @@ autopilot "manual-check" {
 
         fn save_run(&self, run: &WorkflowRun) -> Result<()> {
             self.saved.borrow_mut().push(run.clone());
+            Ok(())
+        }
+
+        fn delete_run(&self, project: &str, workflow_name: &str) -> Result<()> {
+            self.deleted
+                .borrow_mut()
+                .push((project.to_string(), workflow_name.to_string()));
             Ok(())
         }
     }
@@ -207,6 +219,25 @@ autopilot "manual-check" {
         let run = load_or_start_run(&workflow, "myproject", None, &store).unwrap();
 
         assert_eq!(run.current_step, existing.current_step);
+        assert!(store.deleted.borrow().is_empty());
+    }
+
+    #[test]
+    fn load_or_start_run_deletes_terminal_state_before_restart() {
+        let workflow = workflow();
+        let mut existing = WorkflowRun::new("manual-check", "myproject", "notify-done");
+        existing.status = WorkflowStatus::Completed;
+        existing.current_step = None;
+        let store = FakeStore::with_loaded(existing);
+
+        let run = load_or_start_run(&workflow, "myproject", None, &store).unwrap();
+
+        assert_eq!(run.status, WorkflowStatus::Running);
+        assert_eq!(run.current_step.as_deref(), Some("run"));
+        assert_eq!(
+            store.deleted.borrow().as_slice(),
+            &[("myproject".to_string(), "manual-check".to_string())]
+        );
     }
 
     #[test]

@@ -13,3 +13,4 @@ z-core.workspace = true
 z-tui.workspace = true
 z-autopilot.workspace = true
 serde_json.workspace = true
+kdl.workspace = true
