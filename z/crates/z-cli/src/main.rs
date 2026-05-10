@@ -2174,9 +2174,10 @@ fn resolve_notify_event_args(
                 let value = args.get(i + 1).ok_or_else(|| "--level requires a value".to_string())?;
                 level_seen = true;
                 level = match value.as_str() {
+                    "info" => NotifyLevel::Info,
                     "warning" => NotifyLevel::Warning,
                     "error" => NotifyLevel::Error,
-                    _ => return Err("event mode --level must be warning or error".to_string()),
+                    _ => return Err("event mode --level must be info, warning, or error".to_string()),
                 };
                 i += 2;
             }
@@ -2768,6 +2769,32 @@ mod tests {
         assert_eq!(command.reason.as_deref(), Some("permission"));
         assert_eq!(command.message.as_deref(), Some("OpenCode needs permission"));
         assert_eq!(command.level, NotifyLevel::Error);
+    }
+
+    #[test]
+    fn resolve_notify_event_waiting_accepts_info_level() {
+        let args: Vec<String> = vec![
+            "--event".into(),
+            "llm.waiting".into(),
+            "--tool".into(),
+            "opencode".into(),
+            "--session".into(),
+            "myapp:main".into(),
+            "--reason".into(),
+            "input".into(),
+            "--message".into(),
+            "OpenCode is waiting for input".into(),
+            "--level".into(),
+            "info".into(),
+        ];
+
+        let command = resolve_notify_event_args(&args, None).unwrap();
+
+        assert_eq!(command.session, "myapp:main");
+        assert_eq!(command.kind, NotifyEventKind::LlmWaiting);
+        assert_eq!(command.reason.as_deref(), Some("input"));
+        assert_eq!(command.message.as_deref(), Some("OpenCode is waiting for input"));
+        assert_eq!(command.level, NotifyLevel::Info);
     }
 
     #[test]
