@@ -1,7 +1,6 @@
 /// Notifier implementations for z-cli.
 ///
 /// Provides concrete `Notifier` trait implementations:
-/// - `FileNotifier`   — legacy `/tmp/z/notifications/{session}/` adapter used for migration tests
 /// - `MacosNotifier`  — sends a macOS native notification via `osascript`
 /// - `TelegramNotifier` — sends a Telegram message via `curl`
 /// - `DispatchNotifier` — fans out to all configured notifiers
@@ -9,26 +8,6 @@ use z_core::config::NotificationsConfig;
 use z_core::domain::NotifyLevel;
 use z_core::error::{Result, ZError};
 use z_core::traits::Notifier;
-
-#[cfg(test)]
-use crate::notification_store::FileNotificationStore;
-
-// ---------------------------------------------------------------------------
-// FileNotifier
-// ---------------------------------------------------------------------------
-
-/// Writes a notification event file so the TUI can display a 🔔 badge.
-#[cfg(test)]
-pub struct FileNotifier {
-    pub session: String,
-}
-
-#[cfg(test)]
-impl Notifier for FileNotifier {
-    fn notify(&self, message: &str, level: NotifyLevel) -> Result<()> {
-        FileNotificationStore::default().write_notification(&self.session, message, level)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // MacosNotifier
@@ -201,7 +180,6 @@ impl Notifier for DispatchNotifier {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     // ── Mock notifier ─────────────────────────────────────────────────────
 
@@ -232,33 +210,6 @@ mod tests {
                 Ok(())
             }
         }
-    }
-
-    // ── Helpers ───────────────────────────────────────────────────────────
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn unique_session(prefix: &str) -> String {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!("notify__{}_{}", prefix, n)
-    }
-
-    fn cleanup(session: &str) {
-        let _ = FileNotificationStore::default().clear_notifications(session);
-    }
-
-    // ── FileNotifier tests ────────────────────────────────────────────────
-
-    #[test]
-    fn file_notifier_writes_notification() {
-        let session = unique_session("file");
-        cleanup(&session);
-
-        let n = FileNotifier { session: session.clone() };
-        n.notify("hello", NotifyLevel::Info).unwrap();
-
-        assert!(FileNotificationStore::default().has_notifications(&session));
-        cleanup(&session);
     }
 
     // ── applescript_quote tests ───────────────────────────────────────────
@@ -309,9 +260,8 @@ mod tests {
 
     #[test]
     fn dispatch_does_not_write_legacy_file_notifications() {
-        let session = unique_session("dispatch_no_file");
-        cleanup(&session);
-
+        // Metadata-backed notifications are written by cmd_notify, not DispatchNotifier.
+        // DispatchNotifier only fans out to external channels (macOS, Telegram).
         let config = NotificationsConfig {
             macos_native: false,
             telegram: false,
@@ -319,22 +269,15 @@ mod tests {
             telegram_token: None,
             telegram_chat_id: None,
         };
-        let dispatcher = DispatchNotifier::from_config(&config, &session);
+        let dispatcher = DispatchNotifier::from_config(&config, "");
         dispatcher.notify("test msg", NotifyLevel::Info).unwrap();
-
-        assert!(
-            !FileNotificationStore::default().has_notifications(&session),
-            "metadata-backed notifications are written by cmd_notify, not DispatchNotifier"
-        );
-        cleanup(&session);
+        // No assertion needed beyond success — DispatchNotifier with empty
+        // notifiers always succeeds and doesn't touch any file system.
     }
 
     #[test]
     fn dispatch_telegram_skipped_when_disabled() {
         // Telegram is configured but disabled — no external notifier runs.
-        let session = unique_session("dispatch_no_tg");
-        cleanup(&session);
-
         let config = NotificationsConfig {
             macos_native: false,
             telegram: false,
@@ -342,18 +285,14 @@ mod tests {
             telegram_token: Some("fake_token".to_string()),
             telegram_chat_id: Some("123".to_string()),
         };
-        let dispatcher = DispatchNotifier::from_config(&config, &session);
+        let dispatcher = DispatchNotifier::from_config(&config, "");
         // Should succeed (no curl call attempted).
         dispatcher.notify("test", NotifyLevel::Info).unwrap();
-        cleanup(&session);
     }
 
     #[test]
     fn dispatch_telegram_skipped_when_token_missing() {
         // Telegram enabled but no token configured — skipped gracefully.
-        let session = unique_session("dispatch_no_token");
-        cleanup(&session);
-
         let config = NotificationsConfig {
             macos_native: false,
             telegram: true,
@@ -361,9 +300,8 @@ mod tests {
             telegram_token: None,
             telegram_chat_id: Some("123".to_string()),
         };
-        let dispatcher = DispatchNotifier::from_config(&config, &session);
+        let dispatcher = DispatchNotifier::from_config(&config, "");
         dispatcher.notify("test", NotifyLevel::Info).unwrap();
-        cleanup(&session);
     }
 
     // ── DispatchNotifier with mock notifiers ──────────────────────────────
@@ -450,9 +388,6 @@ mod tests {
 
     #[test]
     fn dispatch_telegram_skipped_when_chat_id_missing() {
-        let session = unique_session("dispatch_no_chatid");
-        cleanup(&session);
-
         let config = NotificationsConfig {
             macos_native: false,
             telegram: true,
@@ -460,9 +395,8 @@ mod tests {
             telegram_token: Some("tok".to_string()),
             telegram_chat_id: None,
         };
-        let dispatcher = DispatchNotifier::from_config(&config, &session);
+        let dispatcher = DispatchNotifier::from_config(&config, "");
         // Should succeed — no curl call attempted.
         dispatcher.notify("test", NotifyLevel::Info).unwrap();
-        cleanup(&session);
     }
 }

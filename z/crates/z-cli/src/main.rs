@@ -6,7 +6,6 @@ mod forge;
 mod git_preview;
 mod log;
 mod notify;
-mod notification_store;
 mod preview;
 mod repo_config;
 mod remote;
@@ -695,14 +694,9 @@ fn cmd_tui() -> z_core::error::Result<()> {
 }
 
 fn load_notification_aliases() -> HashSet<String> {
-    let mut notifications: HashSet<String> =
-        notification_store::FileNotificationStore::default().sessions_with_notifications().into_iter().collect();
-    if let Ok(metadata_notifications) = worktree_metadata_store::LocalWorktreeMetadataStore::default()
-        .notification_session_aliases()
-    {
-        notifications.extend(metadata_notifications);
-    }
-    notifications
+    worktree_metadata_store::LocalWorktreeMetadataStore::default()
+        .notification_session_aliases(None)
+        .unwrap_or_default()
 }
 
 fn discover_local_worktrees() -> z_core::error::Result<Vec<z_core::domain::DiscoveredWorktree>> {
@@ -744,7 +738,11 @@ fn migrate_local_metadata_if_needed() -> z_core::error::Result<()> {
     let discovered = discover_local_worktrees_for_projects(&projects);
 
     let metadata_store = worktree_metadata_store::LocalWorktreeMetadataStore::default();
-    metadata_store.migrate_from_legacy(&discovered, None).map(|_| ())
+    // One-shot activity migration (no-op if metadata already exists)
+    metadata_store.migrate_legacy_activity(&discovered)?;
+    // Always drain legacy notification files (idempotent)
+    metadata_store.drain_legacy_notifications(&discovered, None)?;
+    Ok(())
 }
 
 fn load_global_config() -> GlobalConfig {
@@ -944,10 +942,6 @@ fn record_worktree_entry(
     store.clear_notifications(&discovered.identity)?;
     z_core::session_entry::record_session_attach(
         &activity_store::FileActivityStore::default(),
-        session_name,
-    );
-    z_core::session_entry::clear_session_notifications(
-        &notification_store::FileNotificationStore::default(),
         session_name,
     );
     Ok(())
@@ -1618,8 +1612,7 @@ fn cmd_switch() -> z_core::error::Result<()> {
                 stderr.trim()
             )));
         }
-        z_core::session_entry::mark_existing_session_entered(
-            &notification_store::FileNotificationStore::default(),
+        z_core::session_entry::record_session_attach(
             &activity_store::FileActivityStore::default(),
             &session_name,
         );
@@ -1635,15 +1628,13 @@ fn build_switch_entries(
     discovered: &[z_core::domain::DiscoveredWorktree],
     global: &GlobalConfig,
 ) -> Vec<z_tui::SwitchSessionEntry> {
-    let legacy_store = notification_store::FileNotificationStore::default();
     let now_ms = unix_now_ms();
     let ttl_ms = global.llm.working_ttl_seconds.saturating_mul(1000);
 
     sessions
         .into_iter()
         .map(|(session_name, age)| {
-            let legacy_count = legacy_store.count_notifications(&session_name);
-            let mut notification_count = legacy_count;
+            let mut notification_count = 0usize;
             let mut notifications = Vec::new();
             let mut activity = None;
 
@@ -1658,8 +1649,7 @@ fn build_switch_entries(
                         .cloned()
                         .collect::<Vec<_>>();
                     metadata_notifications.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-                    let metadata_notification_count = metadata_notifications.len();
-                    notification_count = metadata_notification_count.saturating_add(legacy_count);
+                    notification_count = metadata_notifications.len();
                     notifications = metadata_notifications
                         .into_iter()
                         .map(|notification| z_tui::SwitchNotification {
@@ -1668,13 +1658,6 @@ fn build_switch_entries(
                             created_at_ms: Some(notification.created_at),
                         })
                         .collect();
-                    if legacy_count > 0 {
-                        notifications.push(z_tui::SwitchNotification {
-                            level: NotifyLevel::Warning,
-                            message: format!("{legacy_count} legacy notification(s) pending"),
-                            created_at_ms: None,
-                        });
-                    }
                     activity = metadata
                         .llm_status
                         .iter()
@@ -1704,14 +1687,6 @@ fn build_switch_entries(
                             z_tui::SwitchAgentActivityState::Working => (0u8, activity.updated_at_ms),
                         });
                 }
-            }
-
-            if notifications.is_empty() && legacy_count > 0 {
-                notifications.push(z_tui::SwitchNotification {
-                    level: NotifyLevel::Warning,
-                    message: format!("{legacy_count} legacy notification(s) pending"),
-                    created_at_ms: None,
-                });
             }
 
             z_tui::SwitchSessionEntry {
@@ -2371,6 +2346,7 @@ mod tests {
                 reason: Some("permission".to_string()),
                 auto_resolve_key: Some("opencode:permission".to_string()),
             }],
+            migrated_legacy_ids: std::collections::HashSet::new(),
         };
         let global = GlobalConfig::default();
 
@@ -2410,8 +2386,8 @@ mod tests {
                 reason: None,
                 auto_resolve_key: None,
             }],
+            migrated_legacy_ids: std::collections::HashSet::new(),
         };
-
         let entries = build_switch_entries(
             vec![(format!("{project_name}:main"), None)],
             Some(&metadata),
@@ -2423,37 +2399,9 @@ mod tests {
     }
 
     #[test]
-    fn build_switch_entries_explains_legacy_notification_badges() {
-        let session_name = format!("{}:legacy", test_project_name("legacy-only"));
-        let legacy_store = notification_store::FileNotificationStore::default();
-        let _ = legacy_store.clear_notifications(&session_name);
-        legacy_store
-            .write_notification(&session_name, "legacy", NotifyLevel::Warning)
-            .unwrap();
-
-        let entries = build_switch_entries(
-            vec![(session_name.clone(), None)],
-            None,
-            &[],
-            &GlobalConfig::default(),
-        );
-
-        assert_eq!(entries[0].notification_count, 1);
-        assert!(entries[0].notifications[0].message.contains("legacy notification"));
-        assert_eq!(entries[0].notifications[0].created_at_ms, None);
-
-        let _ = legacy_store.clear_notifications(&session_name);
-    }
-
-    #[test]
-    fn build_switch_entries_counts_metadata_and_legacy_once_each() {
-        let project_name = test_project_name("metadata-legacy");
+    fn build_switch_entries_counts_metadata_notifications() {
+        let project_name = test_project_name("metadata-only");
         let session_name = format!("{project_name}:main");
-        let legacy_store = notification_store::FileNotificationStore::default();
-        let _ = legacy_store.clear_notifications(&session_name);
-        legacy_store
-            .write_notification(&session_name, "legacy", NotifyLevel::Warning)
-            .unwrap();
         let metadata = z_core::domain::WorktreeMetadataFile {
             version: 2,
             worktrees: vec![],
@@ -2461,7 +2409,7 @@ mod tests {
                 id: "n1".to_string(),
                 target: test_identity(&project_name),
                 level: z_core::domain::NotifyLevel::Info,
-                message: "metadata notification".to_string(),
+                message: "build finished".to_string(),
                 created_at: 1_000,
                 source: None,
             }],
@@ -2469,8 +2417,8 @@ mod tests {
             unattached_activity: vec![],
             migration_diagnostics: vec![],
             llm_status: vec![],
+            migrated_legacy_ids: std::collections::HashSet::new(),
         };
-
         let entries = build_switch_entries(
             vec![(session_name.clone(), None)],
             Some(&metadata),
@@ -2478,18 +2426,11 @@ mod tests {
             &GlobalConfig::default(),
         );
 
-        assert_eq!(entries[0].notification_count, 2);
-        assert_eq!(entries[0].notifications.len(), 2);
+        assert_eq!(entries[0].notification_count, 1);
         assert!(entries[0]
             .notifications
             .iter()
-            .any(|notification| notification.message == "metadata notification"));
-        assert!(entries[0]
-            .notifications
-            .iter()
-            .any(|notification| notification.message.contains("legacy notification")));
-
-        let _ = legacy_store.clear_notifications(&session_name);
+            .any(|notification| notification.message == "build finished"));
     }
 
     #[test]

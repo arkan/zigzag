@@ -17,8 +17,8 @@ live in consumer crates.
 
 | Pattern | Application |
 |---|---|
-| **Trait-based abstraction** | `ProjectStore`, `SessionManager`, `WorktreeManager`, `ForgeClient`, `Notifier`, `DepChecker`, `Logger`, `NotificationStore`, `ActivityStore`, `SessionRefresher`, `ConfigEnvironment` — all define pure interfaces injected by the CLI/TUI adapters. |
-| **Trait-object polymorphism** | `dyn NotificationStore`, `dyn ActivityStore` used in `session_entry.rs` for best-effort effect composition. |
+| **Trait-based abstraction** | `ProjectStore`, `SessionManager`, `WorktreeManager`, `ForgeClient`, `Notifier`, `DepChecker`, `Logger`, `ActivityStore`, `SessionRefresher`, `WorktreeMetadataStore`, `ConfigEnvironment` — all define pure interfaces injected by the CLI/TUI adapters. |
+| **Trait-object polymorphism** | `dyn ActivityStore` used in `session_entry.rs` for best-effort effect composition. |
 | **Companion function + trait** | `depcheck::check_deps()` takes a `&impl DepChecker`; `config::parse_projects_kdl_with_environment()` takes `&impl ConfigEnvironment` — enabling deterministic testing without I/O. |
 | **Three-tier config merging** | Hardcoded defaults ← global `~/.config/z/config.kdl` ← per-repo `.config/z.kdl`. Used for `layout`, `actions`, and prompt templates. Lower tier wins entirely (no partial merge). |
 | **Inner-outer layer merge** | `action::merge_actions()` applies layers sequentially by name (later overrides earlier); `disabled: true` removes the action. Used to compose builtin + global + per-repo actions. |
@@ -51,10 +51,10 @@ live in consumer crates.
 │  │ theme ─────── Theme::from_name → to_zellij_kdl       │          │
 │  └──────────────────────────────────────────────────────┘          │
 │                                                                      │
-│  ┌───────────────┐  ┌────────────────┐  ┌──────────────────────┐   │
-│  │ notification  │  │ session_entry  │  │ claude_hook          │   │
-│  │ (store trait) │  │(effects comp.) │  │ (merge_stop_hook)    │   │
-│  └───────────────┘  └────────────────┘  └──────────────────────┘   │
+ │  ┌────────────────┐  ┌──────────────────────┐                       │
+ │  │ session_entry  │  │ claude_hook          │                       │
+ │  │(effects comp.) │  │ (merge_stop_hook)    │                       │
+ │  └────────────────┘  └──────────────────────┘                       │
 │                                                                      │
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │ depcheck — DepChecker trait + check_deps()                  │    │
@@ -93,9 +93,9 @@ live in consumer crates.
 5. These feed into `ActionPreview::from_forge_data()` → `ActionEnv`
 
 **Session entry flow:**
-1. `session_entry::mark_existing_session_entered(notifications, activity, session_name)` → `SessionEntryEffects`
-2. Best-effort: clears notifications + records attach timestamp; each operation is independent
-3. `validate_session_name()` rejects path-traversal characters before any file-backed adapter call
+1. `session_entry::record_session_attach(activity, session_name)` → `SessionEntryEffects`
+2. Best-effort: records attach timestamp; notification clearing is done directly via the metadata store
+3. Metadata notification clearing and activity recording are independent operations
 
 ## Integration Points
 
@@ -110,8 +110,8 @@ live in consumer crates.
 | `SessionRefresher` | `z-tui` | Periodic background fetch of all sessions + notifications + activity |
 | `DepChecker` | `z-cli` | Version probing for external tool dependencies (`zellij`, `wt`, `gh`) |
 | `Logger` | `z-cli`, `z-tui` | Appending structured log entries |
-| `NotificationStore` | `z-cli`, `z-tui` | File-backed notification persistence per session |
 | `ActivityStore` | `z-cli`, `z-tui` | File-backed last-attach timestamp tracking |
+| `WorktreeMetadataStore` | `z-cli`, `z-tui` | JSON metadata persistence for worktree records, notifications, and LLM status |
 | `ConfigEnvironment` | `config` | `env:VAR` resolution strategy (injected for tests) |
 
 **Config files consumed:**

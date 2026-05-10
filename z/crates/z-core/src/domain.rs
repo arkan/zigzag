@@ -371,6 +371,11 @@ pub struct WorktreeMetadataFile {
     pub migration_diagnostics: Vec<String>,
     #[serde(default)]
     pub llm_status: Vec<AgentActivityStatus>,
+    /// IDs of already-migrated legacy notification files to prevent duplicate
+    /// migration across repeated `drain_legacy_notifications` calls.
+    /// Format: `"{session_name}/{filename}"`.
+    #[serde(default)]
+    pub migrated_legacy_ids: std::collections::HashSet<String>,
 }
 
 // =============================================================================
@@ -882,6 +887,7 @@ mod tests {
             }],
             migration_diagnostics: vec!["legacy session not resolvable".into()],
             llm_status: vec![],
+            migrated_legacy_ids: std::collections::HashSet::new(),
         };
         let json = serde_json::to_string_pretty(&file).unwrap();
         let back: WorktreeMetadataFile = serde_json::from_str(&json).unwrap();

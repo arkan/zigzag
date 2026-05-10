@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashSet;
 
 use crate::activity_store::FileActivityStore;
-use crate::notification_store::FileNotificationStore;
 use z_core::activity::SessionActivity;
 use z_core::domain::{Layout, Project, Session};
 use z_core::error::{Result, ZError};
@@ -129,7 +128,7 @@ impl SessionManager for ZellijSessionManager {
 }
 
 /// A `SessionRefresher` that shells out to `zellij list-sessions` once and
-/// scans `/tmp/z/notifications/` to refresh sessions and notification badges.
+/// reads worktree metadata for notification badges.
 pub struct ZellijSessionRefresher;
 
 impl SessionRefresher for ZellijSessionRefresher {
@@ -182,17 +181,9 @@ impl SessionRefresher for ZellijSessionRefresher {
     }
 
     fn fetch_notifications(&self) -> HashSet<String> {
-        let mut notifications: HashSet<String> = FileNotificationStore::default()
-            .sessions_with_notifications()
-            .into_iter()
-            .collect();
-        if let Ok(metadata_notifications) =
-            crate::worktree_metadata_store::LocalWorktreeMetadataStore::default()
-                .notification_session_aliases()
-        {
-            notifications.extend(metadata_notifications);
-        }
-        notifications
+        crate::worktree_metadata_store::LocalWorktreeMetadataStore::default()
+            .notification_session_aliases(None)
+            .unwrap_or_default()
     }
 
     fn fetch_activity(&self) -> SessionActivity {
