@@ -18,7 +18,8 @@ mod worktree_manager;
 mod zellij_action;
 
 use std::collections::HashSet;
-use std::io::{self};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use std::fs;
 
@@ -62,6 +63,15 @@ fn resolve_session_env() -> Option<String> {
     std::env::var("Z_SESSION_NAME")
         .ok()
         .or_else(|| std::env::var("ZELLIJ_SESSION_NAME").ok())
+}
+
+fn resolve_required_session_env(command: &str) -> z_core::error::Result<String> {
+    resolve_session_env().filter(|session| !session.is_empty()).ok_or_else(|| {
+        z_core::error::ZError::Session(format!(
+            "z {command} must be run inside a Zellij session \
+             (neither Z_SESSION_NAME nor ZELLIJ_SESSION_NAME is set)"
+        ))
+    })
 }
 
 fn main() {
@@ -983,19 +993,14 @@ fn cmd_open_remote(
 
 /// Detach from a Zellij session, keeping it running in the background.
 ///
-/// `session_name` — if `None`, detects the current session from `ZELLIJ_SESSION_NAME`.
+/// `session_name` — if `None`, detects the current session from `Z_SESSION_NAME`
+/// with `ZELLIJ_SESSION_NAME` fallback.
 fn cmd_close(session_name: Option<&str>) -> z_core::error::Result<()> {
     let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
 
     let name = match session_name {
         Some(n) if !n.is_empty() => n.to_string(),
-        _ => std::env::var("ZELLIJ_SESSION_NAME").map_err(|_| {
-            z_core::error::ZError::Session(
-                "no session specified and not inside a Zellij session \
-                 (ZELLIJ_SESSION_NAME not set)"
-                    .to_string(),
-            )
-        })?,
+        _ => resolve_required_session_env("close")?,
     };
 
     let (project, branch) =
@@ -1476,35 +1481,76 @@ fn cmd_logs(n: usize) -> z_core::error::Result<()> {
 // Switch command
 // ---------------------------------------------------------------------------
 
+struct SwitchLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for SwitchLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_switch_lock(path: impl AsRef<Path>) -> io::Result<Option<SwitchLockGuard>> {
+    let path = path.as_ref();
+    loop {
+        match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(mut file) => {
+                writeln!(file, "{}", std::process::id())?;
+                return Ok(Some(SwitchLockGuard { path: path.to_path_buf() }));
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                if switch_lock_owner_is_active(path) {
+                    return Ok(None);
+                }
+                match fs::remove_file(path) {
+                    Ok(()) => continue,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn switch_lock_owner_is_active(path: &Path) -> bool {
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Some(pid) = content.lines().next().and_then(|line| line.trim().parse::<u32>().ok()) else {
+        return false;
+    };
+    process_looks_like_z_switch(pid)
+}
+
+fn process_looks_like_z_switch(pid: u32) -> bool {
+    let cmdline_path = format!("/proc/{pid}/cmdline");
+    let Ok(cmdline) = fs::read(cmdline_path) else {
+        return false;
+    };
+    cmdline
+        .split(|byte| *byte == 0)
+        .any(|arg| arg == b"switch")
+}
+
 /// Launch the interactive session switch picker.
 ///
-/// Guard: must be run inside a Zellij session (`$ZELLIJ_SESSION_NAME` set).
+/// Guard: must be run inside a Zellij session (`$Z_SESSION_NAME` or `$ZELLIJ_SESSION_NAME` set).
 /// Lists all z-managed sessions, presents a picker TUI, and if the user
 /// selects a session runs `zellij action switch-session <name>`.
 fn cmd_switch() -> z_core::error::Result<()> {
-    let current_session = std::env::var("ZELLIJ_SESSION_NAME").unwrap_or_default();
-    if current_session.is_empty() {
-        eprintln!("z switch must be run inside a Zellij session");
-        std::process::exit(1);
-    }
+    let current_session = resolve_required_session_env("switch")?;
 
-    // Prevent multiple switch pickers from opening simultaneously.
-    let _lock_path = format!("/tmp/z-switch-{}.lock", std::process::id());
-    let global_lock = "/tmp/z-switch.lock";
-    if std::path::Path::new(global_lock).exists() {
-        // Another instance is already running — exit silently so the
-        // floating pane closes immediately via close_on_exit.
-        std::process::exit(0);
-    }
-    let _ = fs::write(global_lock, std::process::id().to_string());
-    // Ensure cleanup on exit (normal or panic).
-    struct LockGuard;
-    impl Drop for LockGuard {
-        fn drop(&mut self) {
-            let _ = fs::remove_file("/tmp/z-switch.lock");
-        }
-    }
-    let _lock = LockGuard;
+    // Prevent multiple switch pickers from opening simultaneously, while
+    // allowing stale lock files from crashed/interrupted panes to self-heal.
+    let Some(_lock) = acquire_switch_lock("/tmp/z-switch.lock")
+        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?
+    else {
+        // Another switcher is already running — exit silently so the floating
+        // pane closes immediately via close_on_exit.
+        return Ok(());
+    };
 
     let activity = activity_store::FileActivityStore::default().load_activity();
     let mut sessions: Vec<(String, Option<String>, usize)> = list_all_z_sessions_with_ages()
@@ -1554,15 +1600,10 @@ fn cmd_logs_viewer() -> z_core::error::Result<()> {
 }
 
 /// Run the action picker inside a Zellij floating pane.
-/// Reads `ZELLIJ_SESSION_NAME` to detect project/branch context,
+/// Reads `Z_SESSION_NAME` with `ZELLIJ_SESSION_NAME` fallback to detect project/branch context,
 /// resolves available actions, shows a picker, and executes the selection.
 fn cmd_actions() -> z_core::error::Result<()> {
-    let session_name = std::env::var("ZELLIJ_SESSION_NAME").unwrap_or_default();
-    if session_name.is_empty() {
-        return Err(z_core::error::ZError::Session(
-            "z actions must be run inside a Zellij session".into(),
-        ));
-    }
+    let session_name = resolve_required_session_env("actions")?;
 
     let (project_name, branch) = session_manager::parse_session_name(&session_name)
         .ok_or_else(|| {
@@ -1863,6 +1904,9 @@ mod tests {
     /// Mutex to serialize tests that mutate session environment variables.
     static SESSION_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+    /// Mutex to serialize tests that manipulate switch lock files.
+    static SWITCH_LOCK_MUTEX: Mutex<()> = Mutex::new(());
+
     #[derive(Default)]
     struct RecordingProjectStore {
         removed: Vec<String>,
@@ -1890,6 +1934,43 @@ mod tests {
     fn clear_session_env() {
         std::env::remove_var("Z_SESSION_NAME");
         std::env::remove_var("ZELLIJ_SESSION_NAME");
+    }
+
+    fn temp_switch_lock_path(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "z-switch-lock-test-{}-{}",
+            std::process::id(),
+            name
+        ));
+        let _ = fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn acquire_switch_lock_removes_stale_pid_lock() {
+        let _guard = SWITCH_LOCK_MUTEX.lock().unwrap();
+        let path = temp_switch_lock_path("stale-pid");
+        fs::write(&path, "999999999\n").unwrap();
+
+        let lock = acquire_switch_lock(&path).unwrap();
+
+        assert!(lock.is_some(), "stale lock should be replaced by a live lock");
+        assert_eq!(fs::read_to_string(&path).unwrap().trim(), std::process::id().to_string());
+        drop(lock);
+        assert!(!path.exists(), "lock guard should remove the lock file on drop");
+    }
+
+    #[test]
+    fn acquire_switch_lock_removes_invalid_lock_contents() {
+        let _guard = SWITCH_LOCK_MUTEX.lock().unwrap();
+        let path = temp_switch_lock_path("invalid");
+        fs::write(&path, "not-a-pid\n").unwrap();
+
+        let lock = acquire_switch_lock(&path).unwrap();
+
+        assert!(lock.is_some(), "invalid lock contents should be treated as stale");
+        drop(lock);
+        assert!(!path.exists(), "lock guard should remove the lock file on drop");
     }
 
     #[test]
@@ -2088,6 +2169,42 @@ mod tests {
 
         assert_eq!(resolve_session_env().as_deref(), Some("zellij-session"));
 
+        clear_session_env();
+    }
+
+    #[test]
+    fn resolve_required_session_env_accepts_z_session_name() {
+        let _guard = SESSION_ENV_MUTEX.lock().unwrap();
+        clear_session_env();
+        std::env::set_var("Z_SESSION_NAME", "myapp:main");
+
+        let session = resolve_required_session_env("switch").unwrap();
+
+        assert_eq!(session, "myapp:main");
+        clear_session_env();
+    }
+
+    #[test]
+    fn resolve_required_session_env_falls_back_to_zellij_session_name() {
+        let _guard = SESSION_ENV_MUTEX.lock().unwrap();
+        clear_session_env();
+        std::env::set_var("ZELLIJ_SESSION_NAME", "myapp:main");
+
+        let session = resolve_required_session_env("switch").unwrap();
+
+        assert_eq!(session, "myapp:main");
+        clear_session_env();
+    }
+
+    #[test]
+    fn resolve_required_session_env_mentions_both_env_vars_when_missing() {
+        let _guard = SESSION_ENV_MUTEX.lock().unwrap();
+        clear_session_env();
+
+        let err = resolve_required_session_env("switch").unwrap_err().to_string();
+
+        assert!(err.contains("Z_SESSION_NAME"), "error should mention Z_SESSION_NAME: {err}");
+        assert!(err.contains("ZELLIJ_SESSION_NAME"), "error should mention ZELLIJ_SESSION_NAME: {err}");
         clear_session_env();
     }
 
