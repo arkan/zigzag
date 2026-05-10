@@ -55,9 +55,10 @@ mod preview_state;
 
 use z_core::action::{ActionDef, ActionType, PaneType, ResolvedAction};
 use z_core::domain::{
-    CiStatus, PrState, PullRequest, Project, Session, SessionLink, WorktreeDiagnostic,
-    WorktreeEntry, WorktreeStatus,
+    CiStatus, NotifyLevel, PrState, PullRequest, Project, Session, SessionLink,
+    WorktreeDiagnostic, WorktreeEntry, WorktreeStatus,
 };
+use z_core::config::SwitcherPriorityCriterion;
 use z_core::traits::SessionRefresher;
 use z_core::theme::{Rgb, ThemeStyle};
 
@@ -3458,6 +3459,8 @@ pub struct SwitchPickerState {
     pub ages: Vec<Option<String>>,
     /// Pending notification counts per session (0 = no badge).
     pub notification_counts: Vec<usize>,
+    /// Rich per-session detail used for ranking and selected-row preview.
+    pub entries: Vec<SwitchSessionEntry>,
     /// Currently highlighted item index.
     pub selected: usize,
     /// Name of the current Zellij session (from `$ZELLIJ_SESSION_NAME`).
@@ -3484,7 +3487,19 @@ impl SwitchPickerState {
         let selected = Self::initial_selection(&sessions, &current_session);
         let ages = vec![None; sessions.len()];
         let notification_counts = vec![0; sessions.len()];
-        Self { sessions, ages, notification_counts, selected, current_session }
+        let entries = sessions
+            .iter()
+            .zip(ages.iter())
+            .zip(notification_counts.iter())
+            .map(|((session, age), count)| SwitchSessionEntry {
+                session_name: session.clone(),
+                age: age.clone(),
+                notification_count: *count,
+                notifications: Vec::new(),
+                activity: None,
+            })
+            .collect();
+        Self { sessions, ages, notification_counts, entries, selected, current_session }
     }
 
     /// Create state with per-session age strings (notification counts default to 0).
@@ -3500,7 +3515,19 @@ impl SwitchPickerState {
         );
         let selected = Self::initial_selection(&sessions, &current_session);
         let notification_counts = vec![0; sessions.len()];
-        Self { sessions, ages, notification_counts, selected, current_session }
+        let entries = sessions
+            .iter()
+            .zip(ages.iter())
+            .zip(notification_counts.iter())
+            .map(|((session, age), count)| SwitchSessionEntry {
+                session_name: session.clone(),
+                age: age.clone(),
+                notification_count: *count,
+                notifications: Vec::new(),
+                activity: None,
+            })
+            .collect();
+        Self { sessions, ages, notification_counts, entries, selected, current_session }
     }
 
     /// Create state with per-session age strings and notification counts.
@@ -3521,7 +3548,30 @@ impl SwitchPickerState {
             "sessions and notification_counts must have the same length"
         );
         let selected = Self::initial_selection(&sessions, &current_session);
-        Self { sessions, ages, notification_counts, selected, current_session }
+        let entries = sessions
+            .iter()
+            .zip(ages.iter())
+            .zip(notification_counts.iter())
+            .map(|((session, age), count)| SwitchSessionEntry {
+                session_name: session.clone(),
+                age: age.clone(),
+                notification_count: *count,
+                notifications: Vec::new(),
+                activity: None,
+            })
+            .collect();
+        Self { sessions, ages, notification_counts, entries, selected, current_session }
+    }
+
+    pub fn with_entries(entries: Vec<SwitchSessionEntry>, current_session: String) -> Self {
+        let sessions = entries.iter().map(|entry| entry.session_name.clone()).collect::<Vec<_>>();
+        let ages = entries.iter().map(|entry| entry.age.clone()).collect::<Vec<_>>();
+        let notification_counts = entries
+            .iter()
+            .map(|entry| entry.notification_count)
+            .collect::<Vec<_>>();
+        let selected = Self::initial_selection(&sessions, &current_session);
+        Self { sessions, ages, notification_counts, entries, selected, current_session }
     }
 
     pub fn move_up(&mut self) {
@@ -3538,6 +3588,90 @@ impl SwitchPickerState {
 
     pub fn selected_session(&self) -> Option<&str> {
         self.sessions.get(self.selected).map(|s| s.as_str())
+    }
+
+    pub fn selected_entry(&self) -> Option<&SwitchSessionEntry> {
+        self.entries.get(self.selected)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchSessionEntry {
+    pub session_name: String,
+    pub age: Option<String>,
+    pub notification_count: usize,
+    pub notifications: Vec<SwitchNotification>,
+    pub activity: Option<SwitchAgentActivity>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchNotification {
+    pub level: NotifyLevel,
+    pub message: String,
+    pub created_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchAgentActivity {
+    pub tool: String,
+    pub state: SwitchAgentActivityState,
+    pub updated_at_ms: u64,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchAgentActivityState {
+    Working,
+    Waiting,
+}
+
+pub fn sort_switch_entries(
+    entries: &mut [SwitchSessionEntry],
+    priority: &[SwitcherPriorityCriterion],
+) {
+    let order = if priority.is_empty() {
+        z_core::config::default_switcher_priority()
+    } else {
+        priority.to_vec()
+    };
+    let mut indexed = entries.to_vec().into_iter().enumerate().collect::<Vec<_>>();
+    indexed.sort_by(|(left_index, left), (right_index, right)| {
+        for criterion in &order {
+            if *criterion == SwitcherPriorityCriterion::Recent {
+                let ordering = left_index.cmp(right_index);
+                if !ordering.is_eq() {
+                    return ordering;
+                }
+                continue;
+            }
+            let left_score = switch_priority_score(left, *criterion);
+            let right_score = switch_priority_score(right, *criterion);
+            if left_score != right_score {
+                return left_score.cmp(&right_score);
+            }
+        }
+        left_index.cmp(right_index)
+    });
+    for (slot, (_, entry)) in entries.iter_mut().zip(indexed.into_iter()) {
+        *slot = entry;
+    }
+}
+
+fn switch_priority_score(entry: &SwitchSessionEntry, criterion: SwitcherPriorityCriterion) -> u64 {
+    match criterion {
+        SwitcherPriorityCriterion::Waiting => {
+            if matches!(entry.activity.as_ref().map(|a| a.state), Some(SwitchAgentActivityState::Waiting)) { 0 } else { 1 }
+        }
+        SwitcherPriorityCriterion::Error => {
+            if entry.notifications.iter().any(|n| n.level == NotifyLevel::Error) { 0 } else { 1 }
+        }
+        SwitcherPriorityCriterion::Working => {
+            if matches!(entry.activity.as_ref().map(|a| a.state), Some(SwitchAgentActivityState::Working)) { 0 } else { 1 }
+        }
+        SwitcherPriorityCriterion::Notifications => {
+            if entry.notification_count > 0 { 0 } else { 1 }
+        }
+        SwitcherPriorityCriterion::Recent => 0,
     }
 }
 
@@ -3563,30 +3697,42 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
         return;
     }
 
+    let show_detail = inner.height >= 7;
+    let detail_height = if inner.height >= 9 { 6 } else { 4 };
+    let constraints = if show_detail {
+        vec![Constraint::Min(1), Constraint::Length(detail_height), Constraint::Length(1)]
+    } else {
+        vec![Constraint::Min(1), Constraint::Length(1)]
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints(constraints)
         .split(inner);
 
     let inner_width = area.width.saturating_sub(2) as usize;
-    let right_cols = 10;
+    let right_cols = 22;
     let items: Vec<ListItem> = state
-        .sessions
+        .entries
         .iter()
         .enumerate()
-        .map(|(i, name)| {
+        .map(|(i, entry)| {
+            let name = &entry.session_name;
             let is_current = name == &state.current_session;
             let marker = if is_current { "\u{25cf} " } else { "  " };
             let left = format!("{}{}", marker, name);
             let left_display_len = marker.chars().count() + name.len();
-            let age_str = state
-                .ages
-                .get(i)
-                .and_then(|a| a.as_deref())
+            let age_str = entry
+                .age
+                .as_deref()
                 .unwrap_or("");
-            let notif_count = state.notification_counts.get(i).copied().unwrap_or(0);
+            let notif_count = entry.notification_count;
 
             let age_col = format!("{:>4}", age_str);
+            let activity_col = match entry.activity.as_ref().map(|activity| activity.state) {
+                Some(SwitchAgentActivityState::Working) => "\u{1f916} working ".to_string(),
+                Some(SwitchAgentActivityState::Waiting) => "\u{26a0} waiting ".to_string(),
+                None => "          ".to_string(),
+            };
             let (badge_col, _badge_display_len) = if notif_count > 0 {
                 let digits = notif_count.to_string();
                 let display_len = 2 + 1 + digits.len();
@@ -3598,7 +3744,14 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
 
             let label = if inner_width > left_display_len + right_cols + 1 {
                 let padding = inner_width - left_display_len - right_cols;
-                format!("{}{}{}{}", left, " ".repeat(padding), badge_col, age_col)
+                format!(
+                    "{}{}{}{}{}",
+                    left,
+                    " ".repeat(padding),
+                    activity_col,
+                    badge_col,
+                    age_col
+                )
             } else {
                 left
             };
@@ -3619,11 +3772,128 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
     let list = List::new(items);
     f.render_stateful_widget(list, chunks[0], &mut list_state);
 
+    if show_detail {
+        render_switch_detail(f, chunks[1], state, theme);
+    }
+
     let footer = Paragraph::new(Line::from(Span::styled(
         " j/k navigate  Enter switch  Esc close",
         theme_style_to_style(&theme.text_dim),
     )));
-    f.render_widget(footer, chunks[1]);
+    f.render_widget(footer, chunks[chunks.len() - 1]);
+}
+
+fn render_switch_detail(
+    f: &mut Frame,
+    area: Rect,
+    state: &SwitchPickerState,
+    theme: &z_core::theme::Theme,
+) {
+    let Some(entry) = state.selected_entry() else {
+        return;
+    };
+    let now_ms = unix_now_ms_for_render();
+    let mut lines = Vec::new();
+
+    if let Some(activity) = &entry.activity {
+        let tool = display_tool_name(&activity.tool);
+        let age = format_relative_age(activity.updated_at_ms, now_ms);
+        match activity.state {
+            SwitchAgentActivityState::Working => {
+                lines.push(Line::from(Span::styled(
+                    format!("\u{1f916} {tool} working · {age}"),
+                    theme_style_to_style(&theme.indicator_active),
+                )));
+            }
+            SwitchAgentActivityState::Waiting => {
+                let reason = activity
+                    .reason
+                    .as_deref()
+                    .map(|reason| format!(" · {reason}"))
+                    .unwrap_or_default();
+                lines.push(Line::from(Span::styled(
+                    format!("\u{26a0} {tool} waiting{reason} · {age}"),
+                    theme_style_to_style(&theme.indicator_warning),
+                )));
+            }
+        }
+    }
+
+    for notification in entry.notifications.iter().take(2) {
+        let icon = match notification.level {
+            NotifyLevel::Info => "\u{25cf}",
+            NotifyLevel::Warning => "\u{26a0}",
+            NotifyLevel::Error => "\u{2717}",
+        };
+        let age = notification
+            .created_at_ms
+            .map(|created_at_ms| format_relative_age(created_at_ms, now_ms));
+        lines.push(Line::from(Span::styled(
+            match age {
+                Some(age) => format!("{icon} {} · {age}", notification.message),
+                None => format!("{icon} {}", notification.message),
+            },
+            switch_notification_style(notification.level.clone(), theme),
+        )));
+    }
+
+    if entry.notifications.len() > 2 {
+        lines.push(Line::from(Span::styled(
+            format!("+{} more", entry.notifications.len() - 2),
+            theme_style_to_style(&theme.text_dim),
+        )));
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No notifications",
+            theme_style_to_style(&theme.text_dim),
+        )));
+    }
+
+    lines.truncate(area.height as usize);
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .title(" Selected ")
+        .title_style(theme_style_to_style(&theme.modal_title));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+fn switch_notification_style(level: NotifyLevel, theme: &z_core::theme::Theme) -> Style {
+    match level {
+        NotifyLevel::Info => theme_style_to_style(&theme.text_dim),
+        NotifyLevel::Warning => theme_style_to_style(&theme.indicator_warning),
+        NotifyLevel::Error => theme_style_to_style(&theme.indicator_error),
+    }
+}
+
+fn display_tool_name(tool: &str) -> String {
+    match tool {
+        "opencode" => "OpenCode".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn unix_now_ms_for_render() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn format_relative_age(created_at_ms: u64, now_ms: u64) -> String {
+    let seconds = now_ms.saturating_sub(created_at_ms) / 1000;
+    if seconds < 60 {
+        format!("{seconds}s ago")
+    } else if seconds < 60 * 60 {
+        format!("{}min ago", seconds / 60)
+    } else if seconds < 60 * 60 * 24 {
+        format!("{}h ago", seconds / 3600)
+    } else {
+        format!("{}d ago", seconds / 86_400)
+    }
 }
 
 fn switch_picker_event_loop<B: Backend>(
@@ -3669,16 +3939,6 @@ pub fn run_switch_picker(
     session_entries: Vec<(String, Option<String>, usize)>,
     current_session: String,
 ) -> io::Result<Option<String>> {
-    if session_entries.is_empty() {
-        return Ok(None);
-    }
-
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
     let mut sessions = Vec::with_capacity(session_entries.len());
     let mut ages = Vec::with_capacity(session_entries.len());
     let mut notification_counts = Vec::with_capacity(session_entries.len());
@@ -3687,8 +3947,28 @@ pub fn run_switch_picker(
         ages.push(a);
         notification_counts.push(n);
     }
-    let mut state =
-        SwitchPickerState::with_notifications(sessions, ages, notification_counts, current_session);
+    let state = SwitchPickerState::with_notifications(sessions, ages, notification_counts, current_session);
+    run_switch_picker_state(state)
+}
+
+pub fn run_switch_picker_with_entries(
+    entries: Vec<SwitchSessionEntry>,
+    current_session: String,
+) -> io::Result<Option<String>> {
+    let state = SwitchPickerState::with_entries(entries, current_session);
+    run_switch_picker_state(state)
+}
+
+fn run_switch_picker_state(mut state: SwitchPickerState) -> io::Result<Option<String>> {
+    if state.entries.is_empty() {
+        return Ok(None);
+    }
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
 
     let theme = z_core::theme::Theme::default();
     let result = switch_picker_event_loop(&mut terminal, &mut state, &theme);
@@ -7457,6 +7737,78 @@ mod tests {
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains('\u{25cf}'), "should render ● marker on current session");
+    }
+
+    #[test]
+    fn switch_picker_renders_selected_activity_and_notifications() {
+        let state = SwitchPickerState::with_entries(
+            vec![SwitchSessionEntry {
+                session_name: "myapp:main".to_string(),
+                age: Some("3m".to_string()),
+                notification_count: 3,
+                notifications: vec![
+                    SwitchNotification {
+                        level: NotifyLevel::Warning,
+                        message: "OpenCode needs permission".to_string(),
+                        created_at_ms: Some(1_000),
+                    },
+                    SwitchNotification {
+                        level: NotifyLevel::Info,
+                        message: "Review ready".to_string(),
+                        created_at_ms: Some(2_000),
+                    },
+                    SwitchNotification {
+                        level: NotifyLevel::Info,
+                        message: "Older message".to_string(),
+                        created_at_ms: Some(3_000),
+                    },
+                ],
+                activity: Some(SwitchAgentActivity {
+                    tool: "opencode".to_string(),
+                    state: SwitchAgentActivityState::Waiting,
+                    updated_at_ms: 1_000,
+                    reason: Some("permission".to_string()),
+                }),
+            }],
+            "other:main".to_string(),
+        );
+
+        let out = render_switch_picker_to_string(&state, 80, 16);
+
+        assert!(out.contains("Selected"));
+        assert!(out.contains("OpenCode waiting"));
+        assert!(out.contains("permission"));
+        assert!(out.contains("OpenCode needs permission"));
+        assert!(out.contains("+1 more"));
+    }
+
+    #[test]
+    fn switch_picker_sort_prioritizes_waiting_before_recent_by_default() {
+        let mut entries = vec![
+            SwitchSessionEntry {
+                session_name: "recent:main".to_string(),
+                age: Some("1s".to_string()),
+                notification_count: 0,
+                notifications: vec![],
+                activity: None,
+            },
+            SwitchSessionEntry {
+                session_name: "waiting:main".to_string(),
+                age: Some("1h".to_string()),
+                notification_count: 1,
+                notifications: vec![],
+                activity: Some(SwitchAgentActivity {
+                    tool: "opencode".to_string(),
+                    state: SwitchAgentActivityState::Waiting,
+                    updated_at_ms: 1_000,
+                    reason: Some("permission".to_string()),
+                }),
+            },
+        ];
+
+        sort_switch_entries(&mut entries, &z_core::config::SwitcherConfig::default().priority);
+
+        assert_eq!(entries[0].session_name, "waiting:main");
     }
 
     #[test]

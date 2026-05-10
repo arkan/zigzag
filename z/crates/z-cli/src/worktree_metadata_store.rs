@@ -31,7 +31,7 @@ const LOCK_FILENAME: &str = "worktree-metadata.lock";
 const MIGRATION_BACKUP_SUFFIX: &str = ".bak";
 const LEGACY_ACTIVITY_FILENAME: &str = "session-activity.json";
 const LEGACY_NOTIFICATIONS_DIR: &str = "/tmp/z/notifications";
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = z_core::agent_activity::WORKTREE_METADATA_VERSION;
 const LOCK_RETRY_COUNT: u32 = 10;
 const LOCK_RETRY_DELAY_MS: u64 = 50;
 
@@ -70,6 +70,11 @@ impl RemoteWorktreeMetadataStore {
                 notification.target.host = Some(self.host.clone());
             }
         }
+        for status in &mut data.llm_status {
+            if status.target.host.is_none() {
+                status.target.host = Some(self.host.clone());
+            }
+        }
         data
     }
 
@@ -82,6 +87,11 @@ impl RemoteWorktreeMetadataStore {
         for notification in &mut data.notifications {
             if notification.target.host.as_deref() == Some(self.host.as_str()) {
                 notification.target.host = None;
+            }
+        }
+        for status in &mut data.llm_status {
+            if status.target.host.as_deref() == Some(self.host.as_str()) {
+                status.target.host = None;
             }
         }
         data
@@ -235,6 +245,8 @@ impl LocalWorktreeMetadataStore {
         discovered_worktrees: &[DiscoveredWorktree],
         legacy_notifications_path: Option<&Path>,
     ) -> Result<MigrationReport> {
+        let _guard = self.acquire_lock()?;
+
         if self.metadata_path().exists() {
             return Ok(MigrationReport {
                 migrated_worktrees: 0,
@@ -319,6 +331,7 @@ impl LocalWorktreeMetadataStore {
                             level: level.clone(),
                             message: message.clone(),
                             created_at: *created_at,
+                            source: None,
                         });
                         report.migrated_notifications += 1;
                     }
@@ -365,10 +378,9 @@ impl LocalWorktreeMetadataStore {
             unattached_notifications,
             unattached_activity,
             migration_diagnostics: report.diagnostics.clone(),
+            llm_status: vec![],
         };
 
-        // Write: atomic inside lock
-        let _guard = self.acquire_lock()?;
         self.write_atomic_unlocked(&metadata_file)?;
 
         // Write session-activity.json.bak only after metadata is durably written
@@ -479,6 +491,7 @@ impl LocalWorktreeMetadataStore {
             unattached_notifications: Vec::new(),
             unattached_activity: Vec::new(),
             migration_diagnostics: Vec::new(),
+            llm_status: Vec::new(),
         }
     }
 
@@ -489,10 +502,24 @@ impl LocalWorktreeMetadataStore {
         self.write_atomic_unlocked(&file)
     }
 
+    fn update_metadata_if_changed(
+        &self,
+        mutate: impl FnOnce(&mut WorktreeMetadataFile) -> bool,
+    ) -> Result<bool> {
+        let _guard = self.acquire_lock()?;
+        let mut file = self.read_raw_unlocked()?.unwrap_or_else(Self::empty_file);
+        let changed = mutate(&mut file);
+        if changed {
+            self.write_atomic_unlocked(&file)?;
+        }
+        Ok(changed)
+    }
+
     /// Record a successful Worktree entry/open and keep metadata sparse.
     pub fn record_opened(&self, worktree: &DiscoveredWorktree, session_name: &str) -> Result<()> {
         let now = unix_now_ms();
         self.update_metadata(|file| {
+            file.version = CURRENT_VERSION;
             let record = ensure_worktree_record(&mut file.worktrees, worktree);
             record.last_opened_at = Some(now);
             record.last_session_name = Some(session_name.to_string());
@@ -502,8 +529,10 @@ impl LocalWorktreeMetadataStore {
     /// Remove all metadata and notifications attached to a Worktree identity.
     pub fn remove_worktree(&self, identity: &WorktreeIdentity) -> Result<()> {
         self.update_metadata(|file| {
+            file.version = CURRENT_VERSION;
             file.worktrees.retain(|record| !record_matches_identity(record, identity));
             file.notifications.retain(|notification| notification.target != *identity);
+            file.llm_status.retain(|status| status.target != *identity);
         })
     }
 
@@ -516,12 +545,14 @@ impl LocalWorktreeMetadataStore {
     ) -> Result<()> {
         let now = unix_now_ms();
         self.update_metadata(|file| {
+            file.version = CURRENT_VERSION;
             file.notifications.push(NotificationRecord {
                 id: format!("{}-{}", now, std::process::id()),
                 target,
                 level,
                 message: message.to_string(),
                 created_at: now,
+                source: None,
             });
         })
     }
@@ -535,6 +566,7 @@ impl LocalWorktreeMetadataStore {
     ) -> Result<()> {
         let now = unix_now_ms();
         self.update_metadata(|file| {
+            file.version = CURRENT_VERSION;
             file.unattached_notifications.push(UnattachedNotification {
                 id: format!("{}-{}", now, std::process::id()),
                 session_name: session_name.to_string(),
@@ -548,7 +580,40 @@ impl LocalWorktreeMetadataStore {
     /// Clear notifications attached to a Worktree identity after successful entry.
     pub fn clear_notifications(&self, identity: &WorktreeIdentity) -> Result<()> {
         self.update_metadata(|file| {
+            file.version = CURRENT_VERSION;
             file.notifications.retain(|notification| notification.target != *identity);
+            file.llm_status.retain(|status| {
+                !(status.target == *identity
+                    && matches!(status.state, z_core::domain::AgentActivityState::Waiting))
+            });
+        })
+    }
+
+    /// Apply a structured agent activity update to Worktree metadata.
+    pub fn apply_agent_activity(
+        &self,
+        target: WorktreeIdentity,
+        tool: &str,
+        event: z_core::agent_activity::AgentActivityEvent,
+        reason: Option<String>,
+        settings: z_core::agent_activity::AgentActivitySettings,
+    ) -> Result<bool> {
+        let now = unix_now_ms();
+        let notification_id = format!("{}-{}", now, std::process::id());
+        self.update_metadata_if_changed(|file| {
+            z_core::agent_activity::apply_agent_activity_update(
+                file,
+                z_core::agent_activity::AgentActivityUpdate {
+                    target,
+                    tool: tool.to_string(),
+                    event,
+                    reason,
+                    now_ms: now,
+                    notification_id,
+                },
+                settings,
+            )
+            .changed
         })
     }
 
@@ -709,6 +774,7 @@ fn parse_notification_content(content: &str) -> (NotifyLevel, String) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{thread, time::Duration};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -737,7 +803,7 @@ mod tests {
     fn read_empty_when_no_file() {
         let (store, dir) = temp_store();
         let file = store.read_metadata().unwrap();
-        assert_eq!(file.version, 1);
+        assert_eq!(file.version, CURRENT_VERSION);
         assert!(file.worktrees.is_empty());
         cleanup(&dir);
     }
@@ -760,6 +826,7 @@ mod tests {
             unattached_notifications: vec![],
             unattached_activity: vec![],
             migration_diagnostics: vec![],
+            llm_status: vec![],
         };
         store.write_metadata(&data).unwrap();
         let got = store.read_metadata().unwrap();
@@ -780,6 +847,7 @@ mod tests {
             unattached_notifications: vec![],
             unattached_activity: vec![],
             migration_diagnostics: vec![],
+            llm_status: vec![],
         };
         store.write_metadata(&data).unwrap();
         assert!(store.metadata_path().exists());
@@ -804,6 +872,7 @@ mod tests {
             unattached_notifications: vec![],
             unattached_activity: vec![],
             migration_diagnostics: vec![],
+            llm_status: vec![],
         };
         store.write_metadata(&data1).unwrap();
 
@@ -822,6 +891,7 @@ mod tests {
             unattached_notifications: vec![],
             unattached_activity: vec![],
             migration_diagnostics: vec![],
+            llm_status: vec![],
         };
         store.write_metadata(&data2).unwrap();
 
@@ -912,6 +982,7 @@ mod tests {
             unattached_notifications: vec![],
             unattached_activity: vec![],
             migration_diagnostics: vec![],
+            llm_status: vec![],
         };
 
         store.write_metadata(&data).unwrap();
@@ -934,6 +1005,7 @@ mod tests {
             unattached_notifications: vec![],
             unattached_activity: vec![],
             migration_diagnostics: vec![],
+            llm_status: vec![],
         };
         store.write_metadata(&data).unwrap();
 
@@ -1128,10 +1200,12 @@ mod tests {
                 level: NotifyLevel::Info,
                 message: "hello".to_string(),
                 created_at: 1,
+                source: None,
             }],
             unattached_notifications: vec![],
             unattached_activity: vec![],
             migration_diagnostics: vec![],
+            llm_status: vec![],
         };
 
         let local_view = store.apply_local_host(data);
@@ -1155,12 +1229,53 @@ mod tests {
             unattached_notifications: vec![],
             unattached_activity: vec![],
             migration_diagnostics: vec![],
+            llm_status: vec![],
         };
         store.write_metadata(&data).unwrap();
 
         // Migration should be skipped
         let report = store.migrate_from_legacy(&[], None).unwrap();
         assert!(report.skipped_because_exists);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn migration_rechecks_existing_metadata_after_waiting_for_lock() {
+        let (store, dir) = temp_store();
+        let guard = store.acquire_lock().unwrap();
+        let store_for_thread = store.clone();
+
+        let handle = thread::spawn(move || store_for_thread.migrate_from_legacy(&[], None).unwrap());
+        thread::sleep(Duration::from_millis(25));
+
+        let data = WorktreeMetadataFile {
+            version: CURRENT_VERSION,
+            worktrees: vec![],
+            notifications: vec![],
+            unattached_notifications: vec![],
+            unattached_activity: vec![],
+            migration_diagnostics: vec![],
+            llm_status: vec![z_core::domain::AgentActivityStatus {
+                target: WorktreeIdentity {
+                    host: None,
+                    project_root: PathBuf::from("/repo"),
+                    worktree_path: PathBuf::from("/repo"),
+                },
+                tool: "opencode".to_string(),
+                state: z_core::domain::AgentActivityState::Working,
+                updated_at_ms: 1,
+                reason: None,
+                auto_resolve_key: None,
+            }],
+        };
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(store.metadata_path(), serde_json::to_vec_pretty(&data).unwrap()).unwrap();
+
+        drop(guard);
+        let report = handle.join().unwrap();
+
+        assert!(report.skipped_because_exists);
+        assert_eq!(store.read_metadata().unwrap().llm_status.len(), 1);
         cleanup(&dir);
     }
 

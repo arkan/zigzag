@@ -62,7 +62,9 @@ fn resolve_bin_path() -> String {
 fn resolve_session_env() -> Option<String> {
     std::env::var("Z_SESSION_NAME")
         .ok()
+        .filter(|session| !session.is_empty())
         .or_else(|| std::env::var("ZELLIJ_SESSION_NAME").ok())
+        .filter(|session| !session.is_empty())
 }
 
 fn resolve_required_session_env(command: &str) -> z_core::error::Result<String> {
@@ -218,11 +220,16 @@ fn run() {
             }
         }
         Some("notify") => {
-            // Usage: z notify [session] <message> [--level info|warning|error]
             let env_session = resolve_session_env();
-            match resolve_notify_args(&args[1..], env_session.as_deref()) {
-                Ok((session, message, level)) => {
+            match resolve_notify_command_args(&args[1..], env_session.as_deref()) {
+                Ok(NotifyCommand::Legacy { session, message, level }) => {
                     if let Err(e) = cmd_notify(&session, &message, level) {
+                        eprintln!("error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                Ok(NotifyCommand::Event(event)) => {
+                    if let Err(e) = cmd_notify_event(event) {
                         eprintln!("error: {}", e);
                         std::process::exit(1);
                     }
@@ -698,10 +705,16 @@ fn load_notification_aliases() -> HashSet<String> {
     notifications
 }
 
-fn migrate_local_metadata_if_needed() -> z_core::error::Result<()> {
+fn discover_local_worktrees() -> z_core::error::Result<Vec<z_core::domain::DiscoveredWorktree>> {
     let store = KdlProjectStore::new();
     let projects = store.list_projects()?;
-    let discovered: Vec<z_core::domain::DiscoveredWorktree> = projects
+    Ok(discover_local_worktrees_for_projects(&projects))
+}
+
+fn discover_local_worktrees_for_projects(
+    projects: &[z_core::domain::Project],
+) -> Vec<z_core::domain::DiscoveredWorktree> {
+    projects
         .iter()
         .filter(|project| project.host.is_none())
         .flat_map(|project| {
@@ -722,7 +735,13 @@ fn migrate_local_metadata_if_needed() -> z_core::error::Result<()> {
                 })
                 .unwrap_or_default()
         })
-        .collect();
+        .collect()
+}
+
+fn migrate_local_metadata_if_needed() -> z_core::error::Result<()> {
+    let store = KdlProjectStore::new();
+    let projects = store.list_projects()?;
+    let discovered = discover_local_worktrees_for_projects(&projects);
 
     let metadata_store = worktree_metadata_store::LocalWorktreeMetadataStore::default();
     metadata_store.migrate_from_legacy(&discovered, None).map(|_| ())
@@ -1243,6 +1262,7 @@ fn cmd_worktree_delete(
 /// Can run even when external dependencies are missing.
 fn cmd_doctor(fix: bool, interactive: bool) -> z_core::error::Result<String> {
     let mut diagnostics: Vec<String> = Vec::new();
+    let global = load_global_config();
 
     // 1. Check dependencies (always runs, even on failure)
     let checker = ProcessDepChecker;
@@ -1267,6 +1287,16 @@ fn cmd_doctor(fix: bool, interactive: bool) -> z_core::error::Result<String> {
                     result.tool, output
                 ));
             }
+        }
+    }
+
+    if !global.switcher.invalid_priorities.is_empty() {
+        diagnostics.push(String::new());
+        diagnostics.push(" Config:".to_string());
+        for priority in &global.switcher.invalid_priorities {
+            diagnostics.push(format!(
+                "  ⚠ unknown switcher priority criterion: {priority}"
+            ));
         }
     }
 
@@ -1375,9 +1405,10 @@ fn cmd_doctor(fix: bool, interactive: bool) -> z_core::error::Result<String> {
     match metadata_store.read_metadata() {
         Ok(meta) => {
             diagnostics.push(format!(
-                "  {} worktree record(s), {} notification(s)",
+                "  {} worktree record(s), {} notification(s), {} LLM status record(s)",
                 meta.worktrees.len(),
-                meta.notifications.len()
+                meta.notifications.len(),
+                meta.llm_status.len()
             ));
             if !meta.migration_diagnostics.is_empty() {
                 for d in &meta.migration_diagnostics {
@@ -1426,6 +1457,7 @@ fn doctor_fix_metadata() -> z_core::error::Result<String> {
     let mut metadata = metadata_store.read_metadata()?;
     let before_worktrees = metadata.worktrees.len();
     let before_notifications = metadata.notifications.len();
+    let before_llm_status = metadata.llm_status.len();
 
     metadata.worktrees.retain(|record| {
         record.host.is_some() || record.path.exists()
@@ -1437,13 +1469,21 @@ fn doctor_fix_metadata() -> z_core::error::Result<String> {
                 && record.path == notification.target.worktree_path
         })
     });
+    metadata.llm_status.retain(|status| {
+        metadata.worktrees.iter().any(|record| {
+            record.host == status.target.host
+                && record.project_root == status.target.project_root
+                && record.path == status.target.worktree_path
+        })
+    });
     let removed_worktrees = before_worktrees.saturating_sub(metadata.worktrees.len());
     let removed_notifications = before_notifications.saturating_sub(metadata.notifications.len());
+    let removed_llm_status = before_llm_status.saturating_sub(metadata.llm_status.len());
     metadata_store.write_metadata(&metadata)?;
 
     Ok(format!(
-        "removed {} stale metadata record(s), {} stale notification(s); preserved unattached diagnostics",
-        removed_worktrees, removed_notifications
+        "removed {} stale metadata record(s), {} stale notification(s), {} stale LLM status record(s); preserved unattached diagnostics",
+        removed_worktrees, removed_notifications, removed_llm_status
     ))
 }
 
@@ -1552,25 +1592,21 @@ fn cmd_switch() -> z_core::error::Result<()> {
         return Ok(());
     };
 
+    let global = load_global_config();
     let activity = activity_store::FileActivityStore::default().load_activity();
-    let mut sessions: Vec<(String, Option<String>, usize)> = list_all_z_sessions_with_ages()
-        .into_iter()
-        .map(|(name, age)| {
-            let count = notification_store::FileNotificationStore::default().count_notifications(&name);
-            (name, age, count)
-        })
-        .collect();
+    let discovered = discover_local_worktrees().unwrap_or_default();
+    let metadata = worktree_metadata_store::LocalWorktreeMetadataStore::default()
+        .read_metadata()
+        .ok();
+    let mut sessions = list_all_z_sessions_with_ages();
     z_core::activity::sort_by_recent_attach(&mut sessions, &activity, |s| s.0.as_str());
+    let mut switch_entries = build_switch_entries(sessions, metadata.as_ref(), &discovered, &global);
+    z_tui::sort_switch_entries(&mut switch_entries, &global.switcher.priority);
 
-    let selected = z_tui::run_switch_picker(sessions, current_session)
+    let selected = z_tui::run_switch_picker_with_entries(switch_entries, current_session)
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
     if let Some(session_name) = selected {
-        z_core::session_entry::mark_existing_session_entered(
-            &notification_store::FileNotificationStore::default(),
-            &activity_store::FileActivityStore::default(),
-            &session_name,
-        );
         let output = std::process::Command::new("zellij")
             .args(["action", "switch-session", &session_name])
             .output()
@@ -1582,9 +1618,125 @@ fn cmd_switch() -> z_core::error::Result<()> {
                 stderr.trim()
             )));
         }
+        z_core::session_entry::mark_existing_session_entered(
+            &notification_store::FileNotificationStore::default(),
+            &activity_store::FileActivityStore::default(),
+            &session_name,
+        );
+        clear_metadata_after_session_entry(&session_name);
     }
 
     Ok(())
+}
+
+fn build_switch_entries(
+    sessions: Vec<(String, Option<String>)>,
+    metadata: Option<&z_core::domain::WorktreeMetadataFile>,
+    discovered: &[z_core::domain::DiscoveredWorktree],
+    global: &GlobalConfig,
+) -> Vec<z_tui::SwitchSessionEntry> {
+    let legacy_store = notification_store::FileNotificationStore::default();
+    let now_ms = unix_now_ms();
+    let ttl_ms = global.llm.working_ttl_seconds.saturating_mul(1000);
+
+    sessions
+        .into_iter()
+        .map(|(session_name, age)| {
+            let legacy_count = legacy_store.count_notifications(&session_name);
+            let mut notification_count = legacy_count;
+            let mut notifications = Vec::new();
+            let mut activity = None;
+
+            if let Some(metadata) = metadata {
+                if let z_core::domain::SessionAliasResolution::Unique(worktree) =
+                    z_core::domain::resolve_session_alias(&session_name, discovered)
+                {
+                    let mut metadata_notifications = metadata
+                        .notifications
+                        .iter()
+                        .filter(|notification| notification.target == worktree.identity)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    metadata_notifications.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                    let metadata_notification_count = metadata_notifications.len();
+                    notification_count = metadata_notification_count.saturating_add(legacy_count);
+                    notifications = metadata_notifications
+                        .into_iter()
+                        .map(|notification| z_tui::SwitchNotification {
+                            level: notification.level,
+                            message: notification.message,
+                            created_at_ms: Some(notification.created_at),
+                        })
+                        .collect();
+                    if legacy_count > 0 {
+                        notifications.push(z_tui::SwitchNotification {
+                            level: NotifyLevel::Warning,
+                            message: format!("{legacy_count} legacy notification(s) pending"),
+                            created_at_ms: None,
+                        });
+                    }
+                    activity = metadata
+                        .llm_status
+                        .iter()
+                        .filter(|status| status.target == worktree.identity)
+                        .filter_map(|status| match status.state {
+                            z_core::domain::AgentActivityState::Waiting => Some(z_tui::SwitchAgentActivity {
+                                tool: status.tool.clone(),
+                                state: z_tui::SwitchAgentActivityState::Waiting,
+                                updated_at_ms: status.updated_at_ms,
+                                reason: status.reason.clone(),
+                            }),
+                            z_core::domain::AgentActivityState::Working => {
+                                if z_core::agent_activity::working_status_is_fresh(status, now_ms, ttl_ms) {
+                                    Some(z_tui::SwitchAgentActivity {
+                                        tool: status.tool.clone(),
+                                        state: z_tui::SwitchAgentActivityState::Working,
+                                        updated_at_ms: status.updated_at_ms,
+                                        reason: status.reason.clone(),
+                                    })
+                                } else {
+                                    None
+                                }
+                            }
+                        })
+                        .max_by_key(|activity| match activity.state {
+                            z_tui::SwitchAgentActivityState::Waiting => (1u8, activity.updated_at_ms),
+                            z_tui::SwitchAgentActivityState::Working => (0u8, activity.updated_at_ms),
+                        });
+                }
+            }
+
+            if notifications.is_empty() && legacy_count > 0 {
+                notifications.push(z_tui::SwitchNotification {
+                    level: NotifyLevel::Warning,
+                    message: format!("{legacy_count} legacy notification(s) pending"),
+                    created_at_ms: None,
+                });
+            }
+
+            z_tui::SwitchSessionEntry {
+                session_name,
+                age,
+                notification_count,
+                notifications,
+                activity,
+            }
+        })
+        .collect()
+}
+
+fn clear_metadata_after_session_entry(session_name: &str) {
+    if let Ok(NotifyTarget::Local(identity)) = resolve_notify_target(session_name) {
+        let _ = worktree_metadata_store::LocalWorktreeMetadataStore::default()
+            .clear_notifications(&identity);
+    }
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -1755,6 +1907,54 @@ fn cmd_notify(session: &str, message: &str, level: NotifyLevel) -> z_core::error
     Ok(())
 }
 
+fn cmd_notify_event(event: NotifyEventCommand) -> z_core::error::Result<()> {
+    let target = resolve_notify_target(&event.session)?;
+    match target {
+        NotifyTarget::Local(identity) => {
+            let global = load_global_config();
+            let settings = z_core::agent_activity::AgentActivitySettings::from_seconds(
+                global.llm.working_update_min_interval_seconds,
+            );
+            let activity_event = match event.kind {
+                NotifyEventKind::LlmWorking => z_core::agent_activity::AgentActivityEvent::Working,
+                NotifyEventKind::LlmIdle => z_core::agent_activity::AgentActivityEvent::Idle,
+                NotifyEventKind::LlmWaiting => z_core::agent_activity::AgentActivityEvent::Waiting {
+                    level: event.level.clone(),
+                    message: event
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| default_waiting_message(&event.tool, event.reason.as_deref())),
+                },
+            };
+            apply_event_after_successful_migration(migrate_local_metadata_if_needed(), || {
+                worktree_metadata_store::LocalWorktreeMetadataStore::default().apply_agent_activity(
+                    identity,
+                    &event.tool,
+                    activity_event,
+                    event.reason,
+                    settings,
+                )?;
+                Ok(())
+            })
+        }
+        NotifyTarget::Remote { host, session_name } => {
+            let remote_cmd = event.to_remote_command(&session_name);
+            remote::ssh_run_remote(&host, &remote_cmd)
+        }
+    }
+}
+
+fn apply_event_after_successful_migration<F>(
+    migration: z_core::error::Result<()>,
+    apply: F,
+) -> z_core::error::Result<()>
+where
+    F: FnOnce() -> z_core::error::Result<()>,
+{
+    migration?;
+    apply()
+}
+
 enum NotifyTarget {
     Local(z_core::domain::WorktreeIdentity),
     Remote { host: String, session_name: String },
@@ -1829,6 +2029,184 @@ fn notify_level_arg(level: &NotifyLevel) -> &'static str {
         NotifyLevel::Info => "info",
         NotifyLevel::Warning => "warning",
         NotifyLevel::Error => "error",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum NotifyCommand {
+    Legacy {
+        session: String,
+        message: String,
+        level: NotifyLevel,
+    },
+    Event(NotifyEventCommand),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotifyEventKind {
+    LlmWorking,
+    LlmIdle,
+    LlmWaiting,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct NotifyEventCommand {
+    session: String,
+    kind: NotifyEventKind,
+    tool: String,
+    reason: Option<String>,
+    message: Option<String>,
+    level: NotifyLevel,
+}
+
+impl NotifyEventCommand {
+    fn event_name(&self) -> &'static str {
+        match self.kind {
+            NotifyEventKind::LlmWorking => "llm.working",
+            NotifyEventKind::LlmIdle => "llm.idle",
+            NotifyEventKind::LlmWaiting => "llm.waiting",
+        }
+    }
+
+    fn to_remote_command(&self, session: &str) -> String {
+        let mut command = format!(
+            "z notify --event {} --tool {} --session {}",
+            remote::shell_quote(self.event_name()),
+            remote::shell_quote(&self.tool),
+            remote::shell_quote(session)
+        );
+        if let Some(reason) = &self.reason {
+            command.push_str(" --reason ");
+            command.push_str(&remote::shell_quote(reason));
+        }
+        if let Some(message) = &self.message {
+            command.push_str(" --message ");
+            command.push_str(&remote::shell_quote(message));
+        }
+        if self.kind == NotifyEventKind::LlmWaiting {
+            command.push_str(" --level ");
+            command.push_str(&remote::shell_quote(notify_level_arg(&self.level)));
+        }
+        command
+    }
+}
+
+fn default_waiting_message(tool: &str, reason: Option<&str>) -> String {
+    match (tool, reason) {
+        ("opencode", Some("permission")) => "OpenCode needs permission".to_string(),
+        ("opencode", Some("error")) => "OpenCode encountered an error".to_string(),
+        ("opencode", _) => "OpenCode needs attention".to_string(),
+        (_, Some(reason)) => format!("{tool} waiting: {reason}"),
+        (_, None) => format!("{tool} waiting"),
+    }
+}
+
+fn resolve_notify_command_args(
+    args: &[String],
+    env_session: Option<&str>,
+) -> Result<NotifyCommand, String> {
+    if args.iter().any(|arg| arg == "--event") {
+        resolve_notify_event_args(args, env_session).map(NotifyCommand::Event)
+    } else {
+        let (session, message, level) = resolve_notify_args(args, env_session)?;
+        Ok(NotifyCommand::Legacy { session, message, level })
+    }
+}
+
+fn resolve_notify_event_args(
+    args: &[String],
+    env_session: Option<&str>,
+) -> Result<NotifyEventCommand, String> {
+    let mut event: Option<NotifyEventKind> = None;
+    let mut session: Option<String> = None;
+    let mut tool: Option<String> = None;
+    let mut reason: Option<String> = None;
+    let mut message: Option<String> = None;
+    let mut level = NotifyLevel::Warning;
+    let mut level_seen = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--event" => {
+                let value = args.get(i + 1).ok_or_else(|| "--event requires a value".to_string())?;
+                event = Some(match value.as_str() {
+                    "llm.working" => NotifyEventKind::LlmWorking,
+                    "llm.idle" => NotifyEventKind::LlmIdle,
+                    "llm.waiting" => NotifyEventKind::LlmWaiting,
+                    _ => return Err(format!("unknown notify event: {value}")),
+                });
+                i += 2;
+            }
+            "--session" => {
+                session = Some(
+                    args.get(i + 1)
+                        .ok_or_else(|| "--session requires a value".to_string())?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--tool" => {
+                tool = Some(
+                    args.get(i + 1)
+                        .ok_or_else(|| "--tool requires a value".to_string())?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--reason" => {
+                reason = Some(
+                    args.get(i + 1)
+                        .ok_or_else(|| "--reason requires a value".to_string())?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--message" => {
+                message = Some(
+                    args.get(i + 1)
+                        .ok_or_else(|| "--message requires a value".to_string())?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--level" => {
+                let value = args.get(i + 1).ok_or_else(|| "--level requires a value".to_string())?;
+                level_seen = true;
+                level = match value.as_str() {
+                    "warning" => NotifyLevel::Warning,
+                    "error" => NotifyLevel::Error,
+                    _ => return Err("event mode --level must be warning or error".to_string()),
+                };
+                i += 2;
+            }
+            arg if arg.starts_with("--") => return Err(format!("unknown notify event flag: {arg}")),
+            arg => return Err(format!("event mode does not accept positional argument: {arg}")),
+        }
+    }
+
+    let kind = event.ok_or_else(|| "--event is required".to_string())?;
+    let tool = tool.ok_or_else(|| "--tool is required for llm events".to_string())?;
+    let session = session
+        .or_else(|| env_session.map(str::to_string))
+        .ok_or_else(|| "no session specified and neither Z_SESSION_NAME nor ZELLIJ_SESSION_NAME is set".to_string())?;
+
+    match kind {
+        NotifyEventKind::LlmWorking | NotifyEventKind::LlmIdle if message.is_some() => Err(
+            "llm.working and llm.idle do not accept --message because they are not visible notifications"
+                .to_string(),
+        ),
+        NotifyEventKind::LlmWorking | NotifyEventKind::LlmIdle if level_seen => {
+            Err("--level is only valid for llm.waiting".to_string())
+        }
+        _ => Ok(NotifyEventCommand {
+            session,
+            kind,
+            tool,
+            reason,
+            message,
+            level,
+        }),
     }
 }
 
@@ -1936,6 +2314,27 @@ mod tests {
         std::env::remove_var("ZELLIJ_SESSION_NAME");
     }
 
+    fn test_project_name(suffix: &str) -> String {
+        format!("switch-entry-test-{}-{suffix}", std::process::id())
+    }
+
+    fn test_identity(project_name: &str) -> z_core::domain::WorktreeIdentity {
+        z_core::domain::WorktreeIdentity {
+            host: None,
+            project_root: PathBuf::from(format!("/repo/{project_name}")),
+            worktree_path: PathBuf::from(format!("/repo/{project_name}")),
+        }
+    }
+
+    fn test_discovered_worktree(project_name: &str) -> z_core::domain::DiscoveredWorktree {
+        z_core::domain::DiscoveredWorktree {
+            identity: test_identity(project_name),
+            project_name: project_name.to_string(),
+            branch: Some("main".to_string()),
+            is_primary_checkout: true,
+        }
+    }
+
     fn temp_switch_lock_path(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "z-switch-lock-test-{}-{}",
@@ -1944,6 +2343,168 @@ mod tests {
         ));
         let _ = fs::remove_file(&path);
         path
+    }
+
+    #[test]
+    fn build_switch_entries_attaches_metadata_notifications_and_waiting_activity() {
+        let project_name = test_project_name("metadata");
+        let metadata = z_core::domain::WorktreeMetadataFile {
+            version: 2,
+            worktrees: vec![],
+            notifications: vec![z_core::domain::NotificationRecord {
+                id: "n1".to_string(),
+                target: test_identity(&project_name),
+                level: z_core::domain::NotifyLevel::Warning,
+                message: "OpenCode needs permission".to_string(),
+                created_at: 1_000,
+                source: None,
+            }],
+            unattached_notifications: vec![],
+            unattached_activity: vec![],
+            migration_diagnostics: vec![],
+            llm_status: vec![z_core::domain::AgentActivityStatus {
+                target: test_identity(&project_name),
+                tool: "opencode".to_string(),
+                state: z_core::domain::AgentActivityState::Waiting,
+                updated_at_ms: 1_500,
+                reason: Some("permission".to_string()),
+                auto_resolve_key: Some("opencode:permission".to_string()),
+            }],
+        };
+        let global = GlobalConfig::default();
+
+        let entries = build_switch_entries(
+            vec![(format!("{project_name}:main"), Some("2m".to_string()))],
+            Some(&metadata),
+            &[test_discovered_worktree(&project_name)],
+            &global,
+        );
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].notification_count, 1);
+        assert_eq!(entries[0].notifications[0].message, "OpenCode needs permission");
+        assert_eq!(
+            entries[0].activity.as_ref().map(|activity| activity.state),
+            Some(z_tui::SwitchAgentActivityState::Waiting)
+        );
+    }
+
+    #[test]
+    fn build_switch_entries_drops_stale_working_activity() {
+        let project_name = test_project_name("stale-working");
+        let mut global = GlobalConfig::default();
+        global.llm.working_ttl_seconds = 1;
+        let metadata = z_core::domain::WorktreeMetadataFile {
+            version: 2,
+            worktrees: vec![],
+            notifications: vec![],
+            unattached_notifications: vec![],
+            unattached_activity: vec![],
+            migration_diagnostics: vec![],
+            llm_status: vec![z_core::domain::AgentActivityStatus {
+                target: test_identity(&project_name),
+                tool: "opencode".to_string(),
+                state: z_core::domain::AgentActivityState::Working,
+                updated_at_ms: 1,
+                reason: None,
+                auto_resolve_key: None,
+            }],
+        };
+
+        let entries = build_switch_entries(
+            vec![(format!("{project_name}:main"), None)],
+            Some(&metadata),
+            &[test_discovered_worktree(&project_name)],
+            &global,
+        );
+
+        assert!(entries[0].activity.is_none());
+    }
+
+    #[test]
+    fn build_switch_entries_explains_legacy_notification_badges() {
+        let session_name = format!("{}:legacy", test_project_name("legacy-only"));
+        let legacy_store = notification_store::FileNotificationStore::default();
+        let _ = legacy_store.clear_notifications(&session_name);
+        legacy_store
+            .write_notification(&session_name, "legacy", NotifyLevel::Warning)
+            .unwrap();
+
+        let entries = build_switch_entries(
+            vec![(session_name.clone(), None)],
+            None,
+            &[],
+            &GlobalConfig::default(),
+        );
+
+        assert_eq!(entries[0].notification_count, 1);
+        assert!(entries[0].notifications[0].message.contains("legacy notification"));
+        assert_eq!(entries[0].notifications[0].created_at_ms, None);
+
+        let _ = legacy_store.clear_notifications(&session_name);
+    }
+
+    #[test]
+    fn build_switch_entries_counts_metadata_and_legacy_once_each() {
+        let project_name = test_project_name("metadata-legacy");
+        let session_name = format!("{project_name}:main");
+        let legacy_store = notification_store::FileNotificationStore::default();
+        let _ = legacy_store.clear_notifications(&session_name);
+        legacy_store
+            .write_notification(&session_name, "legacy", NotifyLevel::Warning)
+            .unwrap();
+        let metadata = z_core::domain::WorktreeMetadataFile {
+            version: 2,
+            worktrees: vec![],
+            notifications: vec![z_core::domain::NotificationRecord {
+                id: "n1".to_string(),
+                target: test_identity(&project_name),
+                level: z_core::domain::NotifyLevel::Info,
+                message: "metadata notification".to_string(),
+                created_at: 1_000,
+                source: None,
+            }],
+            unattached_notifications: vec![],
+            unattached_activity: vec![],
+            migration_diagnostics: vec![],
+            llm_status: vec![],
+        };
+
+        let entries = build_switch_entries(
+            vec![(session_name.clone(), None)],
+            Some(&metadata),
+            &[test_discovered_worktree(&project_name)],
+            &GlobalConfig::default(),
+        );
+
+        assert_eq!(entries[0].notification_count, 2);
+        assert_eq!(entries[0].notifications.len(), 2);
+        assert!(entries[0]
+            .notifications
+            .iter()
+            .any(|notification| notification.message == "metadata notification"));
+        assert!(entries[0]
+            .notifications
+            .iter()
+            .any(|notification| notification.message.contains("legacy notification")));
+
+        let _ = legacy_store.clear_notifications(&session_name);
+    }
+
+    #[test]
+    fn notify_event_apply_is_blocked_when_migration_fails() {
+        let mut called = false;
+
+        let result = apply_event_after_successful_migration(
+            Err(z_core::error::ZError::MetadataCorrupt("bad json".to_string())),
+            || {
+                called = true;
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(!called, "event mutation must not run after migration failure");
     }
 
     #[test]
@@ -2151,6 +2712,105 @@ mod tests {
     }
 
     #[test]
+    fn resolve_notify_command_legacy_preserved() {
+        let args: Vec<String> = vec!["my-session".into(), "hello".into()];
+
+        let command = resolve_notify_command_args(&args, None).unwrap();
+
+        assert_eq!(
+            command,
+            NotifyCommand::Legacy {
+                session: "my-session".to_string(),
+                message: "hello".to_string(),
+                level: NotifyLevel::Info,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_notify_event_working_uses_env_session() {
+        let args: Vec<String> = vec![
+            "--event".into(),
+            "llm.working".into(),
+            "--tool".into(),
+            "opencode".into(),
+        ];
+
+        let command = resolve_notify_event_args(&args, Some("myapp:main")).unwrap();
+
+        assert_eq!(command.session, "myapp:main");
+        assert_eq!(command.kind, NotifyEventKind::LlmWorking);
+        assert_eq!(command.tool, "opencode");
+        assert!(command.message.is_none());
+    }
+
+    #[test]
+    fn resolve_notify_event_waiting_accepts_message_and_error_level() {
+        let args: Vec<String> = vec![
+            "--event".into(),
+            "llm.waiting".into(),
+            "--tool".into(),
+            "opencode".into(),
+            "--session".into(),
+            "myapp:main".into(),
+            "--reason".into(),
+            "permission".into(),
+            "--message".into(),
+            "OpenCode needs permission".into(),
+            "--level".into(),
+            "error".into(),
+        ];
+
+        let command = resolve_notify_event_args(&args, None).unwrap();
+
+        assert_eq!(command.session, "myapp:main");
+        assert_eq!(command.kind, NotifyEventKind::LlmWaiting);
+        assert_eq!(command.reason.as_deref(), Some("permission"));
+        assert_eq!(command.message.as_deref(), Some("OpenCode needs permission"));
+        assert_eq!(command.level, NotifyLevel::Error);
+    }
+
+    #[test]
+    fn resolve_notify_event_rejects_positional_args() {
+        let args: Vec<String> = vec![
+            "--event".into(),
+            "llm.working".into(),
+            "myapp:main".into(),
+            "--tool".into(),
+            "opencode".into(),
+        ];
+
+        let err = resolve_notify_event_args(&args, Some("env-session")).unwrap_err();
+
+        assert!(err.contains("positional"));
+    }
+
+    #[test]
+    fn resolve_notify_event_rejects_message_for_working() {
+        let args: Vec<String> = vec![
+            "--event".into(),
+            "llm.working".into(),
+            "--tool".into(),
+            "opencode".into(),
+            "--message".into(),
+            "busy".into(),
+        ];
+
+        let err = resolve_notify_event_args(&args, Some("env-session")).unwrap_err();
+
+        assert!(err.contains("do not accept --message"));
+    }
+
+    #[test]
+    fn resolve_notify_event_requires_tool() {
+        let args: Vec<String> = vec!["--event".into(), "llm.idle".into()];
+
+        let err = resolve_notify_event_args(&args, Some("env-session")).unwrap_err();
+
+        assert!(err.contains("--tool"));
+    }
+
+    #[test]
     fn resolve_session_env_uses_z_session_name() {
         let _guard = SESSION_ENV_MUTEX.lock().unwrap();
         clear_session_env();
@@ -2168,6 +2828,29 @@ mod tests {
         std::env::set_var("ZELLIJ_SESSION_NAME", "zellij-session");
 
         assert_eq!(resolve_session_env().as_deref(), Some("zellij-session"));
+
+        clear_session_env();
+    }
+
+    #[test]
+    fn resolve_session_env_ignores_empty_z_session_name() {
+        let _guard = SESSION_ENV_MUTEX.lock().unwrap();
+        clear_session_env();
+        std::env::set_var("Z_SESSION_NAME", "");
+        std::env::set_var("ZELLIJ_SESSION_NAME", "zellij-session");
+
+        assert_eq!(resolve_session_env().as_deref(), Some("zellij-session"));
+
+        clear_session_env();
+    }
+
+    #[test]
+    fn resolve_session_env_ignores_empty_zellij_session_name() {
+        let _guard = SESSION_ENV_MUTEX.lock().unwrap();
+        clear_session_env();
+        std::env::set_var("ZELLIJ_SESSION_NAME", "");
+
+        assert_eq!(resolve_session_env(), None);
 
         clear_session_env();
     }

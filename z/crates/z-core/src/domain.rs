@@ -144,7 +144,7 @@ pub struct ReviewStatus {
 }
 
 /// Notification severity level.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotifyLevel {
     Info,
     Warning,
@@ -300,6 +300,42 @@ pub struct NotificationRecord {
     pub level: NotifyLevel,
     pub message: String,
     pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<NotificationSource>,
+}
+
+/// Structured source metadata for notifications created from agent activity events.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NotificationSource {
+    pub tool: String,
+    pub event: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_resolve_key: Option<String>,
+    #[serde(default)]
+    pub auto_resolve: bool,
+}
+
+/// Active agent activity state stored in metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentActivityState {
+    Working,
+    Waiting,
+}
+
+/// A sparse status record for one agent tool on one Worktree.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentActivityStatus {
+    pub target: WorktreeIdentity,
+    pub tool: String,
+    pub state: AgentActivityState,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_resolve_key: Option<String>,
 }
 
 /// A notification whose target session name could not be resolved to a worktree.
@@ -333,6 +369,8 @@ pub struct WorktreeMetadataFile {
     pub unattached_activity: Vec<UnattachedActivity>,
     #[serde(default)]
     pub migration_diagnostics: Vec<String>,
+    #[serde(default)]
+    pub llm_status: Vec<AgentActivityStatus>,
 }
 
 // =============================================================================
@@ -809,6 +847,7 @@ mod tests {
         assert!(file.unattached_notifications.is_empty());
         assert!(file.unattached_activity.is_empty());
         assert!(file.migration_diagnostics.is_empty());
+        assert!(file.llm_status.is_empty());
     }
 
     #[test]
@@ -834,6 +873,7 @@ mod tests {
                 level: NotifyLevel::Warning,
                 message: "CI failed".into(),
                 created_at: 1_710_000_001,
+                source: None,
             }],
             unattached_notifications: vec![],
             unattached_activity: vec![UnattachedActivity {
@@ -841,6 +881,7 @@ mod tests {
                 last_attached_at: 1_700_000_000,
             }],
             migration_diagnostics: vec!["legacy session not resolvable".into()],
+            llm_status: vec![],
         };
         let json = serde_json::to_string_pretty(&file).unwrap();
         let back: WorktreeMetadataFile = serde_json::from_str(&json).unwrap();
