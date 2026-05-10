@@ -1,7 +1,7 @@
 // OpenCode plugin: publish OpenCode activity to z.
 //
 // Emits structured `z notify --event` updates when OpenCode works, waits for
-// user intervention, becomes idle, or errors.
+// user intervention, or errors.
 // Resolves the target session from Z_SESSION_NAME (set by Zellij layout env block)
 // with fallback to ZELLIJ_SESSION_NAME. If neither is set, the plugin is a no-op.
 //
@@ -80,11 +80,20 @@ async function ZNotifyPlugin({ $ }) {
         return;
       }
 
-      if (
-        event.type === "session.idle" ||
-        (event.type === "session.status" && statusType(event) === "idle")
-      ) {
-        await notifyActivity($, "idle", event, "llm.idle");
+      if (event.type === "session.idle") {
+        await notifyWaiting($, "input", event, "input", "OpenCode is waiting for input", "info");
+        return;
+      }
+
+      if (event.type === "session.status" && statusType(event) === "idle") {
+        // `session.status idle` is a technical engine state and can be emitted
+        // around the same turn as `session.idle`. Do not map it to `llm.idle`,
+        // because that would erase the user-visible “waiting for input” state.
+        return;
+      }
+
+      if (event.type === "question.asked") {
+        await notifyWaiting($, "question", event, "question", "OpenCode is waiting for an answer", "info");
         return;
       }
 
