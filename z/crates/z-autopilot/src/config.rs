@@ -1,7 +1,7 @@
-use crate::dsl::{parse_autopilot_workflows, AutopilotWorkflow};
+use crate::dsl::{parse_autopilot_workflows_doc, AutopilotWorkflow};
 pub use z_core::config::AutopilotConfig;
-use z_core::config::parse_autopilot_config_kdl;
-use z_core::error::Result;
+use z_core::config::parse_autopilot_config_doc;
+use z_core::error::{Result, ZError};
 
 /// Full autopilot configuration from `.config/z.kdl`: project-level settings +
 /// any custom workflow definitions.
@@ -25,8 +25,11 @@ impl Default for RepoAutopilotConfig {
 /// Parse both autopilot config settings and custom workflow definitions from
 /// the contents of a per-repo `.config/z.kdl` file.
 pub fn parse_repo_autopilot_config(content: &str) -> Result<RepoAutopilotConfig> {
-    let config = parse_autopilot_config_kdl(content)?;
-    let workflows = parse_autopilot_workflows(content)?;
+    let doc: kdl::KdlDocument = content
+        .parse()
+        .map_err(|e| ZError::ConfigParse(format!("KDL parse error: {e}")))?;
+    let config = parse_autopilot_config_doc(&doc)?;
+    let workflows = parse_autopilot_workflows_doc(&doc)?;
     Ok(RepoAutopilotConfig { config, workflows })
 }
 

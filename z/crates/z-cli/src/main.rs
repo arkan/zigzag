@@ -9,6 +9,7 @@ mod notify;
 mod notification_store;
 mod preview;
 mod prune;
+mod repo_config;
 mod remote;
 mod session_manager;
 mod session_open;
@@ -21,15 +22,14 @@ use std::io::{self, Write as _};
 
 use std::fs;
 
-use z_core::config::{effective_layout, parse_global_config_kdl, parse_per_repo_config_kdl,
-    GlobalConfig, PerRepoConfig};
+use z_core::config::{effective_layout, parse_global_config_kdl, GlobalConfig, PerRepoConfig};
 use z_core::depcheck::{check_deps, format_dep_error, DepCheckStatus};
 use z_core::domain::{NotifyLevel, Session};
 use z_core::traits::{ProjectStore, ProjectStoreWriter, SessionManager, WorktreeManager, Notifier};
 
 use z_autopilot::builtin::builtin_workflows;
 use z_autopilot::dsl::AutopilotWorkflow;
-use z_autopilot::persist::list_runs;
+use z_autopilot::persist::{list_runs, prune_terminal_runs};
 use z_autopilot::run_loop::{execute_workflow_run, RunLoopOptions, RunLoopReport, RunLoopStop};
 use z_autopilot::state::{WorkflowRun, WorkflowStatus};
 
@@ -42,7 +42,7 @@ use crate::session_manager::{
 };
 use crate::worktree_manager::WtWorktreeManager;
 
-use z_tui::{Navigation, ProjectEntry, TuiAction};
+use z_tui::{Navigation, PreviewContext, PreviewDataSource, ProjectEntry, TuiAction};
 
 /// Resolve the absolute path to the current `z` binary.
 /// Falls back to `"z"` (assumes PATH) if `current_exe()` fails.
@@ -515,7 +515,9 @@ fn load_global_config() -> GlobalConfig {
 fn load_per_repo_config(project_path: &std::path::Path) -> PerRepoConfig {
     let path = project_path.join(".config").join("z.kdl");
     match fs::read_to_string(&path) {
-        Ok(content) => parse_per_repo_config_kdl(&content).unwrap_or_default(),
+        Ok(content) => repo_config::parse_repo_config_projection(&content)
+            .map(|projection| projection.per_repo)
+            .unwrap_or_default(),
         Err(_) => PerRepoConfig::default(),
     }
 }
@@ -1145,13 +1147,32 @@ fn cmd_actions() -> z_core::error::Result<()> {
     let global = load_global_config();
     let per_repo = load_per_repo_config(&project.path);
 
+    let preview_source = preview::CliPreviewDataSource::new(Box::new(forge::GhForgeClient));
+    let preview_context = PreviewContext {
+        project_path: project.path.clone(),
+        host: project.host.clone(),
+        project_name: project.name.clone(),
+        branch: branch.clone(),
+        session_name: session_name.clone(),
+    };
+    let action_preview = preview_source
+        .load_extra_preview(&preview_context)
+        .map(|extra| {
+            z_core::action::ActionPreview::from_forge_data(
+                extra.pr.as_ref(),
+                Some(extra.ci),
+                extra.review.as_ref(),
+            )
+        })
+        .unwrap_or_default();
+
     let env = z_core::action::ActionEnv::for_session(
         project.name.clone(),
         project.path.to_string_lossy().to_string(),
         session_name.clone(),
         branch.clone(),
         global.review_tool.clone(),
-        z_core::action::ActionPreview::default(),
+        action_preview,
     );
 
     let merged = z_core::action::merge_actions(&[
@@ -1649,6 +1670,26 @@ mod tests {
         assert!(output.contains("wf2"));
     }
 
+    #[test]
+    fn format_prune_status_empty_returns_noop_message() {
+        let output = format_prune_status(&[]);
+
+        assert_eq!(output, "No terminal workflow runs to prune.");
+    }
+
+    #[test]
+    fn format_prune_status_lists_removed_runs() {
+        let mut run = z_autopilot::state::WorkflowRun::new("wf1", "proj", "step1");
+        run.status = WorkflowStatus::Completed;
+        run.current_step = None;
+
+        let output = format_prune_status(&[run]);
+
+        assert!(output.contains("Pruned 1 terminal workflow run"));
+        assert!(output.contains("proj / wf1"));
+        assert!(output.contains("Completed"));
+    }
+
     // ── cmd_edit_per_repo_config tests ────────────────────────────────────────
 
     fn unique_test_dir(name: &str) -> std::path::PathBuf {
@@ -1743,6 +1784,7 @@ fn cmd_autopilot_dispatch(sub: Option<&str>, args: &[String]) -> z_core::error::
             println!("subcommands:");
             println!("  list [project]            — list available workflows (built-in + per-repo custom)");
             println!("  status [project]          — show persisted workflow run states");
+            println!("  prune [project]           — delete terminal workflow run states");
             println!("  run <project> <workflow>  — run or resume an autopilot workflow");
             Ok(())
         }
@@ -1760,6 +1802,10 @@ fn cmd_autopilot_dispatch(sub: Option<&str>, args: &[String]) -> z_core::error::
             let project_filter = args.get(1).map(|s| s.as_str());
             cmd_autopilot_status(project_filter)
         }
+        Some("prune") => {
+            let project_filter = args.get(1).map(|s| s.as_str());
+            cmd_autopilot_prune(project_filter)
+        }
         Some("run") => {
             let project = args.get(1).map(|s| s.as_str()).unwrap_or("");
             let workflow = args.get(2).map(|s| s.as_str()).unwrap_or("");
@@ -1772,7 +1818,7 @@ fn cmd_autopilot_dispatch(sub: Option<&str>, args: &[String]) -> z_core::error::
         }
         Some(unknown) => {
             Err(z_core::error::ZError::Io(format!(
-                "unknown autopilot subcommand: {:?}\nusage: z autopilot [list|status|run]",
+                "unknown autopilot subcommand: {:?}\nusage: z autopilot [list|status|prune|run]",
                 unknown
             )))
         }
@@ -1795,8 +1841,8 @@ fn load_autopilot_workflows(project_path: Option<&std::path::Path>) -> z_core::e
     if let Some(path) = project_path {
         let repo_config_path = path.join(".config").join("z.kdl");
         if let Ok(content) = fs::read_to_string(&repo_config_path) {
-            match z_autopilot::dsl::parse_autopilot_workflows(&content) {
-                Ok(custom) => all_workflows.extend(custom),
+            match repo_config::parse_repo_config_projection(&content) {
+                Ok(projection) => all_workflows.extend(projection.workflows),
                 Err(e) => eprintln!("warning: failed to parse {}: {}", repo_config_path.display(), e),
             }
         }
@@ -1858,6 +1904,15 @@ pub fn cmd_autopilot_status(project_filter: Option<&str>) -> z_core::error::Resu
     Ok(())
 }
 
+/// Delete terminal workflow run states, optionally filtered to a project.
+pub fn cmd_autopilot_prune(project_filter: Option<&str>) -> z_core::error::Result<()> {
+    let state_dir = autopilot_state_dir();
+    let removed = prune_terminal_runs(&state_dir, project_filter)?;
+
+    println!("{}", format_prune_status(&removed));
+    Ok(())
+}
+
 /// Returns the directory where autopilot run state is persisted.
 fn autopilot_state_dir() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -1901,6 +1956,21 @@ pub fn format_run_status(runs: &[&WorkflowRun]) -> String {
         out.push_str(&format!(
             "  {}  {}  {:20}  step: {}\n",
             run.project, status, run.workflow_name, step
+        ));
+    }
+    out
+}
+
+pub fn format_prune_status(removed: &[WorkflowRun]) -> String {
+    if removed.is_empty() {
+        return "No terminal workflow runs to prune.".to_string();
+    }
+
+    let mut out = format!("Pruned {} terminal workflow run(s):\n", removed.len());
+    for run in removed {
+        out.push_str(&format!(
+            "  {} / {} ({:?})\n",
+            run.project, run.workflow_name, run.status
         ));
     }
     out

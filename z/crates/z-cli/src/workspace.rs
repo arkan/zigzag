@@ -5,6 +5,8 @@ use z_core::action::ActionDef;
 use z_core::domain::{Project, Session};
 use z_tui::{ProjectEntry, WorkflowInfo};
 
+use crate::repo_config::parse_repo_config_projection;
+
 #[derive(Debug, Default)]
 pub(crate) struct RepoWorkspaceConfig {
     pub(crate) custom_workflows: Vec<AutopilotWorkflow>,
@@ -20,14 +22,11 @@ pub(crate) struct WorkspaceEntryInput {
 }
 
 pub(crate) fn parse_repo_workspace_config(content: &str) -> RepoWorkspaceConfig {
-    let custom_workflows = z_autopilot::dsl::parse_autopilot_workflows(content).unwrap_or_default();
-    let repo_actions = z_core::config::parse_per_repo_config_kdl(content)
-        .map(|config| config.actions)
-        .unwrap_or_default();
+    let projection = parse_repo_config_projection(content).unwrap_or_default();
 
     RepoWorkspaceConfig {
-        custom_workflows,
-        repo_actions,
+        custom_workflows: projection.workflows,
+        repo_actions: projection.per_repo.actions,
     }
 }
 

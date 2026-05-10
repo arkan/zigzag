@@ -2,10 +2,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use z_core::domain::{CiStatus, PullRequest, ReviewStatus};
-use z_core::traits::ForgeClient;
+use z_core::traits::{ForgeClient, WorktreeManager};
 use z_tui::{GitInfo, PreviewContext, PreviewDataSource, PreviewExtraData, ZellijInfo};
 
 use crate::git_preview;
+use crate::worktree_manager::{self, WtWorktreeManager};
 
 /// Process-backed Adapter for TUI Preview acquisition.
 pub struct CliPreviewDataSource {
@@ -22,6 +23,7 @@ impl PreviewDataSource for CliPreviewDataSource {
     fn load_git_preview(&self, context: &PreviewContext) -> Result<GitInfo, String> {
         let effective = if !context.branch.is_empty() {
             resolve_worktree_path(
+                &context.project_name,
                 &context.project_path,
                 &context.branch,
                 context.host.as_deref(),
@@ -79,46 +81,21 @@ fn load_forge_preview(
     })
 }
 
-fn resolve_worktree_path(project_path: &Path, branch: &str, ssh_host: Option<&str>) -> Option<PathBuf> {
-    let stdout = if let Some(host) = ssh_host {
-        let path_str = project_path.to_string_lossy();
-        let remote_cmd = format!(
-            "cd '{}' && git worktree list --porcelain",
-            path_str.replace('\'', "'\\''")
-        );
-        let wrapped = format!(
-            "bash -l -c '{}'",
-            remote_cmd.replace('\'', "'\\''")
-        );
-        let output = Command::new("ssh")
-            .args(["-o", "ConnectTimeout=10", host, &wrapped])
-            .output()
-            .ok()?;
-        String::from_utf8_lossy(&output.stdout).to_string()
+fn resolve_worktree_path(
+    project: &str,
+    project_path: &Path,
+    branch: &str,
+    ssh_host: Option<&str>,
+) -> Option<PathBuf> {
+    let worktrees = if let Some(host) = ssh_host {
+        worktree_manager::list_remote_worktrees(host, project_path, project).ok()?
     } else {
-        let output = Command::new("git")
-            .args(["worktree", "list", "--porcelain"])
-            .current_dir(project_path)
-            .output()
-            .ok()?;
-        String::from_utf8_lossy(&output.stdout).to_string()
+        WtWorktreeManager::new(project_path.to_path_buf())
+            .list_worktrees(project)
+            .ok()?
     };
 
-    parse_worktree_path(&stdout, branch)
-}
-
-fn parse_worktree_path(stdout: &str, branch: &str) -> Option<PathBuf> {
-    let mut current_path: Option<PathBuf> = None;
-    for line in stdout.lines() {
-        if let Some(path) = line.strip_prefix("worktree ") {
-            current_path = Some(PathBuf::from(path));
-        } else if let Some(git_branch) = line.strip_prefix("branch refs/heads/") {
-            if z_core::domain::sanitize_branch_name(git_branch) == branch {
-                return current_path;
-            }
-        }
-    }
-    None
+    worktree_manager::find_worktree_path_for_branch(&worktrees, branch)
 }
 
 fn fetch_zellij_info(session_name: &str) -> Option<ZellijInfo> {
@@ -173,23 +150,6 @@ fn extract_zellij_uptime(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_worktree_path_for_sanitized_branch() {
-        let stdout = "worktree /repo/main\nbranch refs/heads/main\n\nworktree /repo/feat-login\nbranch refs/heads/feat/login\n";
-
-        assert_eq!(
-            parse_worktree_path(stdout, "feat-login"),
-            Some(PathBuf::from("/repo/feat-login"))
-        );
-    }
-
-    #[test]
-    fn missing_worktree_path_returns_none() {
-        let stdout = "worktree /repo/main\nbranch refs/heads/main\n";
-
-        assert!(parse_worktree_path(stdout, "missing").is_none());
-    }
 
     #[test]
     fn extract_zellij_uptime_no_pattern_returns_none() {

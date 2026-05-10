@@ -51,6 +51,7 @@ use ratatui::{
     Frame, Terminal,
 };
 pub mod refresh;
+mod preview_state;
 
 use z_core::action::{ActionDef, ActionType, PaneType, ResolvedAction};
 use z_core::domain::{CiStatus, PrState, PullRequest, Project, Session};
@@ -752,12 +753,7 @@ impl TuiState {
         };
         if let Some(result) = outcome {
             if let Ok(forge) = result {
-                if let PreviewData::Ready(ref mut info) = self.preview_data {
-                    info.pr = forge.pr;
-                    info.ci = Some(forge.ci);
-                    info.zellij = forge.zellij;
-                    info.review = forge.review;
-                }
+                preview_state::apply_extra_preview_result(&mut self.preview_data, forge);
             }
             // Always clear forge_rx once we get a result (success or failure)
             self.forge_rx = None;
@@ -778,10 +774,7 @@ impl TuiState {
             None => return,
         };
         if let Some(result) = outcome {
-            self.preview_data = match result {
-                Ok(info) => PreviewData::Ready(info),
-                Err(e) => PreviewData::Error(e),
-            };
+            self.preview_data = preview_state::apply_git_preview_result(result);
             self.preview_rx = None;
         }
     }
@@ -2170,25 +2163,13 @@ fn build_action_menu(state: &TuiState) -> Vec<ResolvedAction> {
         entry.sessions.first()
     };
 
-    // Build env from preview data + entry
-    let (pr_number, pr_url, ci_status) = match &state.preview_data {
-        PreviewData::Ready(ref git_info) => {
-            let pr_number = git_info.pr.as_ref().map(|pr| pr.number);
-            let pr_url = git_info.pr.as_ref().map(|pr| pr.url.clone());
-            let ci_status = git_info.ci.clone();
-            (pr_number, pr_url, ci_status)
-        }
-        _ => (None, None, None),
-    };
-
-    let preview = ActionPreview {
-        pr_number,
-        pr_url,
-        ci_status,
-        has_new_comments: match &state.preview_data {
-            PreviewData::Ready(ref info) => info.review.as_ref().map_or(false, |r| r.has_new_comments),
-            _ => false,
-        },
+    let preview = match &state.preview_data {
+        PreviewData::Ready(ref info) => ActionPreview::from_forge_data(
+            info.pr.as_ref(),
+            info.ci.clone(),
+            info.review.as_ref(),
+        ),
+        _ => ActionPreview::default(),
     };
     let env = if let Some(session) = selected_session {
         ActionEnv::for_session(

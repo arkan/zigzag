@@ -517,6 +517,11 @@ pub fn parse_per_repo_config_kdl(content: &str) -> Result<PerRepoConfig> {
         .parse()
         .map_err(|e| ZError::ConfigParse(format!("{}", e)))?;
 
+    parse_per_repo_config_doc(&doc)
+}
+
+/// Project `.config/z.kdl` projection from an already-parsed KDL document.
+pub fn parse_per_repo_config_doc(doc: &KdlDocument) -> Result<PerRepoConfig> {
     let mut cfg = PerRepoConfig::default();
 
     for node in doc.nodes() {
@@ -589,6 +594,11 @@ pub fn parse_autopilot_config_kdl(content: &str) -> Result<AutopilotConfig> {
         .parse()
         .map_err(|e| ZError::ConfigParse(format!("{}", e)))?;
 
+    parse_autopilot_config_doc(&doc)
+}
+
+/// Unnamed Autopilot config projection from an already-parsed KDL document.
+pub fn parse_autopilot_config_doc(doc: &KdlDocument) -> Result<AutopilotConfig> {
     let mut cfg = AutopilotConfig::default();
     for node in doc.nodes() {
         if node.name().value() == "autopilot" {
