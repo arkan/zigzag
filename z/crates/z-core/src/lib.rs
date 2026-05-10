@@ -9,6 +9,7 @@ pub mod gh;
 pub mod layout;
 pub mod log;
 pub mod notification;
+pub mod session_entry;
 pub mod template;
 pub mod theme;
 pub mod traits;

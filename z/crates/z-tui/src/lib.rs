@@ -154,6 +154,8 @@ pub enum TuiAction {
         command: String,
         pane_type: PaneType,
     },
+    /// User selected an autopilot workflow from the workflow selector.
+    RunWorkflow { project: String, workflow: String },
 }
 
 /// All callbacks the TUI can invoke to mutate external state without leaving
@@ -311,7 +313,7 @@ enum ModalOutcome {
     },
     DeleteConfirmed { project: String },
     SessionDeleteConfirmed { session: String },
-    WorkflowSelected { #[allow(dead_code)] project: String, #[allow(dead_code)] workflow: String },
+    WorkflowSelected { project: String, workflow: String },
     NewBranch { project: String, branch: String },
     ActionSelected { action: ResolvedAction },
     /// User selected "Blank" in the NewSessionMenu — transition to BranchInput.
@@ -477,9 +479,11 @@ pub struct TuiState {
     /// Session refresher used to poll sessions/notifications in background.
     pub refresher: Arc<dyn SessionRefresher>,
     /// Receiver for the in-flight session refresh, if any.
-    pub(crate) refresh_rx: Option<mpsc::Receiver<refresh::RefreshData>>,
+    pub(crate) refresh_rx: Option<mpsc::Receiver<refresh::RefreshMessage>>,
     /// Timestamp of the last refresh spawn.
     pub(crate) last_refresh: Instant,
+    /// Monotonic revision for reload-sensitive TUI state.
+    pub(crate) state_revision: u64,
     /// Sender for background `gh` fetch results (issues/PRs JSON).
     pub(crate) gh_tx: Option<mpsc::Sender<String>>,
     /// Receiver for background `gh` fetch results.
@@ -519,9 +523,17 @@ impl TuiState {
             refresher,
             refresh_rx: None,
             last_refresh: Instant::now() - Duration::from_secs(10),
+            state_revision: 0,
             gh_tx: None,
             gh_rx: None,
         }
+    }
+
+    fn apply_reloaded_entries(&mut self, entries: Vec<ProjectEntry>, notifications: HashSet<String>) {
+        self.entries = entries;
+        self.notifications = notifications;
+        self.refresh_rx = None;
+        self.state_revision = self.state_revision.saturating_add(1);
     }
 
     pub fn with_preview_source(
@@ -816,6 +828,7 @@ impl TuiState {
 
         let refresher = Arc::clone(&self.refresher);
         let projects: Vec<Project> = self.entries.iter().map(|e| e.project.clone()).collect();
+        let state_revision = self.state_revision;
         let (tx, rx) = mpsc::channel();
         self.refresh_rx = Some(rx);
         self.last_refresh = Instant::now();
@@ -824,10 +837,13 @@ impl TuiState {
             let sessions = refresher.fetch_all_sessions(&projects);
             let notifications = refresher.fetch_notifications();
             let activity = refresher.fetch_activity();
-            let _ = tx.send(refresh::RefreshData {
-                sessions,
-                notifications,
-                activity,
+            let _ = tx.send(refresh::RefreshMessage {
+                state_revision,
+                data: refresh::RefreshData {
+                    sessions,
+                    notifications,
+                    activity,
+                },
             });
         });
     }
@@ -835,9 +851,9 @@ impl TuiState {
     /// Poll the in-flight session refresh channel; merge results if arrived.
     /// Skips applying results while a modal is open to avoid disrupting forms.
     pub fn poll_refresh(&mut self) {
-        let data = match &self.refresh_rx {
+        let message = match &self.refresh_rx {
             Some(rx) => match rx.try_recv() {
-                Ok(data) => Some(data),
+                Ok(message) => Some(message),
                 Err(mpsc::TryRecvError::Empty) => None,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.refresh_rx = None;
@@ -847,18 +863,20 @@ impl TuiState {
             None => return,
         };
 
-        if let Some(data) = data {
+        if let Some(message) = message {
             self.refresh_rx = None;
-
-            // Defer merge while a modal is open.
-            if self.modal.is_some() {
+            if !refresh::should_apply_refresh(
+                self.state_revision,
+                message.state_revision,
+                self.modal.is_some(),
+            ) {
                 return;
             }
 
             let result = refresh::merge_refresh(
                 &mut self.entries,
                 &mut self.notifications,
-                data,
+                message.data,
                 self.selected_project,
                 self.selected_session,
             );
@@ -1650,10 +1668,9 @@ fn event_loop<B: Backend>(
                             &session,
                         );
                     }
-                    ModalOutcome::WorkflowSelected { project: _, workflow: _ } => {
-                        // Autopilot workflow selection — currently a no-op
-                        // (actual execution handled by `z autopilot run`).
+                    ModalOutcome::WorkflowSelected { project, workflow } => {
                         state.modal = None;
+                        return Ok(TuiAction::RunWorkflow { project, workflow });
                     }
                     ModalOutcome::ActionSelected { action } => {
                         state.modal = None;
@@ -2026,8 +2043,7 @@ fn apply_edit_project(
         Ok(()) => {
             state.status_message = Some(format!("Project {} saved.", name));
             if let Ok((entries, notifications)) = reload_fn() {
-                state.entries = entries;
-                state.notifications = notifications;
+                state.apply_reloaded_entries(entries, notifications);
             }
         }
         Err(e) => {
@@ -2053,8 +2069,7 @@ fn apply_add_project(
         Ok(()) => {
             state.status_message = Some(format!("Project {} added.", name));
             if let Ok((entries, notifications)) = reload_fn() {
-                state.entries = entries;
-                state.notifications = notifications;
+                state.apply_reloaded_entries(entries, notifications);
                 // Move cursor to the newly added project.
                 if let Some(idx) = state.entries.iter().position(|e| e.project.name == name) {
                     state.selected_project = idx;
@@ -2082,8 +2097,7 @@ fn apply_delete_project(
         Ok(()) => {
             state.status_message = Some(format!("Project {} deleted.", project));
             if let Ok((entries, notifications)) = reload_fn() {
-                state.entries = entries;
-                state.notifications = notifications;
+                state.apply_reloaded_entries(entries, notifications);
                 // Clamp cursor to valid range.
                 if !state.entries.is_empty() {
                     state.selected_project = state.selected_project.min(state.entries.len() - 1);
@@ -2112,8 +2126,7 @@ fn apply_delete_session(
         Ok(()) => {
             state.status_message = Some(format!("Session {} killed.", session));
             if let Ok((entries, notifications)) = reload_fn() {
-                state.entries = entries;
-                state.notifications = notifications;
+                state.apply_reloaded_entries(entries, notifications);
                 // Clamp selected_session to the new sessions count.
                 let session_count = state.filtered_sessions().len();
                 if session_count == 0 {
@@ -2136,7 +2149,7 @@ fn apply_delete_session(
 /// Build the list of resolved actions for the action menu modal.
 /// Uses built-in actions only (user config actions will be added later).
 fn build_action_menu(state: &TuiState) -> Vec<ResolvedAction> {
-    use z_core::action::{self, ActionEnv};
+    use z_core::action::{self, ActionEnv, ActionPreview};
 
     let entry = match state.selected_entry() {
         Some(e) => e,
@@ -2168,12 +2181,7 @@ fn build_action_menu(state: &TuiState) -> Vec<ResolvedAction> {
         _ => (None, None, None),
     };
 
-    let env = ActionEnv {
-        project: entry.project.name.clone(),
-        project_path: entry.project.path.to_string_lossy().to_string(),
-        repo: None, // TODO: extract from git remote
-        branch: selected_session.map(|s| s.branch.clone()),
-        session: selected_session.map(|s| s.name.clone()),
+    let preview = ActionPreview {
         pr_number,
         pr_url,
         ci_status,
@@ -2181,7 +2189,23 @@ fn build_action_menu(state: &TuiState) -> Vec<ResolvedAction> {
             PreviewData::Ready(ref info) => info.review.as_ref().map_or(false, |r| r.has_new_comments),
             _ => false,
         },
-        review_tool: state.review_tool.clone(),
+    };
+    let env = if let Some(session) = selected_session {
+        ActionEnv::for_session(
+            entry.project.name.clone(),
+            entry.project.path.to_string_lossy().to_string(),
+            session.name.clone(),
+            session.branch.clone(),
+            state.review_tool.clone(),
+            preview,
+        )
+    } else {
+        ActionEnv::for_project(
+            entry.project.name.clone(),
+            entry.project.path.to_string_lossy().to_string(),
+            state.review_tool.clone(),
+            preview,
+        )
     };
 
     action::resolve_actions(&merged, &env).unwrap_or_default()
@@ -7488,6 +7512,57 @@ mod tests {
     /// Helper: returns a reload closure that produces a fixed set of entries.
     fn make_reload_fn(entries: Vec<ProjectEntry>) -> impl Fn() -> io::Result<(Vec<ProjectEntry>, HashSet<String>)> {
         move || Ok((entries.clone(), HashSet::new()))
+    }
+
+    fn make_refresh_message(state_revision: u64, notification: &str) -> refresh::RefreshMessage {
+        refresh::RefreshMessage {
+            state_revision,
+            data: refresh::RefreshData {
+                sessions: Vec::new(),
+                notifications: [notification.to_string()].into_iter().collect(),
+                activity: std::collections::HashMap::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn apply_reloaded_entries_bumps_revision_and_clears_inflight_refresh() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let (_tx, rx) = mpsc::channel();
+        state.refresh_rx = Some(rx);
+        let revision = state.state_revision;
+
+        state.apply_reloaded_entries(make_entries(), HashSet::new());
+
+        assert_eq!(state.state_revision, revision + 1);
+        assert!(state.refresh_rx.is_none());
+    }
+
+    #[test]
+    fn poll_refresh_discards_stale_revision() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let (tx, rx) = mpsc::channel();
+        state.refresh_rx = Some(rx);
+        state.state_revision = 2;
+        tx.send(make_refresh_message(1, "stale:notification")).unwrap();
+
+        state.poll_refresh();
+
+        assert!(!state.notifications.contains("stale:notification"));
+        assert!(state.refresh_rx.is_none());
+    }
+
+    #[test]
+    fn poll_refresh_applies_current_revision() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let (tx, rx) = mpsc::channel();
+        state.refresh_rx = Some(rx);
+        state.state_revision = 2;
+        tx.send(make_refresh_message(2, "current:notification")).unwrap();
+
+        state.poll_refresh();
+
+        assert!(state.notifications.contains("current:notification"));
     }
 
     #[test]

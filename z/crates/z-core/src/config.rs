@@ -528,7 +528,7 @@ pub fn parse_per_repo_config_kdl(content: &str) -> Result<PerRepoConfig> {
                 cfg.deploy_command = parse_deploy_node(node);
             }
             "autopilot" => {
-                cfg.autopilot = parse_autopilot_config_node(node);
+                apply_autopilot_config_node(node, &mut cfg.autopilot)?;
             }
             "actions" => {
                 if let Some(children) = node.children() {
@@ -580,18 +580,38 @@ fn parse_deploy_node(node: &KdlNode) -> Option<String> {
     None
 }
 
-fn parse_autopilot_config_node(node: &KdlNode) -> AutopilotConfig {
+/// Parse the unnamed `autopilot { ... }` config blocks from KDL content.
+///
+/// Named `autopilot "workflow" { ... }` blocks belong to the Autopilot DSL and
+/// are intentionally ignored here.
+pub fn parse_autopilot_config_kdl(content: &str) -> Result<AutopilotConfig> {
+    let doc: KdlDocument = content
+        .parse()
+        .map_err(|e| ZError::ConfigParse(format!("{}", e)))?;
+
     let mut cfg = AutopilotConfig::default();
+    for node in doc.nodes() {
+        if node.name().value() == "autopilot" {
+            apply_autopilot_config_node(node, &mut cfg)?;
+        }
+    }
+    Ok(cfg)
+}
+
+fn apply_autopilot_config_node(node: &KdlNode, cfg: &mut AutopilotConfig) -> Result<()> {
+    if node.entries().iter().any(|entry| entry.name().is_none()) {
+        return Ok(());
+    }
     if let Some(children) = node.children() {
         for child in children.nodes() {
             match child.name().value() {
                 "auto-push" => {
-                    if let Some(v) = child.entries().first().and_then(|e| e.value().as_bool()) {
+                    if let Some(v) = require_bool_arg(child, "autopilot config")? {
                         cfg.auto_push = v;
                     }
                 }
                 "review" => {
-                    if let Some(v) = child.entries().first().and_then(|e| e.value().as_bool()) {
+                    if let Some(v) = require_bool_arg(child, "autopilot config")? {
                         cfg.review = v;
                     }
                 }
@@ -599,7 +619,21 @@ fn parse_autopilot_config_node(node: &KdlNode) -> AutopilotConfig {
             }
         }
     }
-    cfg
+    Ok(())
+}
+
+fn require_bool_arg(node: &KdlNode, context: &str) -> Result<Option<bool>> {
+    let entry = node.entries().iter().find(|entry| entry.name().is_none());
+    match entry {
+        None => Ok(None),
+        Some(entry) => entry.value().as_bool().map(Some).ok_or_else(|| {
+            ZError::ConfigParse(format!(
+                "{context}: '{}' expects a boolean (true/false), got {}",
+                node.name().value(),
+                entry.value()
+            ))
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1170,6 +1204,42 @@ autopilot {
         let cfg = parse_per_repo_config_kdl(kdl).unwrap();
         assert!(!cfg.autopilot.auto_push);
         assert!(cfg.autopilot.review);
+    }
+
+    #[test]
+    fn parse_per_repo_autopilot_named_workflow_is_ignored_by_config() {
+        let kdl = r#"
+autopilot "workflow" {
+    auto-push false
+}
+"#;
+        let cfg = parse_per_repo_config_kdl(kdl).unwrap();
+
+        assert_eq!(cfg.autopilot, AutopilotConfig::default());
+    }
+
+    #[test]
+    fn parse_autopilot_config_kdl_rejects_string_bool() {
+        let kdl = "autopilot {\n    auto-push \"false\"\n}\n";
+        let err = parse_autopilot_config_kdl(kdl).unwrap_err();
+
+        assert!(err.to_string().contains("boolean"));
+    }
+
+    #[test]
+    fn parse_autopilot_config_kdl_merges_multiple_unnamed_blocks() {
+        let kdl = r#"
+autopilot {
+    auto-push false
+}
+autopilot {
+    review true
+}
+"#;
+        let cfg = parse_autopilot_config_kdl(kdl).unwrap();
+
+        assert!(!cfg.auto_push);
+        assert!(cfg.review);
     }
 
     #[test]

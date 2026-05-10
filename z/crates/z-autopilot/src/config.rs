@@ -1,27 +1,7 @@
-use crate::dsl::{parse_autopilot_workflows, require_bool_arg, AutopilotWorkflow};
-use kdl::KdlDocument;
-use z_core::error::{Result, ZError};
-
-/// Project-level autopilot configuration.
-///
-/// Parsed from the `autopilot { ... }` block (no name) in `.config/z.kdl`.
-///
-/// - `auto_push`: if true (default), autopilot pushes directly without human review.
-/// - `review`: if true, autopilot pauses before push and waits for user approval.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AutopilotConfig {
-    pub auto_push: bool,
-    pub review: bool,
-}
-
-impl Default for AutopilotConfig {
-    fn default() -> Self {
-        AutopilotConfig {
-            auto_push: true,
-            review: false,
-        }
-    }
-}
+use crate::dsl::{parse_autopilot_workflows, AutopilotWorkflow};
+pub use z_core::config::AutopilotConfig;
+use z_core::config::parse_autopilot_config_kdl;
+use z_core::error::Result;
 
 /// Full autopilot configuration from `.config/z.kdl`: project-level settings +
 /// any custom workflow definitions.
@@ -42,56 +22,10 @@ impl Default for RepoAutopilotConfig {
     }
 }
 
-/// Parse the `autopilot { ... }` config block (no name) from `.config/z.kdl`.
-///
-/// Named `autopilot "name" { ... }` blocks are ignored here — use
-/// `parse_autopilot_workflows` (from `dsl`) to load those.
-fn parse_autopilot_config_block(content: &str) -> Result<AutopilotConfig> {
-    let doc: KdlDocument = content
-        .parse()
-        .map_err(|e| ZError::ConfigParse(format!("KDL parse error: {e}")))?;
-
-    let mut config = AutopilotConfig::default();
-
-    for node in doc.nodes() {
-        if node.name().value() != "autopilot" {
-            continue;
-        }
-        // Only process the unnamed `autopilot { ... }` block (no positional args).
-        let has_name_arg = node.entries().iter().any(|e| e.name().is_none());
-        if has_name_arg {
-            continue; // named workflow block — skip
-        }
-
-        let children = match node.children() {
-            Some(c) => c,
-            None => continue,
-        };
-
-        for child in children.nodes() {
-            match child.name().value() {
-                "auto-push" => {
-                    if let Some(v) = require_bool_arg(child, "autopilot config")? {
-                        config.auto_push = v;
-                    }
-                }
-                "review" => {
-                    if let Some(v) = require_bool_arg(child, "autopilot config")? {
-                        config.review = v;
-                    }
-                }
-                _ => {} // forward-compatible
-            }
-        }
-    }
-
-    Ok(config)
-}
-
 /// Parse both autopilot config settings and custom workflow definitions from
 /// the contents of a per-repo `.config/z.kdl` file.
 pub fn parse_repo_autopilot_config(content: &str) -> Result<RepoAutopilotConfig> {
-    let config = parse_autopilot_config_block(content)?;
+    let config = parse_autopilot_config_kdl(content)?;
     let workflows = parse_autopilot_workflows(content)?;
     Ok(RepoAutopilotConfig { config, workflows })
 }

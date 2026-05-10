@@ -6,5 +6,6 @@ pub mod dsl;
 pub mod lifecycle;
 pub mod notify;
 pub mod persist;
+pub mod run_loop;
 pub mod state;
 pub mod trigger;

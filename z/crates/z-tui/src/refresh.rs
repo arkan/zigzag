@@ -15,10 +15,21 @@ pub struct RefreshData {
     pub activity: HashMap<String, u64>,
 }
 
+/// Refresh data tagged with the TUI state revision it was spawned from.
+pub struct RefreshMessage {
+    pub state_revision: u64,
+    pub data: RefreshData,
+}
+
 /// Result of merging refresh data into existing entries.
 pub struct MergeResult {
     pub selected_project: usize,
     pub selected_session: usize,
+}
+
+/// Decide whether an async refresh may still mutate the current TUI state.
+pub fn should_apply_refresh(current_revision: u64, refresh_revision: u64, modal_open: bool) -> bool {
+    current_revision == refresh_revision && !modal_open
 }
 
 /// Merge new session/notification data into existing entries,
@@ -188,6 +199,21 @@ mod tests {
 
         assert!(!notifications.contains("alpha:main"));
         assert!(notifications.contains("alpha:dev"));
+    }
+
+    #[test]
+    fn stale_refresh_is_not_applicable() {
+        assert!(!should_apply_refresh(2, 1, false));
+    }
+
+    #[test]
+    fn current_refresh_is_not_applicable_while_modal_open() {
+        assert!(!should_apply_refresh(1, 1, true));
+    }
+
+    #[test]
+    fn current_refresh_is_applicable_when_modal_closed() {
+        assert!(should_apply_refresh(1, 1, false));
     }
 
     #[test]
