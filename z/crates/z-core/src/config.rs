@@ -28,6 +28,10 @@ pub struct GlobalConfig {
     pub issue_prompt_template: Option<String>,
     /// Prompt template for sessions created from a GitHub PR.
     pub pr_prompt_template: Option<String>,
+    /// Agent activity runtime behavior.
+    pub llm: LlmConfig,
+    /// In-session switcher ordering behavior.
+    pub switcher: SwitcherConfig,
 }
 
 impl Default for GlobalConfig {
@@ -42,8 +46,82 @@ impl Default for GlobalConfig {
             review_tool: "codex".to_string(),
             issue_prompt_template: None,
             pr_prompt_template: None,
+            llm: LlmConfig::default(),
+            switcher: SwitcherConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LlmConfig {
+    pub working_ttl_seconds: u64,
+    pub working_update_min_interval_seconds: u64,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            working_ttl_seconds: 120,
+            working_update_min_interval_seconds: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitcherPriorityCriterion {
+    Waiting,
+    Error,
+    Working,
+    Notifications,
+    Recent,
+}
+
+impl SwitcherPriorityCriterion {
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "waiting" => Some(Self::Waiting),
+            "error" => Some(Self::Error),
+            "working" => Some(Self::Working),
+            "notifications" => Some(Self::Notifications),
+            "recent" => Some(Self::Recent),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Waiting => "waiting",
+            Self::Error => "error",
+            Self::Working => "working",
+            Self::Notifications => "notifications",
+            Self::Recent => "recent",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitcherConfig {
+    pub priority: Vec<SwitcherPriorityCriterion>,
+    pub invalid_priorities: Vec<String>,
+}
+
+impl Default for SwitcherConfig {
+    fn default() -> Self {
+        Self {
+            priority: default_switcher_priority(),
+            invalid_priorities: Vec::new(),
+        }
+    }
+}
+
+pub fn default_switcher_priority() -> Vec<SwitcherPriorityCriterion> {
+    vec![
+        SwitcherPriorityCriterion::Waiting,
+        SwitcherPriorityCriterion::Error,
+        SwitcherPriorityCriterion::Working,
+        SwitcherPriorityCriterion::Notifications,
+        SwitcherPriorityCriterion::Recent,
+    ]
 }
 
 /// Per-repo configuration from `.config/z.kdl` in the project root.
@@ -328,6 +406,12 @@ pub fn parse_global_config_kdl(content: &str) -> Result<GlobalConfig> {
                 "notifications" => {
                     config.notifications = parse_notifications_node(node)?;
                 }
+                "llm" => {
+                    config.llm = parse_llm_config_node(node);
+                }
+                "switcher" => {
+                    config.switcher = parse_switcher_config_node(node);
+                }
                 "deps" => {
                     config.deps = parse_deps_node(node)?;
                 }
@@ -384,6 +468,68 @@ fn parse_actions_config_node(node: &KdlNode, config: &mut GlobalConfig) -> Resul
         }
     }
     Ok(())
+}
+
+fn parse_llm_config_node(node: &KdlNode) -> LlmConfig {
+    let mut config = LlmConfig::default();
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            match child.name().value() {
+                "working-ttl-seconds" => {
+                    if let Some(value) = child.entries().first().and_then(|e| e.value().as_i64()) {
+                        if value > 0 {
+                            config.working_ttl_seconds = value as u64;
+                        }
+                    }
+                }
+                "working-update-min-interval-seconds" => {
+                    if let Some(value) = child.entries().first().and_then(|e| e.value().as_i64()) {
+                        if value > 0 {
+                            config.working_update_min_interval_seconds = value as u64;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    config
+}
+
+fn parse_switcher_config_node(node: &KdlNode) -> SwitcherConfig {
+    let mut configured = Vec::new();
+    let mut invalid = Vec::new();
+
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            if child.name().value() != "priority" {
+                continue;
+            }
+            let Some(value) = child.entries().first().and_then(|e| e.value().as_string()) else {
+                continue;
+            };
+            match SwitcherPriorityCriterion::from_str(value) {
+                Some(criterion) if !configured.contains(&criterion) => configured.push(criterion),
+                Some(_) => {}
+                None => invalid.push(value.to_string()),
+            }
+        }
+    }
+
+    if configured.is_empty() {
+        configured = default_switcher_priority();
+    } else {
+        for criterion in default_switcher_priority() {
+            if !configured.contains(&criterion) {
+                configured.push(criterion);
+            }
+        }
+    }
+
+    SwitcherConfig {
+        priority: configured,
+        invalid_priorities: invalid,
+    }
 }
 
 fn parse_layout_node(node: &KdlNode) -> Result<Layout> {
@@ -869,6 +1015,68 @@ project "myapp" {
         assert!(cfg.navigation.is_none());
         assert_eq!(cfg.notifications, NotificationsConfig::default());
         assert!(cfg.deps.is_empty());
+        assert_eq!(cfg.llm, LlmConfig::default());
+        assert_eq!(cfg.switcher, SwitcherConfig::default());
+    }
+
+    #[test]
+    fn parse_global_config_llm_settings_inside_config_node() {
+        let kdl = r#"
+config {
+    llm {
+        working-ttl-seconds 240
+        working-update-min-interval-seconds 7
+    }
+}
+"#;
+
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+
+        assert_eq!(cfg.llm.working_ttl_seconds, 240);
+        assert_eq!(cfg.llm.working_update_min_interval_seconds, 7);
+    }
+
+    #[test]
+    fn parse_global_config_switcher_priorities_append_missing_defaults() {
+        let kdl = r#"
+config {
+    switcher {
+        priority "recent"
+        priority "waiting"
+    }
+}
+"#;
+
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+
+        assert_eq!(
+            cfg.switcher.priority,
+            vec![
+                SwitcherPriorityCriterion::Recent,
+                SwitcherPriorityCriterion::Waiting,
+                SwitcherPriorityCriterion::Error,
+                SwitcherPriorityCriterion::Working,
+                SwitcherPriorityCriterion::Notifications,
+            ]
+        );
+        assert!(cfg.switcher.invalid_priorities.is_empty());
+    }
+
+    #[test]
+    fn parse_global_config_switcher_invalid_priorities_are_diagnostic() {
+        let kdl = r#"
+config {
+    switcher {
+        priority "waiting"
+        priority "made-up"
+    }
+}
+"#;
+
+        let cfg = parse_global_config_kdl(kdl).unwrap();
+
+        assert_eq!(cfg.switcher.priority[0], SwitcherPriorityCriterion::Waiting);
+        assert_eq!(cfg.switcher.invalid_priorities, vec!["made-up".to_string()]);
     }
 
     #[test]

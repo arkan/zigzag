@@ -1,12 +1,14 @@
-// OpenCode plugin: notify z sessions on key events.
+// OpenCode plugin: publish OpenCode activity to z.
 //
-// Fires when OpenCode finishes work, asks for user intervention, or errors.
+// Emits structured `z notify --event` updates when OpenCode works, waits for
+// user intervention, becomes idle, or errors.
 // Resolves the target session from Z_SESSION_NAME (set by Zellij layout env block)
 // with fallback to ZELLIJ_SESSION_NAME. If neither is set, the plugin is a no-op.
 //
 // Requires the `$` shell helper from OpenCode's plugin API (Bun template literals).
 
 const DEDUPE_WINDOW_MS = 2000;
+const TOOL = "opencode";
 const lastNotificationByKey = new Map();
 
 function sessionName() {
@@ -17,7 +19,7 @@ function eventSessionId(eventOrInput) {
   return eventOrInput?.properties?.sessionID || eventOrInput?.sessionID || "";
 }
 
-function shouldNotify(kind, eventOrInput) {
+function shouldSend(kind, eventOrInput) {
   const key = `${kind}:${eventSessionId(eventOrInput)}`;
   const now = Date.now();
   const last = lastNotificationByKey.get(key) || 0;
@@ -26,64 +28,73 @@ function shouldNotify(kind, eventOrInput) {
   return true;
 }
 
-function level(eventType) {
-  switch (eventType) {
-    case "session.error":
-      return "error";
-    case "permission.asked":
-      return "warning";
-    default:
-      return "info";
-  }
+function statusType(event) {
+  return event?.properties?.status?.type || event?.status?.type || "";
 }
 
-function message(eventType) {
-  switch (eventType) {
-    case "session.idle":
-      return "OpenCode finished working";
-    case "permission.asked":
-      return "OpenCode needs your permission";
-    case "session.error":
-      return "OpenCode encountered an error";
-    default:
-      return `OpenCode event: ${eventType}`;
-  }
-}
-
-function isIdleEvent(event) {
+function permissionStatus(eventOrInput) {
   return (
-    event.type === "session.idle" ||
-    (event.type === "session.status" && event.properties?.status?.type === "idle")
+    eventOrInput?.properties?.status ||
+    eventOrInput?.status ||
+    eventOrInput?.output?.status ||
+    ""
   );
 }
 
-async function notify($, kind, eventOrInput, text, lvl) {
+function isPermissionAskLike(eventOrInput) {
+  const type = eventOrInput?.type || "";
+  if (type === "permission.asked" || type === "permission.ask") return true;
+  if (type !== "permission.updated" && type !== "permission.replied") return false;
+  return permissionStatus(eventOrInput) === "ask";
+}
+
+async function notifyActivity($, kind, eventOrInput, eventName) {
   const session = sessionName();
   if (!session) return; // no-op outside a z-managed session
-  if (!shouldNotify(kind, eventOrInput)) return;
+  if (!shouldSend(kind, eventOrInput)) return;
 
   try {
-    await $`z notify ${session} ${text} --level ${lvl}`;
+    await $`z notify --event ${eventName} --tool ${TOOL} --session ${session}`;
   } catch {
-    // Silently ignore failures — the notification is best-effort.
+    // Silently ignore failures — activity reporting is best-effort.
+  }
+}
+
+async function notifyWaiting($, kind, eventOrInput, reason, text, level) {
+  const session = sessionName();
+  if (!session) return; // no-op outside a z-managed session
+  if (!shouldSend(kind, eventOrInput)) return;
+
+  try {
+    await $`z notify --event llm.waiting --tool ${TOOL} --session ${session} --reason ${reason} --message ${text} --level ${level}`;
+  } catch {
+    // Silently ignore failures — activity reporting is best-effort.
   }
 }
 
 async function ZNotifyPlugin({ $ }) {
   return {
     event: async ({ event }) => {
-      if (isIdleEvent(event)) {
-        await notify($, "idle", event, message("session.idle"), "info");
+      if (event.type === "session.status" && statusType(event) === "busy") {
+        await notifyActivity($, "working", event, "llm.working");
         return;
       }
 
-      if (event.type === "permission.asked" || event.type === "permission.ask") {
-        await notify($, "permission", event, message("permission.asked"), "warning");
+      if (
+        event.type === "session.idle" ||
+        (event.type === "session.status" && statusType(event) === "idle")
+      ) {
+        await notifyActivity($, "idle", event, "llm.idle");
+        return;
+      }
+
+      if (isPermissionAskLike(event)) {
+        await notifyWaiting($, "permission", event, "permission", "OpenCode needs permission", "warning");
         return;
       }
 
       if (event.type === "session.error") {
-        await notify($, "error", event, message(event.type), level(event.type));
+        await notifyWaiting($, "error", event, "error", "OpenCode encountered an error", "error");
       }
     },
 
@@ -91,10 +102,10 @@ async function ZNotifyPlugin({ $ }) {
     // `permission.ask` hook. Supporting both keeps the notification best-effort
     // without changing the permission decision itself.
     "permission.ask": async (input) => {
-      await notify($, "permission", input, message("permission.asked"), "warning");
+      await notifyWaiting($, "permission", input, "permission", "OpenCode needs permission", "warning");
     },
     "permission.asked": async (input) => {
-      await notify($, "permission", input, message("permission.asked"), "warning");
+      await notifyWaiting($, "permission", input, "permission", "OpenCode needs permission", "warning");
     },
   };
 }
