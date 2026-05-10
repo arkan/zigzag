@@ -15,13 +15,13 @@ or process execution). All I/O is deferred to consumer crates via traits.
 
 | Pattern | Application |
 |---|---|
-| **Trait-based abstraction** | `ProjectStore`, `ProjectStoreWriter`, `SessionManager`, `WorktreeManager`, `ForgeClient`, `Notifier`, `SessionRefresher`, `DepChecker`, `Logger`, `NotificationStore`, `ActivityStore`, `ConfigEnvironment` — all define pure interfaces injected by CLI/TUI adapters. |
-| **Trait-object polymorphism** | `dyn NotificationStore`, `dyn ActivityStore` in `session_entry.rs` for best-effort effect composition. |
+| **Trait-based abstraction** | `ProjectStore`, `ProjectStoreWriter`, `SessionManager`, `WorktreeManager`, `ForgeClient`, `Notifier`, `SessionRefresher`, `DepChecker`, `Logger`, `ActivityStore`, `WorktreeMetadataStore`, `ConfigEnvironment` — all define pure interfaces injected by CLI/TUI adapters. |
+| **Trait-object polymorphism** | `dyn ActivityStore` in `session_entry.rs` for best-effort effect composition. |
 | **Companion function + trait** | `depcheck::check_deps()` takes `&impl DepChecker`; `config::parse_projects_kdl_with_environment()` takes `&impl ConfigEnvironment` — enabling deterministic testing without I/O. |
 | **Three-tier config merging** | Hardcoded defaults ← global `~/.config/z/config.kdl` ← per-repo `.config/z.kdl`. Lower tier wins entirely (no partial merge). Used for `layout`, `actions`, and prompt templates. |
 | **Inner-outer layer merge** | `action::merge_actions()` applies layers sequentially by name (later overrides earlier); `disabled: true` removes the action. Used to compose builtin + global + per-repo actions. |
 | **Pure KDL generation** | `layout::generate_layout_kdl()` constructs a Zellij KDL layout string from the `Layout` domain struct. No I/O — pure string manipulation with KDL escaping. |
-| **Best-effort effect pattern** | `session_entry::mark_existing_session_entered()` runs notification clearing and activity recording independently, returning a `SessionEntryEffects` struct that reports per-operation success. |
+| **Best-effort effect pattern** | `session_entry::record_session_attach()` records activity timestamp, returning a `SessionEntryEffects` struct. Notification clearing is done directly via the metadata store. |
 | **Strategy for variable resolution** | `config::resolve_env_token_with_environment()` injects a `ConfigEnvironment` trait to allow env-var resolution without coupling to `std::env`. |
 | **Recursive JSON scraping** | `gh::collect_string_fields_into()` walks a `serde_json::Value` tree depth-first, collecting all string values matching a given field name — used to extract timestamps from nested `gh` JSON output. |
 | **Constructor with validation** | `Session::new()` normalises the branch name via `sanitize_branch_name()` (replacing `/` → `-`) and produces the canonical session name format `project:branch`. |
@@ -32,7 +32,7 @@ or process execution). All I/O is deferred to consumer crates via traits.
 
 ```
 src/
-├── lib.rs              # Module declarations (17 pub mod)
+├── lib.rs              # Module declarations (16 pub mod)
 ├── domain.rs           # Core types: Project, Session, Worktree, PullRequest, Layout, Tab, Pane, ReviewStatus, etc.
 ├── error.rs            # ZError enum + Result<T> type alias
 ├── traits.rs           # Pure trait interfaces (no I/O in this crate)
@@ -43,8 +43,7 @@ src/
 ├── gh.rs               # gh CLI JSON output parsing (issues, PRs, CI, reviews)
 ├── depcheck.rs         # DepChecker trait, semver parsing, check_deps, format_dep_error
 ├── activity.rs         # ActivityStore trait, SessionActivity type, session sorting by recent attach
-├── notification.rs     # NotificationStore trait, session name validation, notification format
-├── session_entry.rs    # Best-effort session entry effects (clear notifications + record activity)
+├── session_entry.rs    # Best-effort session entry effects (record activity timestamp)
 ├── claude_hook.rs      # Pure JSON merge for Claude Code .claude/settings.json Stop hook
 ├── log.rs              # LogEntry format/parse, Logger trait, LogLevel
 ├── template.rs         # Prompt template constants (issue/PR) + resolve_template
@@ -54,46 +53,46 @@ src/
 
 ## Data & Control Flow
 
-```
-                        ┌───────────────────┐
-                        │    z-core Crate    │
-                        │                    │
-     ┌──────────────────┼───────────────────┼──────────────────┐
-     │                  │                   │                    │
-     ▼                  ▼                   ▼                    ▼
-┌─────────┐     ┌─────────────┐     ┌────────────┐     ┌──────────────┐
-│ domain  │     │   error     │     │  traits    │     │   config     │
-│ (types) │     │  (ZError)   │     │ (abstr.)   │     │ (KDL parse)  │
-└────┬────┘     └─────────────┘     └──────┬─────┘     └──────┬───────┘
-     │                                      │                  │
-     ▼                                      ▼                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ action  ──── parse_actions_kdl → merge_actions → resolve_actions    │
-│ activity ──── sort_sessions_by_recent_attach                        │
-│ gh ────────── parse_gh_issues, parse_pr_view_json,                  │
-│              parse_ci_status_json, parse_review_status_json          │
-│ zellij ────── parse_zellij_session_info                             │
-│ layout ────── generate_layout_kdl, inject_prompt_into_layout        │
-│ web ───────── dashboard_groups, zellij_session_url                   │
-│ template ──── resolve_template                                       │
-│ theme ─────── Theme::from_name → to_zellij_kdl                      │
-└─────────────────────────────────────────────────────────────────────┘
-                          │
-     ┌────────────────────┼────────────────────────────┐
-     │                    │                            │
-     ▼                    ▼                            ▼
-┌──────────────┐  ┌──────────────┐  ┌─────────────────────┐
-│ notification │  │ session_entry │  │   claude_hook        │
-│ (store trait)│  │(effects comp.)│  │(merge_stop_hook)     │
-└──────────────┘  └──────────────┘  └──────────────────────┘
-                          │
-                    ┌─────┴──────┐
-                    ▼            ▼
-            ┌──────────┐   ┌────────┐
-            │ depcheck │   │  log   │
-            │(checker  │   │(Logger │
-            │ trait)   │   │ trait) │
-            └──────────┘   └────────┘
+ ```
+                         ┌───────────────────┐
+                         │    z-core Crate    │
+                         │                    │
+      ┌──────────────────┼───────────────────┼──────────────────┐
+      │                  │                   │                    │
+      ▼                  ▼                   ▼                    ▼
+ ┌─────────┐     ┌─────────────┐     ┌────────────┐     ┌──────────────┐
+ │ domain  │     │   error     │     │  traits    │     │   config     │
+ │ (types) │     │  (ZError)   │     │ (abstr.)   │     │ (KDL parse)  │
+ └────┬────┘     └─────────────┘     └──────┬─────┘     └──────┬───────┘
+      │                                      │                  │
+      ▼                                      ▼                  ▼
+ ┌─────────────────────────────────────────────────────────────────────┐
+ │ action  ──── parse_actions_kdl → merge_actions → resolve_actions    │
+ │ activity ──── sort_sessions_by_recent_attach                        │
+ │ gh ────────── parse_gh_issues, parse_pr_view_json,                  │
+ │              parse_ci_status_json, parse_review_status_json          │
+ │ zellij ────── parse_zellij_session_info                             │
+ │ layout ────── generate_layout_kdl, inject_prompt_into_layout        │
+ │ web ───────── dashboard_groups, zellij_session_url                   │
+ │ template ──── resolve_template                                       │
+ │ theme ─────── Theme::from_name → to_zellij_kdl                      │
+ └─────────────────────────────────────────────────────────────────────┘
+                           │
+                     ┌─────┴────────────────────────┐
+                     │                              │
+                     ▼                              ▼
+             ┌──────────────┐            ┌──────────────────────┐
+             │session_entry │            │   claude_hook         │
+             │(effects comp.)│           │(merge_stop_hook)      │
+             └──────┬───────┘           └──────────────────────┘
+                    │
+              ┌─────┴──────┐
+              ▼            ▼
+      ┌──────────┐   ┌────────┐
+      │ depcheck │   │  log   │
+      │(checker  │   │(Logger │
+      │ trait)   │   │ trait) │
+      └──────────┘   └────────┘
 ```
 
 ### Config bootstrap flow
@@ -133,9 +132,9 @@ src/
 
 ### Session entry flow
 
-1. `session_entry::mark_existing_session_entered(notifications, activity, session_name)` → `SessionEntryEffects`
-2. Best-effort: clears notifications + records attach timestamp; each operation is independent (failure in one doesn't abort the other)
-3. `notification::validate_session_name()` rejects path-traversal characters (`/`, `\`, `..`, `.`, empty) before any file-backed adapter call
+1. `session_entry::record_session_attach(activity, session_name)` → `SessionEntryEffects`
+2. Best-effort: records attach timestamp; notification clearing is done directly via the metadata store (`WorktreeMetadataStore::clear_notifications`)
+3. Metadata notification clearing and activity recording are independent operations
 
 ### Dependency check flow
 
@@ -171,8 +170,8 @@ src/
 | `SessionRefresher` | `z-tui` | Periodic background fetch of all sessions + notifications + activity |
 | `DepChecker` | `z-cli` | Version probing for external tool dependencies |
 | `Logger` | `z-cli`, `z-tui` | Appending structured log entries |
-| `NotificationStore` | `z-cli`, `z-tui` | File-backed notification persistence per session |
 | `ActivityStore` | `z-cli`, `z-tui` | File-backed last-attach timestamp tracking |
+| `WorktreeMetadataStore` | `z-cli`, `z-tui` | JSON metadata persistence for worktree records, notifications, and LLM status |
 | `ConfigEnvironment` | `config` | `env:VAR` resolution strategy (injected for tests) |
 
 ### Config files consumed (parsed in this crate, read by consumers)

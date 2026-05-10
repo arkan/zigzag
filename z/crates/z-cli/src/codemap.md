@@ -17,7 +17,7 @@ All domain interfaces are defined as traits in `z_core::traits` (ports). The CLI
 - `GhForgeClient` → `ForgeClient` — shells out to `gh`
 - `KdlProjectStore` → `ProjectStore` / `ProjectStoreWriter` — reads/writes `~/.config/z/projects.kdl`
 - `FileActivityStore` → `ActivityStore` — reads/writes `~/.config/z/session-activity.json`
-- `FileNotificationStore` → `NotificationStore` — reads/writes `/tmp/z/notifications/`
+- `LocalWorktreeMetadataStore` → `WorktreeMetadataStore` — reads/writes `~/.config/z/worktree-metadata.json`
 - `FileLogger` → `Logger` — appends to `~/.local/state/z/z.log`
 - `ProcessDepChecker` → `DepChecker` — probes tool `--version` output
 - `DispatchNotifier` → `Notifier` — fans out to file/macOS/Telegram channels
@@ -50,7 +50,7 @@ Project registration lives in `~/.config/z/projects.kdl` (parsed by `z_core::con
 All SSH command construction uses `remote::shell_quote` which wraps values in single quotes with embedded-quote escaping (`'\''` idiom), preventing shell injection through branch names, paths, or session names.
 
 ### 8. Composition of Notification Channels
-`DispatchNotifier` is a composite notifier that always includes `FileNotifier` (for TUI badge display) and conditionally includes `MacosNotifier` and `TelegramNotifier` based on `GlobalConfig::notifications`. Failures are best-effort: all notifiers are attempted and only the last error is returned.
+`DispatchNotifier` is a composite notifier that conditionally includes `MacosNotifier` and `TelegramNotifier` based on `GlobalConfig::notifications`. Metadata-backed TUI badges are written by `cmd_notify` via the worktree metadata store, not by `DispatchNotifier`. Failures are best-effort: all notifiers are attempted and only the last error is returned.
 
 ### 9. Open Session Planning
 `session_open::plan_open_session` implements a deterministic decision: given a project, branch, and live sessions, it constructs the target `Session` name (via `Session::new` which sanitizes `/` to `-`) and checks for an existing live match. The caller (`cmd_open`) branches on `existing_session.is_some()` to attach vs. create.
@@ -131,9 +131,10 @@ All SSH command construction uses `remote::shell_quote` which wraps values in si
 4. Status/prune subcommands use `list_runs` / `prune_terminal_runs`.
 
 ### Notification Flow
-1. `cmd_notify` → `DispatchNotifier::from_config` constructs notifier list from `GlobalConfig::notifications`.
-2. `notify` fans out: always writes file to `/tmp/z/notifications/<session>/<ts>_<seq>`, conditionally fires macOS notification via `osascript`, conditionally sends Telegram message via `curl`.
-3. TUI reads notifications via `FileNotificationStore::sessions_with_notifications` (directory scan of `/tmp/z/notifications/`).
+1. `cmd_notify` → resolves notification target via `resolve_notify_target` (discovers worktrees from git), writes metadata-backed notification, then fans out to external channels via `DispatchNotifier::from_config`.
+2. Metadata-backed notifications are stored in `~/.config/z/worktree-metadata.json` via `LocalWorktreeMetadataStore::add_notification`.
+3. TUI reads notifications via `load_notification_aliases` or `ZellijSessionRefresher::fetch_notifications`, both of which query `notification_session_aliases` on the metadata store.
+4. External channels (macOS `osascript`, Telegram `curl`) are dispatched conditionally based on `GlobalConfig::notifications`.
 
 ---
 
@@ -171,7 +172,7 @@ All SSH command construction uses `remote::shell_quote` which wraps values in si
 | `~/.config/z/projects.kdl` | KDL (project list: name, path, host, transport) | `KdlProjectStore` / `z_core::config::parse_projects_kdl` |
 | `<project>/.config/z.kdl` | KDL (per-repo: layout, custom workflows, autopilot settings, actions) | `repo_config::parse_repo_config_projection` |
 | `~/.config/z/session-activity.json` | JSON map `{session_name: unix_epoch_secs}` | `FileActivityStore` |
-| `/tmp/z/notifications/<session>/<ts>_<seq>` | UTF-8 text (level + message) | `FileNotificationStore` |
+| `~/.config/z/worktree-metadata.json` | JSON (worktree records, notifications, agent activity) | `LocalWorktreeMetadataStore` |
 | `~/.local/state/z/z.log` | Structured text log (`[LEVEL] timestamp message`) | `FileLogger` |
 | `~/.local/share/z/autopilot/` | JSON (workflow run state per project+name) | `FileRunStore` → `z_autopilot::persist` |
 | `/tmp/z-layout-{PID}-{SEQ}.kdl` | KDL (temporary Zellij layout) | `session_manager::write_temp_layout` |
@@ -189,8 +190,8 @@ All SSH command construction uses `remote::shell_quote` which wraps values in si
 | `ProjectStore` | `KdlProjectStore` | `config_store` |
 | `ProjectStoreWriter` | `KdlProjectStore` | `config_store` |
 | `ActivityStore` | `FileActivityStore` | `activity_store` |
-| `NotificationStore` | `FileNotificationStore` | `notification_store` |
-| `Notifier` | `FileNotifier`, `MacosNotifier`, `TelegramNotifier`, `DispatchNotifier` | `notify` |
+| `WorktreeMetadataStore` | `LocalWorktreeMetadataStore`, `RemoteWorktreeMetadataStore` | `worktree_metadata_store` |
+| `Notifier` | `MacosNotifier`, `TelegramNotifier`, `DispatchNotifier` | `notify` |
 | `DepChecker` | `ProcessDepChecker` | `depcheck_impl` |
 | `Logger` | `FileLogger` | `log` |
 | `RunStore` | `FileRunStore` | `autopilot_runner` |
@@ -203,8 +204,7 @@ All SSH command construction uses `remote::shell_quote` which wraps values in si
 main ──────────────────────────────────────────────────────────────────┐
  ├── config_store ──► z_core::config                                    │
  ├── session_manager ──► z_core::traits::SessionManager                  │
- │    ├── activity_store ──► z_core::activity                            │
- │    └── notification_store ──► z_core::notification                    │
+ │    └── activity_store ──► z_core::activity                            │
  ├── session_open ──► z_core::domain                                     │
  ├── worktree_manager ──► z_core::traits::WorktreeManager                │
  │    └── remote                                                         │
@@ -217,8 +217,8 @@ main ─────────────────────────
  ├── prune ──► z_core::domain                                            │
  ├── remote ──► session_manager (parse_zellij_sessions)                  │
  ├── notify                                                              │
- │    └── notification_store                                             │
  ├── zellij_action                                                       │
+ ├── worktree_metadata_store ──► z_core::traits::WorktreeMetadataStore   │
  ├── log ──► z_core::log                                                 │
  ├── depcheck_impl ──► z_core::depcheck                                  │
  └── autopilot_runner ──► z_autopilot::lifecycle, z_autopilot::persist  │

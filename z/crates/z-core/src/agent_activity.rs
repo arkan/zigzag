@@ -282,6 +282,7 @@ mod tests {
             unattached_activity: vec![],
             migration_diagnostics: vec![],
             llm_status: vec![],
+            migrated_legacy_ids: std::collections::HashSet::new(),
         }
     }
 
