@@ -173,6 +173,29 @@ fn run() {
                 }
             }
         }
+        Some("project") => {
+            let sub = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            match sub {
+                "delete" => {
+                    let project = args.get(2).map(|s| s.as_str()).unwrap_or("");
+                    if project.is_empty() {
+                        eprintln!("usage: z project delete <project>");
+                        std::process::exit(1);
+                    }
+                    match cmd_project_delete(project) {
+                        Ok(message) => println!("{}", message),
+                        Err(e) => {
+                            eprintln!("error: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("usage: z project delete <project>");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("doctor") => {
             let fix = args.iter().any(|a| a == "--fix");
             let interactive = args.iter().any(|a| a == "--interactive");
@@ -239,7 +262,7 @@ fn run() {
         }
         Some(cmd) => {
             eprintln!("unknown command: {:?}", cmd);
-            eprintln!("usage: z [list|open|close|session|worktree|doctor|notify|autopilot|logs|switch|logs-viewer|actions]");
+            eprintln!("usage: z [list|open|close|project|session|worktree|doctor|notify|autopilot|logs|switch|logs-viewer|actions]");
             std::process::exit(1);
         }
     }
@@ -987,6 +1010,25 @@ fn cmd_close(session_name: Option<&str>) -> z_core::error::Result<()> {
     session_mgr.detach_session(&session)?;
     println!("Detached from session: {}", name);
     Ok(())
+}
+
+fn delete_project_from_store(
+    store: &mut impl ProjectStoreWriter,
+    project_name: &str,
+) -> z_core::error::Result<String> {
+    let name = project_name.trim();
+    if name.is_empty() {
+        return Err(z_core::error::ZError::ConfigParse(
+            "project name is required".to_string(),
+        ));
+    }
+    store.remove_project(name)?;
+    Ok(format!("Project '{}' deleted.", name))
+}
+
+fn cmd_project_delete(project_name: &str) -> z_core::error::Result<String> {
+    let mut store = KdlProjectStore::new();
+    delete_project_from_store(&mut store, project_name)
 }
 
 /// Kill a Zellij session by project+branch (z session kill <project> <branch>).
@@ -1821,9 +1863,53 @@ mod tests {
     /// Mutex to serialize tests that mutate session environment variables.
     static SESSION_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+    #[derive(Default)]
+    struct RecordingProjectStore {
+        removed: Vec<String>,
+    }
+
+    impl ProjectStoreWriter for RecordingProjectStore {
+        fn add_project(&mut self, _project: &z_core::domain::Project) -> z_core::error::Result<()> {
+            Ok(())
+        }
+
+        fn update_project(&mut self, _project: &z_core::domain::Project) -> z_core::error::Result<()> {
+            Ok(())
+        }
+
+        fn remove_project(&mut self, name: &str) -> z_core::error::Result<()> {
+            self.removed.push(name.to_string());
+            Ok(())
+        }
+
+        fn swap_projects(&mut self, _a: usize, _b: usize) -> z_core::error::Result<()> {
+            Ok(())
+        }
+    }
+
     fn clear_session_env() {
         std::env::remove_var("Z_SESSION_NAME");
         std::env::remove_var("ZELLIJ_SESSION_NAME");
+    }
+
+    #[test]
+    fn delete_project_from_store_trims_name_and_reports_success() {
+        let mut store = RecordingProjectStore::default();
+
+        let message = delete_project_from_store(&mut store, "  arkan  ").unwrap();
+
+        assert_eq!(store.removed, vec!["arkan"]);
+        assert_eq!(message, "Project 'arkan' deleted.");
+    }
+
+    #[test]
+    fn delete_project_from_store_rejects_empty_name() {
+        let mut store = RecordingProjectStore::default();
+
+        let err = delete_project_from_store(&mut store, "   ").unwrap_err();
+
+        assert!(matches!(err, z_core::error::ZError::ConfigParse(_)));
+        assert!(store.removed.is_empty());
     }
 
     #[test]
