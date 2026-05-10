@@ -1,7 +1,9 @@
 mod activity_store;
+mod autopilot_runner;
 mod config_store;
 mod depcheck_impl;
 mod forge;
+mod git_preview;
 mod log;
 mod notify;
 mod notification_store;
@@ -28,6 +30,7 @@ use z_core::traits::{ProjectStore, ProjectStoreWriter, SessionManager, WorktreeM
 use z_autopilot::builtin::builtin_workflows;
 use z_autopilot::dsl::AutopilotWorkflow;
 use z_autopilot::persist::list_runs;
+use z_autopilot::run_loop::{execute_workflow_run, RunLoopOptions, RunLoopReport, RunLoopStop};
 use z_autopilot::state::{WorkflowRun, WorkflowStatus};
 
 use crate::config_store::KdlProjectStore;
@@ -385,21 +388,33 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 let session_name = session.clone().unwrap_or_else(|| {
                     z_core::domain::Session::new(&project, "main").name
                 });
-                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
+                z_core::session_entry::clear_session_notifications(
+                    &notification_store::FileNotificationStore::default(),
+                    &session_name,
+                );
                 let branch_owned: Option<String> = session
                     .as_deref()
                     .and_then(|s| parse_session_name(s))
                     .map(|(_, b)| b);
                 cmd_open(&project, branch_owned.as_deref(), None)?;
-                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
+                z_core::session_entry::clear_session_notifications(
+                    &notification_store::FileNotificationStore::default(),
+                    &session_name,
+                );
                 initial_project = Some(project);
             }
 
             TuiAction::New { project, branch } => {
                 let session_name = z_core::domain::Session::new(&project, &branch).name;
-                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
+                z_core::session_entry::clear_session_notifications(
+                    &notification_store::FileNotificationStore::default(),
+                    &session_name,
+                );
                 cmd_open(&project, Some(&branch), None)?;
-                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
+                z_core::session_entry::clear_session_notifications(
+                    &notification_store::FileNotificationStore::default(),
+                    &session_name,
+                );
                 initial_project = Some(project);
             }
 
@@ -414,9 +429,15 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 vars.insert("title", title.as_str());
                 let prompt = z_core::template::resolve_template(&template, &vars);
                 let session_name = z_core::domain::Session::new(&project, &branch).name;
-                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
+                z_core::session_entry::clear_session_notifications(
+                    &notification_store::FileNotificationStore::default(),
+                    &session_name,
+                );
                 cmd_open(&project, Some(&branch), Some(&prompt))?;
-                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
+                z_core::session_entry::clear_session_notifications(
+                    &notification_store::FileNotificationStore::default(),
+                    &session_name,
+                );
                 initial_project = Some(project);
             }
 
@@ -431,9 +452,15 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 vars.insert("branch", branch.as_str());
                 let prompt = z_core::template::resolve_template(&template, &vars);
                 let session_name = z_core::domain::Session::new(&project, &branch).name;
-                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
+                z_core::session_entry::clear_session_notifications(
+                    &notification_store::FileNotificationStore::default(),
+                    &session_name,
+                );
                 cmd_open(&project, Some(&branch), Some(&prompt))?;
-                let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
+                z_core::session_entry::clear_session_notifications(
+                    &notification_store::FileNotificationStore::default(),
+                    &session_name,
+                );
                 initial_project = Some(project);
             }
 
@@ -465,6 +492,9 @@ fn cmd_tui() -> z_core::error::Result<()> {
                         status_message = Some(format!("Failed to run action: {e}"));
                     }
                 }
+            }
+            TuiAction::RunWorkflow { project, workflow } => {
+                cmd_autopilot_run(&project, &workflow)?;
             }
         }
     }
@@ -569,7 +599,10 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
     // Build the expected Session name (branch "/" -> "-" normalization applied).
     let sessions = session_mgr.list_sessions(&project.name)?;
     let open_plan = session_open::plan_open_session(&project, effective_branch, &sessions);
-    let _ = activity_store::FileActivityStore::default().record_attach(&open_plan.target_session.name);
+    z_core::session_entry::record_session_attach(
+        &activity_store::FileActivityStore::default(),
+        &open_plan.target_session.name,
+    );
 
     let logger = log::FileLogger::new();
 
@@ -639,7 +672,10 @@ fn cmd_open_remote(
         remote_name,
         z_core::domain::sanitize_branch_name(branch)
     );
-    let _ = activity_store::FileActivityStore::default().record_attach(&session_name);
+    z_core::session_entry::record_session_attach(
+        &activity_store::FileActivityStore::default(),
+        &session_name,
+    );
 
     let remote_cmd = format!(
         "cd {} && z open {} {}",
@@ -1052,8 +1088,11 @@ fn cmd_switch() -> z_core::error::Result<()> {
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
     if let Some(session_name) = selected {
-        let _ = notification_store::FileNotificationStore::default().clear_notifications(&session_name);
-        let _ = activity_store::FileActivityStore::default().record_attach(&session_name);
+        z_core::session_entry::mark_existing_session_entered(
+            &notification_store::FileNotificationStore::default(),
+            &activity_store::FileActivityStore::default(),
+            &session_name,
+        );
         let output = std::process::Command::new("zellij")
             .args(["action", "switch-session", &session_name])
             .output()
@@ -1106,19 +1145,14 @@ fn cmd_actions() -> z_core::error::Result<()> {
     let global = load_global_config();
     let per_repo = load_per_repo_config(&project.path);
 
-    // Build action env from session context
-    let env = z_core::action::ActionEnv {
-        project: project.name.clone(),
-        project_path: project.path.to_string_lossy().to_string(),
-        repo: None,
-        branch: Some(branch.clone()),
-        session: Some(session_name.clone()),
-        pr_number: None,  // Not fetched in floating picker for speed
-        pr_url: None,
-        ci_status: None,
-        has_new_comments: false,
-        review_tool: global.review_tool.clone(),
-    };
+    let env = z_core::action::ActionEnv::for_session(
+        project.name.clone(),
+        project.path.to_string_lossy().to_string(),
+        session_name.clone(),
+        branch.clone(),
+        global.review_tool.clone(),
+        z_core::action::ActionPreview::default(),
+    );
 
     let merged = z_core::action::merge_actions(&[
         z_core::action::builtin_actions(),
@@ -1707,8 +1741,9 @@ fn cmd_autopilot_dispatch(sub: Option<&str>, args: &[String]) -> z_core::error::
             println!("usage: z autopilot <subcommand>");
             println!();
             println!("subcommands:");
-            println!("  list [project]   — list available workflows (built-in + per-repo custom)");
-            println!("  status [project] — show persisted workflow run states");
+            println!("  list [project]            — list available workflows (built-in + per-repo custom)");
+            println!("  status [project]          — show persisted workflow run states");
+            println!("  run <project> <workflow>  — run or resume an autopilot workflow");
             Ok(())
         }
         Some("list") => {
@@ -1725,9 +1760,19 @@ fn cmd_autopilot_dispatch(sub: Option<&str>, args: &[String]) -> z_core::error::
             let project_filter = args.get(1).map(|s| s.as_str());
             cmd_autopilot_status(project_filter)
         }
+        Some("run") => {
+            let project = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            let workflow = args.get(2).map(|s| s.as_str()).unwrap_or("");
+            if project.is_empty() || workflow.is_empty() {
+                return Err(z_core::error::ZError::Io(
+                    "usage: z autopilot run <project> <workflow>".to_string(),
+                ));
+            }
+            cmd_autopilot_run(project, workflow)
+        }
         Some(unknown) => {
             Err(z_core::error::ZError::Io(format!(
-                "unknown autopilot subcommand: {:?}\nusage: z autopilot [list|status]",
+                "unknown autopilot subcommand: {:?}\nusage: z autopilot [list|status|run]",
                 unknown
             )))
         }
@@ -1737,10 +1782,16 @@ fn cmd_autopilot_dispatch(sub: Option<&str>, args: &[String]) -> z_core::error::
 /// List all available autopilot workflows: built-in + per-repo custom workflows
 /// for the given project path (if provided).
 pub fn cmd_autopilot_list(project_path: Option<&std::path::Path>) -> z_core::error::Result<()> {
+    let all_workflows = load_autopilot_workflows(project_path)?;
+
+    println!("{}", format_workflow_list(&all_workflows));
+    Ok(())
+}
+
+fn load_autopilot_workflows(project_path: Option<&std::path::Path>) -> z_core::error::Result<Vec<AutopilotWorkflow>> {
     let mut all_workflows: Vec<AutopilotWorkflow> = builtin_workflows()
         .map_err(|e| z_core::error::ZError::Io(format!("load built-in workflows: {e}")))?;
 
-    // Append per-repo custom workflows when a project path is given.
     if let Some(path) = project_path {
         let repo_config_path = path.join(".config").join("z.kdl");
         if let Ok(content) = fs::read_to_string(&repo_config_path) {
@@ -1751,7 +1802,46 @@ pub fn cmd_autopilot_list(project_path: Option<&std::path::Path>) -> z_core::err
         }
     }
 
-    println!("{}", format_workflow_list(&all_workflows));
+    Ok(all_workflows)
+}
+
+fn cmd_autopilot_run(project_name: &str, workflow_name: &str) -> z_core::error::Result<()> {
+    let store = KdlProjectStore::new();
+    let project = store.get_project(project_name)?;
+    let workflows = load_autopilot_workflows(Some(&project.path))?;
+    let workflow = workflows
+        .into_iter()
+        .find(|workflow| workflow.name == workflow_name)
+        .ok_or_else(|| {
+            z_core::error::ZError::ConfigParse(format!(
+                "unknown autopilot workflow '{}' for project '{}'",
+                workflow_name, project_name
+            ))
+        })?;
+
+    let global = load_global_config();
+    let notify_session = resolve_session_env()
+        .unwrap_or_else(|| format!("{}:autopilot", project.name));
+    let event_notifier = DispatchNotifier::from_config(&global.notifications, &notify_session);
+    let step_notifier = DispatchNotifier::from_config(&global.notifications, &notify_session);
+    let executor = autopilot_runner::CliStepExecutor::new(
+        project.path.clone(),
+        project.host.clone(),
+        Box::new(step_notifier),
+    );
+    let run_store = autopilot_runner::FileRunStore::new(autopilot_state_dir());
+
+    let report = execute_workflow_run(
+        &workflow,
+        &project.name,
+        project.host.clone(),
+        &executor,
+        &run_store,
+        &event_notifier,
+        RunLoopOptions::default(),
+    )?;
+
+    println!("{}", format_run_loop_report(&report));
     Ok(())
 }
 
@@ -1812,6 +1902,24 @@ pub fn format_run_status(runs: &[&WorkflowRun]) -> String {
             "  {}  {}  {:20}  step: {}\n",
             run.project, status, run.workflow_name, step
         ));
+    }
+    out
+}
+
+pub fn format_run_loop_report(report: &RunLoopReport) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Autopilot run: {} for {}\n",
+        report.run.workflow_name, report.run.project
+    ));
+    out.push_str(&format!("Status: {:?}\n", report.run.status));
+    out.push_str(&format!("Executed steps: {}\n", report.outcomes.len()));
+    match report.stop {
+        RunLoopStop::Terminal => out.push_str("Stop: terminal\n"),
+        RunLoopStop::StepLimitReached => out.push_str("Stop: step limit reached\n"),
+    }
+    if let Some(step) = &report.run.current_step {
+        out.push_str(&format!("Next step: {}\n", step));
     }
     out
 }

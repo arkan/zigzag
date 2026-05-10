@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use z_core::domain::CiStatus;
+use z_core::domain::{CiStatus, PullRequest, ReviewStatus};
 use z_core::traits::ForgeClient;
-use z_tui::{CommitInfo, GitInfo, PreviewContext, PreviewDataSource, PreviewExtraData, ZellijInfo};
+use z_tui::{GitInfo, PreviewContext, PreviewDataSource, PreviewExtraData, ZellijInfo};
 
-use crate::remote;
+use crate::git_preview;
 
 /// Process-backed Adapter for TUI Preview acquisition.
 pub struct CliPreviewDataSource {
@@ -31,124 +31,52 @@ impl PreviewDataSource for CliPreviewDataSource {
             context.project_path.clone()
         };
 
-        if let Some(host) = &context.host {
-            let info = remote::fetch_remote_git_info(host, &effective.to_string_lossy())
-                .map_err(|e| e.to_string())?;
-            return Ok(GitInfo {
-                branch: info.branch,
-                is_dirty: info.is_dirty,
-                ahead: info.ahead,
-                behind: info.behind,
-                commits: info
-                    .commits
-                    .into_iter()
-                    .map(|(hash, message)| CommitInfo { hash, message })
-                    .collect(),
-                pr: None,
-                ci: None,
-                zellij: None,
-                review: None,
-            });
+        let info = if let Some(host) = &context.host {
+            git_preview::fetch_remote_git_preview(host, &effective)
+        } else {
+            git_preview::fetch_local_git_preview(&effective)
         }
-
-        fetch_git_info(&effective.to_string_lossy())
+        .map_err(|e| e.to_string())?;
+        Ok(git_preview::to_tui_git_info(info))
     }
 
     fn load_extra_preview(&self, context: &PreviewContext) -> Result<PreviewExtraData, String> {
+        let forge = load_forge_preview(
+            &*self.forge_client,
+            &context.project_name,
+            &context.branch,
+        );
         Ok(PreviewExtraData {
-            pr: self
-                .forge_client
-                .get_pr(&context.project_name, &context.branch)
-                .ok()
-                .flatten(),
-            ci: self
-                .forge_client
-                .get_ci_status(&context.project_name, &context.branch)
-                .unwrap_or(CiStatus::Unknown),
+            pr: forge.pr,
+            ci: forge.ci,
             zellij: fetch_zellij_info(&context.session_name),
-            review: self
-                .forge_client
-                .get_review_status(&context.project_name, &context.branch)
-                .ok()
-                .flatten(),
+            review: forge.review,
         })
     }
 }
 
-fn fetch_git_info(path: &str) -> Result<GitInfo, String> {
-    let branch_out = Command::new("git")
-        .args(["-C", path, "symbolic-ref", "--short", "HEAD"])
-        .output()
-        .map_err(|e| format!("git error: {}", e))?;
-
-    if !branch_out.status.success() {
-        return Err("not a git repository".to_string());
-    }
-    let branch = String::from_utf8_lossy(&branch_out.stdout)
-        .trim()
-        .to_string();
-
-    let status_out = Command::new("git")
-        .args(["-C", path, "status", "--short"])
-        .output()
-        .map_err(|e| format!("git error: {}", e))?;
-    let is_dirty = !String::from_utf8_lossy(&status_out.stdout)
-        .trim()
-        .is_empty();
-
-    let (ahead, behind) = fetch_ahead_behind(path);
-
-    let log_out = Command::new("git")
-        .args(["-C", path, "log", "--oneline", "-5"])
-        .output()
-        .map_err(|e| format!("git error: {}", e))?;
-    let commits = String::from_utf8_lossy(&log_out.stdout)
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let mut parts = line.splitn(2, ' ');
-            CommitInfo {
-                hash: parts.next().unwrap_or("").to_string(),
-                message: parts.next().unwrap_or("").to_string(),
-            }
-        })
-        .collect();
-
-    Ok(GitInfo {
-        branch,
-        ahead,
-        behind,
-        is_dirty,
-        commits,
-        pr: None,
-        ci: None,
-        zellij: None,
-        review: None,
-    })
+struct ForgePreviewSnapshot {
+    pr: Option<PullRequest>,
+    ci: CiStatus,
+    review: Option<ReviewStatus>,
 }
 
-fn fetch_ahead_behind(path: &str) -> (usize, usize) {
-    let out = Command::new("git")
-        .args([
-            "-C",
-            path,
-            "rev-list",
-            "--left-right",
-            "--count",
-            "HEAD...@{u}",
-        ])
-        .output();
+fn load_forge_preview(
+    forge_client: &(dyn ForgeClient + Send + Sync),
+    project: &str,
+    branch: &str,
+) -> ForgePreviewSnapshot {
+    std::thread::scope(|scope| {
+        let pr = scope.spawn(|| forge_client.get_pr(project, branch));
+        let ci = scope.spawn(|| forge_client.get_ci_status(project, branch));
+        let review = scope.spawn(|| forge_client.get_review_status(project, branch));
 
-    match out {
-        Ok(output) if output.status.success() => {
-            let s = String::from_utf8_lossy(&output.stdout);
-            let mut parts = s.split_whitespace();
-            let ahead = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-            let behind = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-            (ahead, behind)
+        ForgePreviewSnapshot {
+            pr: pr.join().unwrap_or(Ok(None)).ok().flatten(),
+            ci: ci.join().unwrap_or(Ok(CiStatus::Unknown)).unwrap_or(CiStatus::Unknown),
+            review: review.join().unwrap_or(Ok(None)).ok().flatten(),
         }
-        _ => (0, 0),
-    }
+    })
 }
 
 fn resolve_worktree_path(project_path: &Path, branch: &str, ssh_host: Option<&str>) -> Option<PathBuf> {

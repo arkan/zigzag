@@ -66,6 +66,59 @@ pub struct ActionEnv {
     pub review_tool: String,
 }
 
+/// Preview-derived action context.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ActionPreview {
+    pub pr_number: Option<u64>,
+    pub pr_url: Option<String>,
+    pub ci_status: Option<CiStatus>,
+    pub has_new_comments: bool,
+}
+
+impl ActionEnv {
+    pub fn for_project(
+        project: String,
+        project_path: String,
+        review_tool: String,
+        preview: ActionPreview,
+    ) -> Self {
+        Self {
+            project,
+            project_path,
+            repo: None,
+            branch: None,
+            session: None,
+            pr_number: preview.pr_number,
+            pr_url: preview.pr_url,
+            ci_status: preview.ci_status,
+            has_new_comments: preview.has_new_comments,
+            review_tool,
+        }
+    }
+
+    pub fn for_session(
+        project: String,
+        project_path: String,
+        session: String,
+        branch: String,
+        review_tool: String,
+        preview: ActionPreview,
+    ) -> Self {
+        Self {
+            project,
+            project_path,
+            repo: None,
+            branch: Some(branch),
+            session: Some(session),
+            pr_number: preview.pr_number,
+            pr_url: preview.pr_url,
+            ci_status: preview.ci_status,
+            has_new_comments: preview.has_new_comments,
+            review_tool,
+        }
+    }
+}
+
 /// A fully resolved action, ready for execution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedAction {
@@ -902,6 +955,42 @@ action "Bad" {
             has_new_comments: false,
             review_tool: "codex".into(),
         }
+    }
+
+    #[test]
+    fn action_env_for_project_has_no_session_fields() {
+        let env = ActionEnv::for_project(
+            "myapp".to_string(),
+            "/repo/myapp".to_string(),
+            "codex".to_string(),
+            ActionPreview::default(),
+        );
+
+        assert_eq!(env.branch, None);
+        assert_eq!(env.session, None);
+    }
+
+    #[test]
+    fn action_env_for_session_sets_branch_and_session_together() {
+        let env = ActionEnv::for_session(
+            "myapp".to_string(),
+            "/repo/myapp".to_string(),
+            "myapp:main".to_string(),
+            "main".to_string(),
+            "codex".to_string(),
+            ActionPreview {
+                pr_number: Some(42),
+                pr_url: Some("https://example.com/pr/42".to_string()),
+                ci_status: Some(CiStatus::Failing),
+                has_new_comments: true,
+            },
+        );
+
+        assert_eq!(env.branch.as_deref(), Some("main"));
+        assert_eq!(env.session.as_deref(), Some("myapp:main"));
+        assert_eq!(env.pr_number, Some(42));
+        assert_eq!(env.ci_status, Some(CiStatus::Failing));
+        assert!(env.has_new_comments);
     }
 
     fn make_action(name: &str, condition: ActionCondition, context: ActionContext) -> ActionDef {
