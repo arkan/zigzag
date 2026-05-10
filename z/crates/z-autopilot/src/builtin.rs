@@ -55,7 +55,7 @@ pub const PR_REVIEW_FIX_KDL: &str = r#"autopilot "pr-review-fix" {
     }
 }"#;
 
-/// Auto-merge when PR approved + CI green, then clean up session/worktree.
+/// Auto-merge when PR approved + CI green, then notify for explicit Worktree cleanup.
 pub const PR_MERGE_WHEN_READY_KDL: &str = r#"autopilot "pr-merge-when-ready" {
     description "Auto-merge when PR approved + CI green"
     trigger "pr-approved"
@@ -72,7 +72,7 @@ pub const PR_MERGE_WHEN_READY_KDL: &str = r#"autopilot "pr-merge-when-ready" {
     }
 
     step "cleanup" {
-        run "z delete {session}"
+        notify "PR merged; delete the Worktree explicitly when ready"
         on-complete "notify-done"
     }
 

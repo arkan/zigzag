@@ -156,11 +156,6 @@ pub fn log_info(logger: &FileLogger, msg: &str) {
     let _ = logger.log(LogLevel::Info, msg);
 }
 
-/// Convenience: log a message at Error level (best-effort, never panics).
-pub fn log_error(logger: &FileLogger, msg: &str) {
-    let _ = logger.log(LogLevel::Error, msg);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,12 +222,4 @@ mod tests {
         let _ = fs::remove_file(&logger.path);
     }
 
-    #[test]
-    fn log_error_convenience_does_not_panic() {
-        let logger = temp_logger("error");
-        log_error(&logger, "bad thing");
-        let content = fs::read_to_string(&logger.path).unwrap();
-        assert!(content.contains("[ERROR] bad thing"));
-        let _ = fs::remove_file(&logger.path);
-    }
 }

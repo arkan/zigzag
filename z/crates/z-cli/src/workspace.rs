@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use z_autopilot::dsl::AutopilotWorkflow;
 use z_core::action::ActionDef;
-use z_core::domain::{Project, Session};
+use z_core::domain::{Project, Session, WorktreeEntry};
 use z_tui::{ProjectEntry, WorkflowInfo};
 
 use crate::repo_config::parse_repo_config_projection;
@@ -15,8 +15,10 @@ pub(crate) struct RepoWorkspaceConfig {
 
 pub(crate) struct WorkspaceEntryInput {
     pub(crate) project: Project,
+    /// Worktree entries assembled by topology (includes active/inactive/conflict/unsupported).
+    pub(crate) worktrees: Vec<WorktreeEntry>,
+    /// Active sessions (derived from worktree topology).
     pub(crate) sessions: Vec<Session>,
-    pub(crate) worktree_count: usize,
     pub(crate) custom_workflows: Vec<AutopilotWorkflow>,
     pub(crate) repo_actions: Vec<ActionDef>,
 }
@@ -50,8 +52,8 @@ pub(crate) fn build_project_entry(
 
     ProjectEntry {
         project: input.project,
+        worktrees: input.worktrees,
         sessions,
-        worktree_count: input.worktree_count,
         workflows,
         repo_actions: input.repo_actions,
     }
@@ -89,8 +91,8 @@ mod tests {
     fn build_project_entry_sorts_sessions_and_maps_workflows() {
         let input = WorkspaceEntryInput {
             project: project(),
+            worktrees: vec![],
             sessions: vec![Session::new("myapp", "old"), Session::new("myapp", "new")],
-            worktree_count: 2,
             custom_workflows: vec![workflow("custom", Some("Custom workflow"))],
             repo_actions: Vec::new(),
         };
@@ -104,7 +106,7 @@ mod tests {
 
         assert_eq!(entry.sessions[0].name, "myapp:new");
         assert_eq!(entry.sessions[1].name, "myapp:old");
-        assert_eq!(entry.worktree_count, 2);
+        assert_eq!(entry.worktrees.len(), 0);
         assert_eq!(entry.workflows[0].name, "builtin");
         assert_eq!(entry.workflows[1].name, "custom");
         assert_eq!(entry.workflows[1].description, "Custom workflow");

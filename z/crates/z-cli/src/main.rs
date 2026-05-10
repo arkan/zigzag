@@ -8,24 +8,24 @@ mod log;
 mod notify;
 mod notification_store;
 mod preview;
-mod prune;
 mod repo_config;
 mod remote;
 mod session_manager;
 mod session_open;
+mod worktree_metadata_store;
 mod workspace;
 mod worktree_manager;
 mod zellij_action;
 
 use std::collections::HashSet;
-use std::io::{self, Write as _};
+use std::io::{self};
 
 use std::fs;
 
 use z_core::config::{effective_layout, parse_global_config_kdl, GlobalConfig, PerRepoConfig};
 use z_core::depcheck::{check_deps, format_dep_error, DepCheckStatus};
 use z_core::domain::{NotifyLevel, Session};
-use z_core::traits::{ProjectStore, ProjectStoreWriter, SessionManager, WorktreeManager, Notifier};
+use z_core::traits::{ProjectStore, ProjectStoreWriter, SessionManager, WorktreeManager, WorktreeMetadataStore, Notifier};
 
 use z_autopilot::builtin::builtin_workflows;
 use z_autopilot::dsl::AutopilotWorkflow;
@@ -65,6 +65,9 @@ fn resolve_session_env() -> Option<String> {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let is_doctor = args.first().map(|s| s.as_str()) == Some("doctor");
+
     let checker = ProcessDepChecker;
     let results = check_deps(&checker);
 
@@ -76,7 +79,7 @@ fn main() {
         }
     }
 
-    if failed {
+    if failed && !is_doctor {
         eprintln!("\nz requires all dependencies to be installed. Aborting.");
         std::process::exit(1);
     }
@@ -118,22 +121,67 @@ fn run() {
                 std::process::exit(1);
             }
         }
-        Some("delete") => {
-            let session = args.get(1).map(|s| s.as_str()).unwrap_or("");
-            if session.is_empty() {
-                eprintln!("usage: z delete <project:branch>");
-                std::process::exit(1);
-            }
-            if let Err(e) = cmd_delete(session) {
-                eprintln!("error: {}", e);
-                std::process::exit(1);
+        Some("session") => {
+            let sub = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            match sub {
+                "kill" => {
+                    let project = args.get(2).map(|s| s.as_str()).unwrap_or("");
+                    let branch = args.get(3).map(|s| s.as_str()).unwrap_or("");
+                    if project.is_empty() || branch.is_empty() {
+                        eprintln!("usage: z session kill <project> <branch>");
+                        std::process::exit(1);
+                    }
+                    if let Err(e) = cmd_session_kill(project, branch) {
+                        eprintln!("error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                _ => {
+                    eprintln!("usage: z session kill <project> <branch>");
+                    std::process::exit(1);
+                }
             }
         }
-        Some("prune") => {
-            let dry_run = args.iter().any(|a| a == "--dry-run");
-            if let Err(e) = cmd_prune(dry_run) {
-                eprintln!("error: {}", e);
-                std::process::exit(1);
+        Some("worktree") => {
+            let sub = args.get(1).map(|s| s.as_str()).unwrap_or("");
+            match sub {
+                "delete" => {
+                    let project = args.get(2).map(|s| s.as_str()).unwrap_or("");
+                    let branch = args.get(3).map(|s| s.as_str()).unwrap_or("");
+                    let confirmed = args
+                        .windows(2)
+                        .any(|pair| pair[0] == "--confirm" && pair[1] == branch);
+                    if project.is_empty() || branch.is_empty() {
+                        eprintln!("usage: z worktree delete <project> <branch> [--confirm <branch>]");
+                        std::process::exit(1);
+                    }
+                    if args.iter().any(|arg| arg == "--force") {
+                        eprintln!("error: use --confirm <branch> after explicit confirmation; --force is not supported");
+                        std::process::exit(1);
+                    }
+                    match cmd_worktree_delete(project, branch, confirmed) {
+                        Ok(message) => println!("{}", message),
+                        Err(e) => {
+                            eprintln!("error: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("usage: z worktree delete <project> <branch> [--confirm <branch>]");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some("doctor") => {
+            let fix = args.iter().any(|a| a == "--fix");
+            let interactive = args.iter().any(|a| a == "--interactive");
+            match cmd_doctor(fix, interactive) {
+                Ok(report) => println!("{}", report),
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         Some("notify") => {
@@ -191,7 +239,7 @@ fn run() {
         }
         Some(cmd) => {
             eprintln!("unknown command: {:?}", cmd);
-            eprintln!("usage: z [list|open|close|delete|prune|notify|autopilot|logs|switch|logs-viewer]");
+            eprintln!("usage: z [list|open|close|session|worktree|doctor|notify|autopilot|logs|switch|logs-viewer|actions]");
             std::process::exit(1);
         }
     }
@@ -215,18 +263,24 @@ fn cmd_tui() -> z_core::error::Result<()> {
     // Load built-in workflows once; they are the same for every project.
     let builtin: Vec<AutopilotWorkflow> = builtin_workflows().unwrap_or_default();
 
-    /// Build a fresh list of project entries with sessions, worktrees, and workflows.
+    /// Build a fresh list of project entries with worktree topology.
     ///
-    /// Local sessions are loaded with a single `zellij list-sessions` call
-    /// (not one per project). Remote sessions are left empty — the TUI's
-    /// background refresher populates them asynchronously.
+    /// Local sessions and worktrees are loaded for each project. Uses
+    /// `assemble_worktree_entries` to build the Worktree-first topology.
     fn build_entries(
         store: &KdlProjectStore,
         builtin: &[AutopilotWorkflow],
     ) -> z_core::error::Result<Vec<ProjectEntry>> {
+        use std::collections::HashMap;
+        use z_core::domain::{
+            DiscoveredWorktree, SessionLink, WorktreeDiagnostic, WorktreeEntry, WorktreeIdentity,
+            WorktreeStatus,
+        };
+        use z_core::worktree_topology::assemble_worktree_entries;
+
         let projects = store.list_projects()?;
 
-        // One subprocess call for all local sessions, then filter per project.
+        // One subprocess call for all local sessions.
         let local_stdout = std::process::Command::new("zellij")
             .arg("list-sessions")
             .output()
@@ -237,20 +291,158 @@ fn cmd_tui() -> z_core::error::Result<()> {
             });
 
         let activity = activity_store::FileActivityStore::default().load_activity();
+        let metadata_store = crate::worktree_metadata_store::LocalWorktreeMetadataStore::default();
+        let _ = migrate_local_metadata_if_needed();
+        let local_metadata = metadata_store.read_metadata().ok();
+
         let mut entries: Vec<ProjectEntry> = Vec::with_capacity(projects.len());
         for project in &projects {
+            let remote_name = project.name.clone();
+
+            let mut topology_diagnostics: Vec<WorktreeDiagnostic> = Vec::new();
+
+            // Discover worktrees (includes detached/no-branch entries)
+            let discovered_worktrees: Vec<DiscoveredWorktree> = if project.host.is_none() {
+                let wt_output = std::process::Command::new("git")
+                    .args(["worktree", "list", "--porcelain"])
+                    .current_dir(&project.path)
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_default();
+                worktree_manager::parse_git_worktree_porcelain_detailed(
+                    &wt_output,
+                    &project.name,
+                    &project.path,
+                    None,
+                )
+            } else {
+                match project.host.as_deref() {
+                    Some(host) => match crate::worktree_manager::list_remote_worktrees_detailed(
+                        host,
+                        &project.path,
+                        &remote_name,
+                    ) {
+                        Ok(worktrees) => worktrees,
+                        Err(_) => {
+                            topology_diagnostics.push(WorktreeDiagnostic::RemoteUnavailable);
+                            Vec::new()
+                        }
+                    },
+                    None => Vec::new(),
+                }
+            };
+
+            // Get active sessions
             let sessions = if project.host.is_none() {
                 local_stdout
                     .as_deref()
                     .map(|s| session_manager::parse_zellij_sessions(s, &project.name))
                     .unwrap_or_default()
             } else {
-                Vec::new()
+                match project.host.as_deref() {
+                    Some(host) => match remote::list_remote_sessions(host, &remote_name) {
+                        Ok(sessions) => sessions,
+                        Err(_) => {
+                            topology_diagnostics.push(WorktreeDiagnostic::RemoteUnavailable);
+                            Vec::new()
+                        }
+                    },
+                    None => Vec::new(),
+                }
             };
-            let worktree_count = WtWorktreeManager::new(project.path.clone())
-                .list_worktrees(&project.name)
-                .map(|wts| wts.len())
-                .unwrap_or(0);
+
+            // Compute safety status for each worktree
+            let safety_map: HashMap<WorktreeIdentity, z_core::domain::GitSafetyStatus> =
+                discovered_worktrees
+                    .iter()
+                    .filter_map(|wt| {
+                        if wt.identity.host.is_some() {
+                            return None;
+                        }
+                        let result = crate::worktree_manager::check_git_safety(
+                            &wt.identity.worktree_path,
+                        );
+                        match result {
+                            Ok(safety) => Some((wt.identity.clone(), safety)),
+                            Err(_) => None,
+                        }
+                    })
+                    .collect();
+
+            // Get metadata records from the side where the Project lives.
+            let project_metadata = if let Some(host) = project.host.as_deref() {
+                match crate::worktree_metadata_store::RemoteWorktreeMetadataStore::new(host)
+                    .read_metadata()
+                {
+                    Ok(metadata) => Some(metadata),
+                    Err(_) => {
+                        topology_diagnostics.push(WorktreeDiagnostic::MetadataUnavailable);
+                        None
+                    }
+                }
+            } else {
+                local_metadata.clone()
+            };
+
+            let metadata_records = project_metadata
+                .as_ref()
+                .map(|m| m.worktrees.as_slice())
+                .unwrap_or(&[]);
+
+            // Assemble topology
+            let mut worktree_entries = assemble_worktree_entries(
+                project,
+                discovered_worktrees,
+                &sessions,
+                metadata_records,
+                safety_map,
+            );
+
+            if topology_diagnostics.contains(&WorktreeDiagnostic::MetadataUnavailable) {
+                for entry in &mut worktree_entries {
+                    entry.diagnostics.push(WorktreeDiagnostic::MetadataUnavailable);
+                }
+            }
+
+            if topology_diagnostics.contains(&WorktreeDiagnostic::RemoteUnavailable) {
+                for entry in &mut worktree_entries {
+                    if !entry.diagnostics.contains(&WorktreeDiagnostic::RemoteUnavailable) {
+                        entry.diagnostics.push(WorktreeDiagnostic::RemoteUnavailable);
+                    }
+                }
+            }
+
+            if worktree_entries.is_empty()
+                && topology_diagnostics.contains(&WorktreeDiagnostic::RemoteUnavailable)
+            {
+                worktree_entries.push(WorktreeEntry {
+                    discovered: DiscoveredWorktree {
+                        identity: WorktreeIdentity {
+                            host: project.host.clone(),
+                            project_root: project.path.clone(),
+                            worktree_path: project.path.clone(),
+                        },
+                        project_name: remote_name.clone(),
+                        branch: None,
+                        is_primary_checkout: true,
+                    },
+                    status: WorktreeStatus::Unsupported,
+                    diagnostics: topology_diagnostics.clone(),
+                    safety: None,
+                    session_link: SessionLink::None,
+                    metadata: None,
+                });
+            }
+
+            // Extract active sessions from worktree entries for legacy usage
+            let active_sessions: Vec<Session> = worktree_entries
+                .iter()
+                .filter_map(|wt| match &wt.session_link {
+                    z_core::domain::SessionLink::Active(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
 
             let repo_config_path = project.path.join(".config").join("z.kdl");
             let repo_config = fs::read_to_string(&repo_config_path)
@@ -260,8 +452,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
             entries.push(workspace::build_project_entry(
                 workspace::WorkspaceEntryInput {
                     project: project.clone(),
-                    sessions,
-                    worktree_count,
+                    worktrees: worktree_entries,
+                    sessions: active_sessions,
                     custom_workflows: repo_config.custom_workflows,
                     repo_actions: repo_config.repo_actions,
                 },
@@ -276,8 +468,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
         let entries = build_entries(&store, &builtin)?;
 
         // Load pending notifications so the TUI can display 🔔 badges.
-        let notifications: HashSet<String> =
-            notification_store::FileNotificationStore::default().sessions_with_notifications().into_iter().collect();
+        let notifications = load_notification_aliases();
 
         // Auto-select the newly added project if one was just added.
         let initial_idx = initial_project
@@ -287,7 +478,6 @@ fn cmd_tui() -> z_core::error::Result<()> {
         let theme = z_core::theme::Theme::from_name(global.theme);
 
         let callbacks = z_tui::TuiCallbacks {
-            prune_fn: &|force| prune_summary(force).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string())),
             log_fn: &|max_lines| {
                 let l = log::FileLogger::new();
                 let entries = l.read_recent(max_lines);
@@ -314,8 +504,15 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 (ZellijSessionManager { bin_path: resolve_bin_path() })
                     .kill_session(&sess)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-                let _ = activity_store::FileActivityStore::default().remove_entry(session_name);
                 Ok(())
+            },
+            delete_worktree_fn: &|project_name, branch, force| {
+                cmd_worktree_delete(project_name, branch, force)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+            },
+            doctor_fn: &|fix| {
+                cmd_doctor(fix, false)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
             },
             add_project_fn: &|path, name, host, transport| {
                 let transport = match transport {
@@ -360,8 +557,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 let s = config_store::KdlProjectStore::new();
                 let entries = build_entries(&s, &builtin)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-                let notifications: HashSet<String> =
-                    notification_store::FileNotificationStore::default().sessions_with_notifications().into_iter().collect();
+                let notifications = load_notification_aliases();
                 Ok((entries, notifications))
             },
         };
@@ -384,37 +580,13 @@ fn cmd_tui() -> z_core::error::Result<()> {
         match action {
             TuiAction::Quit => return Ok(()),
 
-            TuiAction::Open { project, session } => {
-                let session_name = session.clone().unwrap_or_else(|| {
-                    z_core::domain::Session::new(&project, "main").name
-                });
-                z_core::session_entry::clear_session_notifications(
-                    &notification_store::FileNotificationStore::default(),
-                    &session_name,
-                );
-                let branch_owned: Option<String> = session
-                    .as_deref()
-                    .and_then(|s| parse_session_name(s))
-                    .map(|(_, b)| b);
-                cmd_open(&project, branch_owned.as_deref(), None)?;
-                z_core::session_entry::clear_session_notifications(
-                    &notification_store::FileNotificationStore::default(),
-                    &session_name,
-                );
+            TuiAction::Open { project, branch } => {
+                cmd_open(&project, branch.as_deref(), None)?;
                 initial_project = Some(project);
             }
 
             TuiAction::New { project, branch } => {
-                let session_name = z_core::domain::Session::new(&project, &branch).name;
-                z_core::session_entry::clear_session_notifications(
-                    &notification_store::FileNotificationStore::default(),
-                    &session_name,
-                );
                 cmd_open(&project, Some(&branch), None)?;
-                z_core::session_entry::clear_session_notifications(
-                    &notification_store::FileNotificationStore::default(),
-                    &session_name,
-                );
                 initial_project = Some(project);
             }
 
@@ -428,16 +600,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 vars.insert("number", num_str.as_str());
                 vars.insert("title", title.as_str());
                 let prompt = z_core::template::resolve_template(&template, &vars);
-                let session_name = z_core::domain::Session::new(&project, &branch).name;
-                z_core::session_entry::clear_session_notifications(
-                    &notification_store::FileNotificationStore::default(),
-                    &session_name,
-                );
                 cmd_open(&project, Some(&branch), Some(&prompt))?;
-                z_core::session_entry::clear_session_notifications(
-                    &notification_store::FileNotificationStore::default(),
-                    &session_name,
-                );
                 initial_project = Some(project);
             }
 
@@ -451,16 +614,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 vars.insert("title", title.as_str());
                 vars.insert("branch", branch.as_str());
                 let prompt = z_core::template::resolve_template(&template, &vars);
-                let session_name = z_core::domain::Session::new(&project, &branch).name;
-                z_core::session_entry::clear_session_notifications(
-                    &notification_store::FileNotificationStore::default(),
-                    &session_name,
-                );
                 cmd_open(&project, Some(&branch), Some(&prompt))?;
-                z_core::session_entry::clear_session_notifications(
-                    &notification_store::FileNotificationStore::default(),
-                    &session_name,
-                );
                 initial_project = Some(project);
             }
 
@@ -498,6 +652,47 @@ fn cmd_tui() -> z_core::error::Result<()> {
             }
         }
     }
+}
+
+fn load_notification_aliases() -> HashSet<String> {
+    let mut notifications: HashSet<String> =
+        notification_store::FileNotificationStore::default().sessions_with_notifications().into_iter().collect();
+    if let Ok(metadata_notifications) = worktree_metadata_store::LocalWorktreeMetadataStore::default()
+        .notification_session_aliases()
+    {
+        notifications.extend(metadata_notifications);
+    }
+    notifications
+}
+
+fn migrate_local_metadata_if_needed() -> z_core::error::Result<()> {
+    let store = KdlProjectStore::new();
+    let projects = store.list_projects()?;
+    let discovered: Vec<z_core::domain::DiscoveredWorktree> = projects
+        .iter()
+        .filter(|project| project.host.is_none())
+        .flat_map(|project| {
+            std::process::Command::new("git")
+                .args(["worktree", "list", "--porcelain"])
+                .current_dir(&project.path)
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+                .map(|stdout| {
+                    worktree_manager::parse_git_worktree_porcelain_detailed(
+                        &stdout,
+                        &project.name,
+                        &project.path,
+                        None,
+                    )
+                })
+                .unwrap_or_default()
+        })
+        .collect();
+
+    let metadata_store = worktree_metadata_store::LocalWorktreeMetadataStore::default();
+    metadata_store.migrate_from_legacy(&discovered, None).map(|_| ())
 }
 
 fn load_global_config() -> GlobalConfig {
@@ -591,39 +786,58 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
     // Resolve project — returns ProjectNotFound if not in config.
     let project = store.get_project(project_name)?;
 
-    let effective_branch = branch.unwrap_or("main");
-
     // Remote project: SSH worktree setup + Zellij HTTPS attach.
     if let Some(host) = project.host.clone() {
-        return cmd_open_remote(&project, &host, effective_branch);
+        return cmd_open_remote(&project, &host, branch);
     }
+
+    // Discover the actual primary checkout branch instead of assuming "main".
+    let effective_branch = match branch {
+        Some(b) => b.to_string(),
+        None => {
+            worktree_manager::discover_primary_branch(&project.path)
+                .unwrap_or_else(|_| "main".to_string())
+        }
+    };
+
+    let wt_mgr = WtWorktreeManager::new(project.path.clone());
+    let discovered_worktrees = wt_mgr.list_worktrees(&project.name)?;
+    let mut target_worktree_path = if branch.is_some() {
+        discovered_worktrees
+            .iter()
+            .find(|worktree| worktree.branch == effective_branch)
+            .map(|worktree| worktree.path.clone())
+    } else {
+        Some(project.path.clone())
+    };
 
     // Build the expected Session name (branch "/" -> "-" normalization applied).
     let sessions = session_mgr.list_sessions(&project.name)?;
-    let open_plan = session_open::plan_open_session(&project, effective_branch, &sessions);
-    z_core::session_entry::record_session_attach(
-        &activity_store::FileActivityStore::default(),
-        &open_plan.target_session.name,
-    );
+    let open_plan = session_open::plan_open_session(&project, &effective_branch, &sessions);
 
     let logger = log::FileLogger::new();
 
     // Check for an existing live Session.
     if let Some(existing) = &open_plan.existing_session {
+        let Some(path) = target_worktree_path.clone() else {
+            return Err(z_core::error::ZError::Worktree(format!(
+                "active session {} has no matching worktree for branch {}",
+                existing.name, effective_branch
+            )));
+        };
         log::log_info(&logger, &format!("session {} attached", existing.name));
-        return session_mgr.attach_session(existing);
+        let result = session_mgr.attach_session(existing);
+        result?;
+        record_worktree_entry(&project, &effective_branch, &path, &existing.name)?;
+        return Ok(());
     }
 
     // Session doesn't exist — create it.
     let cwd = if let Some(branch_name) = branch {
         // Branch specified: find or create the worktree.
-        let wt_mgr = WtWorktreeManager::new(project.path.clone());
-        let worktrees = wt_mgr.list_worktrees(&project.name)?;
-        let worktree_path = if let Some(existing_wt) =
-            worktrees.iter().find(|w| w.branch == branch_name)
-        {
+        let worktree_path = if let Some(path) = target_worktree_path.take() {
             // Worktree already exists — just reuse its path.
-            existing_wt.path.clone()
+            path
         } else {
             // Create new worktree via `wt switch -c <branch>`.
             let new_wt = wt_mgr.create_worktree(&project.name, branch_name)?;
@@ -647,44 +861,72 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
     }
     inject_claude_stop_hook(&cwd);
     let theme = z_core::theme::Theme::from_name(global.theme);
-    session_mgr.create_session(&project.name, effective_branch, layout, &theme)?;
+    session_mgr.create_session(&project.name, &effective_branch, layout, &theme)?;
     log::log_info(&logger, &format!("session {} created", open_plan.target_session.name));
+    record_worktree_entry(&project, &effective_branch, &cwd, &open_plan.target_session.name)?;
 
+    Ok(())
+}
+
+fn record_worktree_entry(
+    project: &z_core::domain::Project,
+    branch: &str,
+    path: &std::path::Path,
+    session_name: &str,
+) -> z_core::error::Result<()> {
+    if project.host.is_none() {
+        migrate_local_metadata_if_needed()?;
+    }
+    let discovered = z_core::domain::DiscoveredWorktree {
+        identity: z_core::domain::WorktreeIdentity {
+            host: project.host.clone(),
+            project_root: project.path.clone(),
+            worktree_path: path.to_path_buf(),
+        },
+        project_name: project.name.clone(),
+        branch: Some(branch.to_string()),
+        is_primary_checkout: path == project.path,
+    };
+    let store = worktree_metadata_store::LocalWorktreeMetadataStore::default();
+    store.record_opened(&discovered, session_name)?;
+    store.clear_notifications(&discovered.identity)?;
+    z_core::session_entry::record_session_attach(
+        &activity_store::FileActivityStore::default(),
+        session_name,
+    );
+    z_core::session_entry::clear_session_notifications(
+        &notification_store::FileNotificationStore::default(),
+        session_name,
+    );
     Ok(())
 }
 
 /// Open a session on a remote project by SSH/Mosh-ing into the host and running
 /// `z open <project> <branch>` there. Zellij runs on the remote machine.
 ///
-/// The remote project name is derived from the last path component (e.g.
-/// `/home/arkan/nix` → `nix`) because the local and remote names may differ.
+/// The configured Project name is used on the remote as well; no basename
+/// guessing is performed.
 fn cmd_open_remote(
     project: &z_core::domain::Project,
     host: &str,
-    branch: &str,
+    branch: Option<&str>,
 ) -> z_core::error::Result<()> {
-    let remote_name = project
-        .path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(&project.name);
+    let remote_name = project.name.as_str();
 
-    let session_name = format!(
-        "{}:{}",
-        remote_name,
-        z_core::domain::sanitize_branch_name(branch)
-    );
-    z_core::session_entry::record_session_attach(
-        &activity_store::FileActivityStore::default(),
-        &session_name,
-    );
-
-    let remote_cmd = format!(
-        "cd {} && z open {} {}",
-        remote::shell_quote(&project.path.display().to_string()),
-        remote::shell_quote(remote_name),
-        remote::shell_quote(branch),
-    );
+    let remote_cmd = if let Some(branch) = branch {
+        format!(
+            "cd {} && z open {} {}",
+            remote::shell_quote(&project.path.display().to_string()),
+            remote::shell_quote(remote_name),
+            remote::shell_quote(branch),
+        )
+    } else {
+        format!(
+            "cd {} && z open {}",
+            remote::shell_quote(&project.path.display().to_string()),
+            remote::shell_quote(remote_name),
+        )
+    };
 
     let use_mosh = matches!(project.transport, Some(z_core::domain::Transport::Mosh));
 
@@ -747,274 +989,420 @@ fn cmd_close(session_name: Option<&str>) -> z_core::error::Result<()> {
     Ok(())
 }
 
-/// Kill a Zellij session and optionally remove its worktree.
+/// Kill a Zellij session by project+branch (z session kill <project> <branch>).
 ///
-/// For remote projects (those with a `host` field), delegates session killing
-/// and worktree removal to the remote machine via SSH.
-fn cmd_delete(session_name: &str) -> z_core::error::Result<()> {
+/// For remote projects, delegates to the remote machine via SSH.
+fn cmd_session_kill(project_name: &str, branch: &str) -> z_core::error::Result<()> {
     let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
-
-    let (project_name, branch) =
-        parse_session_name(session_name).ok_or_else(|| {
-            z_core::error::ZError::Session(format!(
-                "invalid session name {:?}: expected project:branch",
-                session_name
-            ))
-        })?;
 
     // Look up the project to check if it's remote.
     let store = KdlProjectStore::new();
-    let project = store.get_project(&project_name).ok();
+    let project = store.get_project(project_name).ok();
 
     if let Some(proj) = &project {
         if let Some(host) = &proj.host {
-            return cmd_delete_remote(proj, host, session_name, &branch);
+            let remote_name = proj.name.as_str();
+            let session_name = z_core::domain::Session::new(remote_name, branch).name;
+            remote::delete_remote_session(host, &session_name)?;
+            println!("Session {} killed.", session_name);
+            return Ok(());
         }
     }
 
-    // Local session flow.
+    let session_name = z_core::domain::Session::new(project_name, branch).name;
+
     let session = Session {
-        name: session_name.to_string(),
-        project: project_name,
-        branch: branch.clone(),
+        name: session_name.clone(),
+        project: project_name.to_string(),
+        branch: branch.to_string(),
     };
 
     session_mgr.kill_session(&session)?;
-    let _ = activity_store::FileActivityStore::default().remove_entry(session_name);
     println!("Session {} killed.", session_name);
-
-    // Prompt user to optionally remove the worktree.
-    eprint!("Delete worktree {}? (y/N) ", branch);
-    let _ = std::io::stderr().flush();
-
-    let mut response = String::new();
-    std::io::stdin()
-        .read_line(&mut response)
-        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
-
-    if parse_confirm_response(&response) {
-        remove_worktree(&branch)?;
-        println!("Worktree {} removed.", branch);
-    } else {
-        println!("Worktree kept.");
-    }
-
     Ok(())
 }
 
-/// Kill a remote Zellij session via SSH and optionally remove its remote worktree.
-fn cmd_delete_remote(
-    project: &z_core::domain::Project,
-    host: &str,
-    session_name: &str,
+/// Delete a worktree with preflight checks: primary checkout, dirty, ahead,
+/// no upstream, and active session protections.
+///
+/// Uses `WtWorktreeManager::remove_worktree` (the `wt remove` adapter).
+/// For protected cases, returns an error message explaining the protection.
+/// `confirmed` is only true after an exact branch-name confirmation from TUI
+/// or `--confirm <branch>` from CLI.
+fn cmd_worktree_delete(
+    project_name: &str,
     branch: &str,
-) -> z_core::error::Result<()> {
-    remote::delete_remote_session(host, session_name)?;
-    let _ = activity_store::FileActivityStore::default().remove_entry(session_name);
-    println!("Session {} killed.", session_name);
+    confirmed: bool,
+) -> z_core::error::Result<String> {
+    let store = KdlProjectStore::new();
+    let project = store.get_project(project_name)?;
 
-    // Prompt user to optionally remove the worktree on the remote machine.
-    eprint!("Delete remote worktree {}? (y/N) ", branch);
-    let _ = std::io::stderr().flush();
-
-    let mut response = String::new();
-    std::io::stdin()
-        .read_line(&mut response)
-        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
-
-    if parse_confirm_response(&response) {
-        let project_path = project.path.to_string_lossy();
-        remote::remove_remote_worktree(host, &project_path, branch)?;
-        println!("Remote worktree {} removed.", branch);
-    } else {
-        println!("Remote worktree kept.");
+    if let Some(host) = project.host.as_deref() {
+        if !confirmed {
+            return Err(z_core::error::ZError::Worktree(
+                "remote worktree delete requires --confirm <branch> after explicit confirmation".to_string(),
+            ));
+        }
+        let remote_name = project.name.as_str();
+        let remote_cmd = format!(
+            "cd {} && z worktree delete {} {} --confirm {}",
+            remote::shell_quote(&project.path.display().to_string()),
+            remote::shell_quote(remote_name),
+            remote::shell_quote(branch),
+            remote::shell_quote(branch),
+        );
+        remote::ssh_run_remote(host, &remote_cmd)?;
+        let msg = format!("Remote worktree '{}' for '{}' deleted.", branch, project_name);
+        return Ok(msg);
     }
 
-    Ok(())
+    let wt_mgr = WtWorktreeManager::new(project.path.clone());
+
+    // Discover worktrees to find the target
+    let worktrees = wt_mgr.list_worktrees(&project.name)?;
+    let target = worktrees
+        .iter()
+        .find(|w| w.branch == branch)
+        .ok_or_else(|| {
+            z_core::error::ZError::Worktree(format!(
+                "worktree '{}' not found for project '{}'",
+                branch, project_name
+            ))
+        })?;
+
+    let target_session_name = z_core::domain::Session::new(project_name, branch).name;
+    let detailed_output = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&project.path)
+        .output()
+        .map_err(|e| z_core::error::ZError::Worktree(format!("git worktree list failed: {e}")))?;
+    if !detailed_output.status.success() {
+        return Err(z_core::error::ZError::Worktree(format!(
+            "git worktree list failed with status {}",
+            detailed_output.status
+        )));
+    }
+    let detailed_stdout = String::from_utf8_lossy(&detailed_output.stdout);
+    let colliding_branches: Vec<String> = worktree_manager::parse_git_worktree_porcelain_detailed(
+        &detailed_stdout,
+        &project.name,
+        &project.path,
+        None,
+    )
+    .into_iter()
+    .filter_map(|worktree| worktree.branch)
+    .filter(|candidate_branch| {
+        z_core::domain::Session::new(project_name, candidate_branch).name == target_session_name
+    })
+    .collect();
+    let has_session_name_collision = colliding_branches.len() > 1;
+    if has_session_name_collision && !confirmed {
+        return Err(z_core::error::ZError::Worktree(format!(
+            "Worktree '{}' has a Session name collision with: {}. Re-run with --confirm {} after choosing the exact branch.",
+            branch,
+            colliding_branches.join(", "),
+            branch
+        )));
+    }
+
+    // Preflight: protect primary checkout
+    if target.path == project.path {
+        return Err(z_core::error::ZError::Worktree(
+            "Cannot delete primary checkout worktree.".to_string(),
+        ));
+    }
+
+    // Preflight: check git safety
+    let safety = worktree_manager::check_git_safety(&target.path).map_err(|e| {
+        z_core::error::ZError::Worktree(format!(
+            "Cannot verify git safety for Worktree '{}': {}. Refusing deletion.",
+            branch, e
+        ))
+    })?;
+    if safety.dirty && !confirmed {
+        return Err(z_core::error::ZError::Worktree(format!(
+            "Worktree '{}' has uncommitted changes. Commit or stash first, then re-run with --confirm {} after reviewing the risk.",
+            branch,
+            branch
+        )));
+    }
+    if !safety.has_upstream && !confirmed {
+        return Err(z_core::error::ZError::Worktree(format!(
+            "Worktree '{}' has no upstream branch. Push first, then re-run with --confirm {} after reviewing the risk.",
+            branch,
+            branch
+        )));
+    }
+    if safety.ahead > 0 && !confirmed {
+        return Err(z_core::error::ZError::Worktree(format!(
+            "Worktree '{}' is {} commit(s) ahead of upstream. Push first, then re-run with --confirm {} after reviewing the risk.",
+            branch, safety.ahead, branch
+        )));
+    }
+
+    // Preflight: check for active session
+    let sessions = ZellijSessionManager { bin_path: resolve_bin_path() }
+        .list_sessions(project_name)?;
+    let session_name = target_session_name;
+    let has_active_session = sessions.iter().any(|s| s.name == session_name);
+    if has_active_session {
+        if has_session_name_collision {
+            return Err(z_core::error::ZError::Worktree(format!(
+                "Worktree '{}' shares Session name '{}' with another Worktree. Resolve the collision before deleting an active Worktree.",
+                branch, session_name
+            )));
+        }
+        if !confirmed {
+            return Err(z_core::error::ZError::Worktree(format!(
+                "Worktree '{}' has an active Session. Re-run with --confirm {} after explicit confirmation.",
+                branch,
+                branch
+            )));
+        }
+        // Kill session first
+        let session = Session {
+            name: session_name.clone(),
+            project: project_name.to_string(),
+            branch: branch.to_string(),
+        };
+        ZellijSessionManager { bin_path: resolve_bin_path() }
+            .kill_session(&session)
+            .map_err(|e| {
+                z_core::error::ZError::Session(format!("Failed to kill session: {e}"))
+            })?;
+        let _ = activity_store::FileActivityStore::default().remove_entry(&session_name);
+    }
+
+    // Execute worktree removal via the existing `wt remove` adapter
+    wt_mgr.remove_worktree(target, confirmed)?;
+
+    // Clean metadata
+    let metadata_store =
+        crate::worktree_metadata_store::LocalWorktreeMetadataStore::default();
+    let identity = z_core::domain::WorktreeIdentity {
+        host: None,
+        project_root: project.path.clone(),
+        worktree_path: target.path.clone(),
+    };
+    let _ = metadata_store.remove_worktree(&identity);
+
+    let msg = format!("Worktree '{}' for '{}' deleted.", branch, project_name);
+    Ok(msg)
+}
+
+/// Run doctor diagnostics.
+///
+/// Reports dependency status, topology issues, and metadata health.
+/// Can run even when external dependencies are missing.
+fn cmd_doctor(fix: bool, interactive: bool) -> z_core::error::Result<String> {
+    let mut diagnostics: Vec<String> = Vec::new();
+
+    // 1. Check dependencies (always runs, even on failure)
+    let checker = ProcessDepChecker;
+    let dep_results = check_deps(&checker);
+    for result in &dep_results {
+        match &result.status {
+            DepCheckStatus::Ok { version } => {
+                diagnostics.push(format!("  ✓ {} ({})", result.tool, version));
+            }
+            DepCheckStatus::Missing => {
+                diagnostics.push(format!("  ✗ {}: not installed or not in PATH", result.tool));
+            }
+            DepCheckStatus::VersionTooLow { found, required } => {
+                diagnostics.push(format!(
+                    "  ✗ {}: version {} does not satisfy {}",
+                    result.tool, found, required
+                ));
+            }
+            DepCheckStatus::VersionUnparseable { output } => {
+                diagnostics.push(format!(
+                    "  ✗ {}: unparseable version output: {:?}",
+                    result.tool, output
+                ));
+            }
+        }
+    }
+
+    diagnostics.push(String::new());
+    diagnostics.push(" Worktree topology:".to_string());
+
+    // 2. Check projects and worktree topology
+    let _projects = match KdlProjectStore::new().list_projects() {
+        Ok(projects) => {
+            if projects.is_empty() {
+                diagnostics.push("  No projects configured.".to_string());
+            } else {
+                for project in &projects {
+                    let path_str = project.path.display();
+                    if let Some(host) = project.host.as_deref() {
+                        let remote_name = project.name.as_str();
+                        match worktree_manager::list_remote_worktrees_detailed(host, &project.path, remote_name) {
+                            Ok(worktrees) => {
+                                diagnostics.push(format!(
+                                    "  ✓ {} remote:{} ({} worktree(s))",
+                                    project.name,
+                                    host,
+                                    worktrees.len()
+                                ));
+                                for worktree in &worktrees {
+                                    if worktree.branch.is_none() {
+                                        diagnostics.push(format!(
+                                            "    ? unsupported detached worktree: {}",
+                                            worktree.identity.worktree_path.display()
+                                        ));
+                                    }
+                                }
+                            }
+                            Err(e) => diagnostics.push(format!(
+                                "  ✗ {} remote unavailable: {}",
+                                project.name, e
+                            )),
+                        }
+                    } else if !project.path.exists() {
+                        diagnostics.push(format!("  ✗ {}: path does not exist ({})", project.name, path_str));
+                    } else if !project.path.join(".git").exists() {
+                        diagnostics.push(format!("  ✗ {}: not a git repository ({})", project.name, path_str));
+                    } else {
+                        let branch = worktree_manager::discover_primary_branch(&project.path)
+                            .unwrap_or_else(|_| "unknown".to_string());
+                        diagnostics.push(format!("  ✓ {} ({}, primary: {})", project.name, path_str, branch));
+                        if let Ok(output) = std::process::Command::new("git")
+                            .args(["worktree", "list", "--porcelain"])
+                            .current_dir(&project.path)
+                            .output()
+                        {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            let worktrees = worktree_manager::parse_git_worktree_porcelain_detailed(
+                                &stdout,
+                                &project.name,
+                                &project.path,
+                                None,
+                            );
+                            let sessions = ZellijSessionManager { bin_path: resolve_bin_path() }
+                                .list_sessions(&project.name)
+                                .unwrap_or_default();
+                            let entries = z_core::worktree_topology::assemble_worktree_entries(
+                                project,
+                                worktrees.clone(),
+                                &sessions,
+                                &[],
+                                std::collections::HashMap::new(),
+                            );
+                            for entry in &entries {
+                                match entry.status {
+                                    z_core::domain::WorktreeStatus::Conflict => diagnostics.push(format!(
+                                        "    ⚠ session-name conflict: {}",
+                                        entry
+                                            .discovered
+                                            .branch
+                                            .as_deref()
+                                            .unwrap_or("(detached)")
+                                    )),
+                                    z_core::domain::WorktreeStatus::Unsupported => diagnostics.push(format!(
+                                        "    ? unsupported detached worktree: {}",
+                                        entry.discovered.identity.worktree_path.display()
+                                    )),
+                                    _ => {}
+                                }
+                            }
+                            for session in z_core::worktree_topology::find_orphan_sessions(&sessions, &worktrees) {
+                                diagnostics.push(format!("    ⚠ orphan session: {}", session.name));
+                            }
+                        }
+                    }
+                }
+            }
+            projects
+        }
+        Err(e) => {
+            diagnostics.push(format!("  ✗ Failed to list projects: {e}"));
+            Vec::new()
+        }
+    };
+
+    // 3. Check metadata health
+    diagnostics.push(String::new());
+    diagnostics.push(" Metadata:".to_string());
+    let metadata_store =
+        crate::worktree_metadata_store::LocalWorktreeMetadataStore::default();
+    match metadata_store.read_metadata() {
+        Ok(meta) => {
+            diagnostics.push(format!(
+                "  {} worktree record(s), {} notification(s)",
+                meta.worktrees.len(),
+                meta.notifications.len()
+            ));
+            if !meta.migration_diagnostics.is_empty() {
+                for d in &meta.migration_diagnostics {
+                    diagnostics.push(format!("  ⚠ migration: {d}"));
+                }
+            }
+            if !meta.unattached_activity.is_empty() {
+                diagnostics.push(format!(
+                    "  ⚠ {} unattached activity record(s)",
+                    meta.unattached_activity.len()
+                ));
+            }
+            if !meta.unattached_notifications.is_empty() {
+                diagnostics.push(format!(
+                    "  ⚠ {} unattached notification(s)",
+                    meta.unattached_notifications.len()
+                ));
+            }
+        }
+        Err(e) => {
+            diagnostics.push(format!("  ✗ Metadata read failed: {e}"));
+        }
+    }
+
+    if fix {
+        diagnostics.push(String::new());
+        match doctor_fix_metadata() {
+            Ok(message) => diagnostics.push(format!(" --fix: {message}")),
+            Err(e) => diagnostics.push(format!(" --fix failed: {e}")),
+        }
+    }
+
+    if interactive {
+        diagnostics.push(String::new());
+        diagnostics.push(
+            " --interactive: use dashboard confirmations or explicit z session/worktree commands for destructive fixes."
+                .to_string(),
+        );
+    }
+
+    Ok(diagnostics.join("\n"))
+}
+
+fn doctor_fix_metadata() -> z_core::error::Result<String> {
+    let metadata_store = worktree_metadata_store::LocalWorktreeMetadataStore::default();
+    let mut metadata = metadata_store.read_metadata()?;
+    let before_worktrees = metadata.worktrees.len();
+    let before_notifications = metadata.notifications.len();
+
+    metadata.worktrees.retain(|record| {
+        record.host.is_some() || record.path.exists()
+    });
+    metadata.notifications.retain(|notification| {
+        metadata.worktrees.iter().any(|record| {
+            record.host == notification.target.host
+                && record.project_root == notification.target.project_root
+                && record.path == notification.target.worktree_path
+        })
+    });
+    let removed_worktrees = before_worktrees.saturating_sub(metadata.worktrees.len());
+    let removed_notifications = before_notifications.saturating_sub(metadata.notifications.len());
+    metadata_store.write_metadata(&metadata)?;
+
+    Ok(format!(
+        "removed {} stale metadata record(s), {} stale notification(s); preserved unattached diagnostics",
+        removed_worktrees, removed_notifications
+    ))
 }
 
 /// Returns `true` if the user typed "y" or "Y".
 pub fn parse_confirm_response(response: &str) -> bool {
     matches!(response.trim().to_lowercase().as_str(), "y")
-}
-
-/// Shell out to `wt remove <branch>` to remove a worktree.
-fn remove_worktree(branch: &str) -> z_core::error::Result<()> {
-    let status = std::process::Command::new("wt")
-        .args(["remove", branch])
-        .status()
-        .map_err(|e| z_core::error::ZError::Worktree(e.to_string()))?;
-    if !status.success() {
-        return Err(z_core::error::ZError::Worktree(format!(
-            "wt remove exited with status {}",
-            status
-        )));
-    }
-    Ok(())
-}
-
-/// Clean up orphaned Zellij sessions and worktrees across all projects.
-///
-/// A session is orphaned when no worktree exists for its branch.
-/// A worktree is orphaned when no active session exists for its branch
-/// (main/master worktrees are always excluded).
-///
-/// Passes `--dry-run` to preview what would be cleaned without acting.
-fn cmd_prune(dry_run: bool) -> z_core::error::Result<()> {
-    let store = KdlProjectStore::new();
-    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
-
-    let projects = store.list_projects()?;
-
-    let mut all_orphaned_sessions: Vec<z_core::domain::Session> = Vec::new();
-    let mut all_orphaned_worktrees: Vec<(z_core::domain::Worktree, std::path::PathBuf)> =
-        Vec::new();
-
-    for project in &projects {
-        let wt_mgr = WtWorktreeManager::new(project.path.clone());
-        let sessions = session_mgr.list_sessions(&project.name)?;
-        let worktrees = wt_mgr.list_worktrees(&project.name)?;
-
-        let orphaned_sessions = prune::find_orphaned_sessions(&sessions, &worktrees);
-        let orphaned_worktrees = prune::find_orphaned_worktrees(&worktrees, &sessions);
-
-        all_orphaned_sessions.extend(orphaned_sessions);
-        for wt in orphaned_worktrees {
-            all_orphaned_worktrees.push((wt, project.path.clone()));
-        }
-    }
-
-    if all_orphaned_sessions.is_empty() && all_orphaned_worktrees.is_empty() {
-        println!("Nothing to prune.");
-        return Ok(());
-    }
-
-    if !all_orphaned_sessions.is_empty() {
-        println!("Orphaned sessions (no matching worktree):");
-        for session in &all_orphaned_sessions {
-            println!("  - {}", session.name);
-        }
-    }
-
-    if !all_orphaned_worktrees.is_empty() {
-        println!("Orphaned worktrees (no active session):");
-        for (wt, _) in &all_orphaned_worktrees {
-            println!("  - {} ({})", wt.branch, wt.path.display());
-        }
-    }
-
-    if dry_run {
-        println!("\nDry run — no changes made.");
-        return Ok(());
-    }
-
-    eprint!("\nProceed with cleanup? (y/N) ");
-    let _ = std::io::stderr().flush();
-
-    let mut response = String::new();
-    std::io::stdin()
-        .read_line(&mut response)
-        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
-
-    if !parse_confirm_response(&response) {
-        println!("Aborted.");
-        return Ok(());
-    }
-
-    let mut killed = 0usize;
-    let mut removed = 0usize;
-
-    for session in &all_orphaned_sessions {
-        session_mgr.kill_session(session)?;
-        let _ = activity_store::FileActivityStore::default().remove_entry(&session.name);
-        println!("Killed session: {}", session.name);
-        killed += 1;
-    }
-
-    for (wt, project_path) in &all_orphaned_worktrees {
-        let wt_mgr = WtWorktreeManager::new(project_path.clone());
-        wt_mgr.remove_worktree(wt, true)?;
-        println!("Removed worktree: {}", wt.branch);
-        removed += 1;
-    }
-
-    println!(
-        "\nPrune complete: {} session(s) killed, {} worktree(s) removed.",
-        killed, removed
-    );
-
-    Ok(())
-}
-
-/// Non-interactive prune for use in TUI mode.
-///
-/// Finds and immediately removes orphaned sessions and worktrees without
-/// asking for confirmation (the TUI 'p' binding acts as implicit confirmation).
-/// Returns a one-line summary string to display in the status bar.
-fn prune_summary(force: bool) -> z_core::error::Result<String> {
-    let store = KdlProjectStore::new();
-    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
-
-    let projects = store.list_projects()?;
-
-    let mut all_orphaned_sessions: Vec<z_core::domain::Session> = Vec::new();
-    let mut all_orphaned_worktrees: Vec<(z_core::domain::Worktree, std::path::PathBuf)> =
-        Vec::new();
-
-    for project in &projects {
-        let wt_mgr = WtWorktreeManager::new(project.path.clone());
-        let sessions = session_mgr.list_sessions(&project.name)?;
-        let worktrees = wt_mgr.list_worktrees(&project.name)?;
-
-        all_orphaned_sessions
-            .extend(prune::find_orphaned_sessions(&sessions, &worktrees));
-        for wt in prune::find_orphaned_worktrees(&worktrees, &sessions) {
-            all_orphaned_worktrees.push((wt, project.path.clone()));
-        }
-    }
-
-    if all_orphaned_sessions.is_empty() && all_orphaned_worktrees.is_empty() {
-        return Ok("Nothing to prune.".to_string());
-    }
-
-    let mut killed = 0usize;
-    let mut removed = 0usize;
-    let mut skipped = 0usize;
-    let logger = log::FileLogger::new();
-
-    for session in &all_orphaned_sessions {
-        match session_mgr.kill_session(session) {
-            Ok(()) => {
-                let _ = activity_store::FileActivityStore::default().remove_entry(&session.name);
-                log::log_info(&logger, &format!("PRUNE KILL {}", session.name));
-                killed += 1;
-            }
-            Err(e) => {
-                log::log_error(&logger, &format!("PRUNE ERROR killing {}: {}", session.name, e));
-            }
-        }
-    }
-
-    for (wt, project_path) in &all_orphaned_worktrees {
-        let wt_mgr = WtWorktreeManager::new(project_path.clone());
-        match wt_mgr.remove_worktree(wt, force) {
-            Ok(()) => {
-                log::log_info(&logger, &format!("PRUNE REMOVE {}", wt.branch));
-                removed += 1;
-            }
-            Err(e) => {
-                log::log_info(&logger, &format!("PRUNE SKIP {}: {}", wt.branch, e));
-                skipped += 1;
-            }
-        }
-    }
-
-    let mut msg = format!("Pruned: {} session(s) killed, {} worktree(s) removed.", killed, removed);
-    if skipped > 0 {
-        msg.push_str(&format!(" {} worktree(s) skipped (uncommitted changes).", skipped));
-    }
-    log::log_info(&logger, &format!("PRUNE OK {}", msg));
-    Ok(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -1255,10 +1643,110 @@ fn inject_claude_stop_hook(cwd: &std::path::Path) {
 /// triggers. The file is always written (for TUI badge); additional channels
 /// (macOS native, Telegram) are dispatched based on `~/.config/z/config.kdl`.
 fn cmd_notify(session: &str, message: &str, level: NotifyLevel) -> z_core::error::Result<()> {
+    migrate_local_metadata_if_needed()?;
+    if let Ok(target) = resolve_notify_target(session) {
+        match target {
+            NotifyTarget::Local(identity) => {
+                worktree_metadata_store::LocalWorktreeMetadataStore::default()
+                    .add_notification(identity, level.clone(), message)?;
+            }
+            NotifyTarget::Remote { host, session_name } => {
+                let remote_cmd = format!(
+                    "z notify {} {} --level {}",
+                    remote::shell_quote(&session_name),
+                    remote::shell_quote(message),
+                    remote::shell_quote(notify_level_arg(&level)),
+                );
+                remote::ssh_run_remote(&host, &remote_cmd)?;
+                return Ok(());
+            }
+        }
+    } else {
+        worktree_metadata_store::LocalWorktreeMetadataStore::default()
+            .add_unattached_notification(session, level.clone(), message)?;
+    }
+
     let global = load_global_config();
     let dispatcher = DispatchNotifier::from_config(&global.notifications, session);
     dispatcher.notify(message, level)?;
     Ok(())
+}
+
+enum NotifyTarget {
+    Local(z_core::domain::WorktreeIdentity),
+    Remote { host: String, session_name: String },
+}
+
+fn resolve_notify_target(session_name: &str) -> z_core::error::Result<NotifyTarget> {
+    let store = KdlProjectStore::new();
+    for project in store.list_projects()? {
+        let lookup_project_name = project.name.clone();
+
+        if !session_name.starts_with(&format!("{}:", lookup_project_name)) {
+            continue;
+        }
+
+        let discovered = if let Some(host) = project.host.as_deref() {
+            worktree_manager::list_remote_worktrees_detailed(host, &project.path, &lookup_project_name)?
+        } else {
+            let output = std::process::Command::new("git")
+                .args(["worktree", "list", "--porcelain"])
+                .current_dir(&project.path)
+                .output()
+                .map_err(|e| z_core::error::ZError::Worktree(format!("git worktree list failed: {e}")))?;
+            if !output.status.success() {
+                return Err(z_core::error::ZError::Worktree(format!(
+                    "git worktree list exited with status {}",
+                    output.status
+                )));
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            worktree_manager::parse_git_worktree_porcelain_detailed(
+                &stdout,
+                &lookup_project_name,
+                &project.path,
+                None,
+            )
+        };
+
+        return match z_core::domain::resolve_session_alias(session_name, &discovered) {
+            z_core::domain::SessionAliasResolution::Unique(worktree) => {
+                if let Some(host) = project.host {
+                    Ok(NotifyTarget::Remote {
+                        host,
+                        session_name: session_name.to_string(),
+                    })
+                } else {
+                    Ok(NotifyTarget::Local(worktree.identity))
+                }
+            }
+            z_core::domain::SessionAliasResolution::Ambiguous(_) => Err(
+                z_core::error::ZError::Session(format!(
+                    "session {} resolves to multiple worktrees",
+                    session_name
+                )),
+            ),
+            z_core::domain::SessionAliasResolution::None => Err(
+                z_core::error::ZError::Session(format!(
+                    "session {} does not resolve to a worktree",
+                    session_name
+                )),
+            ),
+        };
+    }
+
+    Err(z_core::error::ZError::Session(format!(
+        "session {} does not match any configured project",
+        session_name
+    )))
+}
+
+fn notify_level_arg(level: &NotifyLevel) -> &'static str {
+    match level {
+        NotifyLevel::Info => "info",
+        NotifyLevel::Warning => "warning",
+        NotifyLevel::Error => "error",
+    }
 }
 
 /// Parse `--level <value>` from an argument iterator.

@@ -25,6 +25,15 @@ pub enum ZError {
 
     #[error("environment variable not set: {0}")]
     EnvVarNotFound(String),
+
+    #[error("metadata corrupt: {0}")]
+    MetadataCorrupt(String),
+
+    #[error("metadata lock error: {0}")]
+    MetadataLock(String),
+
+    #[error("metadata write error: {0}")]
+    MetadataWrite(String),
 }
 
 pub type Result<T> = std::result::Result<T, ZError>;

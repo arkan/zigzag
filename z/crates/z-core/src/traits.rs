@@ -46,3 +46,15 @@ pub trait SessionRefresher: Send + Sync {
     fn fetch_notifications(&self) -> HashSet<String>;
     fn fetch_activity(&self) -> SessionActivity;
 }
+
+use crate::domain::WorktreeMetadataFile;
+
+/// I/O-agnostic trait for reading and writing worktree metadata.
+///
+/// Locking and atomicity details are adapter-private. Adapters must detect
+/// corrupt JSON and return `Err(ZError::MetadataCorrupt(...))` rather than
+/// silently overwriting.
+pub trait WorktreeMetadataStore {
+    fn read_metadata(&self) -> Result<WorktreeMetadataFile>;
+    fn write_metadata(&self, data: &WorktreeMetadataFile) -> Result<()>;
+}
