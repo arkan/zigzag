@@ -387,10 +387,16 @@ pub fn list_all_z_sessions_with_ages_from_output(output: &str) -> Vec<(String, O
 
 /// List all active z-managed sessions with their ages.
 pub fn list_all_z_sessions_with_ages() -> Vec<(String, Option<String>)> {
-    let output = match Command::new("zellij").arg("list-sessions").output() {
+    let output = match Command::new("zellij")
+        .args(["list-sessions", "--no-formatting"])
+        .output()
+    {
         Ok(o) => o,
         Err(_) => return Vec::new(),
     };
+    if !output.status.success() {
+        return Vec::new();
+    }
     let raw = String::from_utf8_lossy(&output.stdout);
     let stdout = strip_ansi(&raw);
     list_all_z_sessions_with_ages_from_output(&stdout)

@@ -5,6 +5,9 @@ Z_MANIFEST := z/Cargo.toml
 Z_PACKAGE := z-cli
 Z_BIN := z
 Z_CLI_PATH := z/crates/z-cli
+INSTALL_ROOT ?= $(HOME)/.local
+INSTALL_BIN_DIR := $(INSTALL_ROOT)/bin
+INSTALL_BIN := $(INSTALL_BIN_DIR)/$(Z_BIN)
 
 .DEFAULT_GOAL := help
 
@@ -16,7 +19,7 @@ help:
 	@echo "Targets:"
 	@echo "  run           Run z via cargo (pass args with ARGS='...')"
 	@echo "  build         Build z binary"
-	@echo "  install       Install z binary via cargo"
+	@echo "  install       Install z binary to $(INSTALL_BIN)"
 	@echo "  clean         Clean Rust build artifacts"
 	@echo "  sandcastle    Build Docker image and run Sandcastle"
 	@echo "  login         Authenticate Claude Code in container (Claude Max/Pro)"
@@ -30,7 +33,9 @@ build:
 	$(CARGO) build --manifest-path $(Z_MANIFEST) --package $(Z_PACKAGE) --bin $(Z_BIN)
 
 install:
-	$(CARGO) install --path $(Z_CLI_PATH) --root ~/.local --force
+	$(CARGO) build --manifest-path $(Z_MANIFEST) --package $(Z_PACKAGE) --bin $(Z_BIN) --release
+	mkdir -p "$(INSTALL_BIN_DIR)"
+	install -m 755 "z/target/release/$(Z_BIN)" "$(INSTALL_BIN)"
 
 clean:
 	$(CARGO) clean --manifest-path $(Z_MANIFEST)
