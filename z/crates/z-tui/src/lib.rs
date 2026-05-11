@@ -3841,11 +3841,17 @@ fn is_compact_switch_picker(area: Rect) -> bool {
 }
 
 fn compact_switch_picker_area(area: Rect, state: &SwitchPickerState) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return area;
+    }
+
     let visible_items = state.entries.len().clamp(1, 8) as u16;
     let detail_height = selected_switch_detail_height(state);
     let desired_height = visible_items + detail_height + 3; // borders + footer
-    let height = desired_height.clamp(5, area.height);
-    let width = area.width.min(84).max(20);
+    let min_height = 5.min(area.height);
+    let height = desired_height.clamp(min_height, area.height);
+    let min_width = 20.min(area.width);
+    let width = area.width.min(84).max(min_width);
     let x = area.x + area.width.saturating_sub(width) / 2;
     Rect::new(x, area.y, width, height)
 }
@@ -8158,6 +8164,16 @@ mod tests {
             "myapp:main".to_string(),
         );
         let _out = render_switch_picker_to_string(&state, 20, 5);
+    }
+
+    #[test]
+    fn switch_picker_tiny_terminal_no_panic() {
+        let state = SwitchPickerState::new(
+            vec!["myapp:main".to_string()],
+            "myapp:main".to_string(),
+        );
+
+        let _out = render_switch_picker_to_string(&state, 12, 3);
     }
 
     #[test]
