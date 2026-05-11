@@ -61,7 +61,7 @@ All side-effecting operations are behind traits defined in `z-core::traits`:
 - `Notifier` — out-of-band notifications
 - `SessionRefresher` — async session poll for TUI background refresh
 - `ActivityStore` — session attach-timestamp persistence
-- `NotificationStore` — per-session notification persistence
+- `WorktreeMetadataStore` — worktree-first metadata, pending notifications, and agent status
 
 **Adapters** live in `z-cli` (concrete implementations that shell out to
 `zellij`, `wt`, `gh`, the filesystem, etc.). This means `z-core` has
@@ -267,9 +267,9 @@ cmd_autopilot_run(project, workflow_name)
 |------|--------|---------|---------|
 | `~/.config/z/config.kdl` | KDL | Global config (layout, deps, notifications, actions) | `z-core::config` |
 | `~/.config/z/projects.kdl` | KDL | Project registry (name, path, host, transport) | `KdlProjectStore` |
+| `~/.config/z/worktree-metadata.json` | JSON | Worktree metadata, pending notifications, LLM status | `LocalWorktreeMetadataStore` / `RemoteWorktreeMetadataStore` |
 | `<project>/.config/z.kdl` | KDL | Per-repo config (layout, deploy, autopilot, actions) | `z-core::config` |
 | `~/.local/share/z/activity.json` | JSON | Session attach timestamps | `FileActivityStore` |
-| `~/.local/share/z/notifications/*` | File | Pending session notifications | `FileNotificationStore` |
 | `~/.local/share/z/logs/*.log` | TSV | Structured event log | `FileLogger` |
 | `~/.local/share/z/autopilot/*.json` | JSON | In-progress workflow run state | `RunStore` (in z-autopilot) |
 
@@ -283,7 +283,7 @@ z-core::traits::ForgeClient ─────────────── GhForg
 z-core::traits::Notifier ────────────────── DispatchNotifier (z-cli)
 z-core::traits::SessionRefresher ────────── ZellijSessionRefresher (z-cli)
 z-core::activity::ActivityStore ─────────── FileActivityStore (z-cli)
-z-core::notification::NotificationStore ─── FileNotificationStore (z-cli)
+z-core::traits::WorktreeMetadataStore ───── LocalWorktreeMetadataStore / RemoteWorktreeMetadataStore (z-cli)
 
 z-tui::PreviewDataSource ────────────────── CliPreviewDataSource (z-cli)
 z-tui::TuiCallbacks ─────────────────────── closures (z-cli main.rs)

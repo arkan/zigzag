@@ -48,11 +48,11 @@ z-core defines **abstraction traits**; z-cli provides **concrete adapters**. Thi
 | `SessionManager` | Zellij session lifecycle | `ZellijSessionManager` (subprocess) |
 | `WorktreeManager` | Git worktree lifecycle | `WtWorktreeManager` (`wt` CLI) |
 | `ForgeClient` | GitHub PR/CI/review data | `GhForgeClient` (`gh` CLI) |
-| `Notifier` | Multi-channel notification dispatch | `DispatchNotifier` (file + macos + telegram) |
+| `Notifier` | External notification dispatch | `DispatchNotifier` (macos + telegram) |
 | `SessionRefresher` | Async TUI state refresh | `ZellijSessionRefresher` |
 | `DepChecker` | External tool version probing | `ProcessDepChecker` |
 | `ActivityStore` | Persisted attach timestamps | `FileActivityStore` |
-| `NotificationStore` | Persisted notification events | `FileNotificationStore` |
+| `WorktreeMetadataStore` | Worktree-first metadata, notifications, and agent status | `LocalWorktreeMetadataStore` / `RemoteWorktreeMetadataStore` |
 
 ### 2. Callback-Based TUI
 
@@ -230,8 +230,8 @@ TuiState.trigger_preview_load()
 |------|---------|
 | `~/.config/z/config.kdl` | Global configuration |
 | `~/.config/z/projects.kdl` | Project registry |
+| `~/.config/z/worktree-metadata.json` | Worktree-first metadata, pending notifications, and agent status |
 | `<project>/.config/z.kdl` | Per-repo configuration |
-| `/tmp/z/notifications/<session>/` | Pending notification events (TUI badges) |
 | `/tmp/z/logs/` | Structured log files |
 | `/tmp/z/activity.kdl` | Session attach timestamps |
 | `/tmp/z-autopilot/` | Workflow run state persistence |
@@ -246,10 +246,10 @@ TuiState.trigger_preview_load()
 ### Notification Channels
 | Channel | Trigger | Implementation |
 |---------|---------|----------------|
-| File | Always | Write notification to `/tmp/z/notifications/` |
+| Metadata | `z notify` / `z notify --event` | Write notification records to worktree metadata |
 | macOS native | `notifications.macos-native true` | `osascript` System Events |
 | Telegram | `notifications.telegram true` + token/chat_id | `curl` to Telegram Bot API |
-| TUI badges | File channel (polled every 5s) | 🔔 indicator in sessions list |
+| TUI badges | Metadata channel (polled every 5s) | 🔔 indicator in sessions list |
 
 ### Forge (GitHub) Integration
 - `gh` CLI invoked for PR/CI/review data

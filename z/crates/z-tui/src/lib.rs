@@ -882,7 +882,7 @@ impl TuiState {
 
         std::thread::spawn(move || {
             let sessions = refresher.fetch_all_sessions(&projects);
-            let notifications = refresher.fetch_notifications();
+            let notifications = refresher.fetch_notifications(&projects);
             let activity = refresher.fetch_activity();
             let _ = tx.send(refresh::RefreshMessage {
                 state_revision,
@@ -2421,6 +2421,27 @@ pub fn render(f: &mut Frame, state: &TuiState) {
         .fg(rgb_to_color(state.theme.foreground));
     f.render_widget(Block::default().style(bg_style), area);
 
+    if is_compact_dashboard(area) {
+        let preview_height = if area.height < 16 { 3 } else { 4 };
+        let project_height = if area.height < 16 { 5 } else { 6 };
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(project_height),
+                Constraint::Min(3),
+                Constraint::Length(preview_height),
+                Constraint::Length(3),
+            ])
+            .split(area);
+
+        render_projects(f, chunks[0], state);
+        render_worktrees(f, chunks[1], state);
+        render_preview(f, chunks[2], state);
+        render_status(f, chunks[3], state);
+        render_modal(f, state);
+        return;
+    }
+
     // Vertical split: main panels | preview pane | status bar
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -2443,6 +2464,10 @@ pub fn render(f: &mut Frame, state: &TuiState) {
     render_status(f, outer[2], state);
     // Modal overlay is rendered last so it appears on top
     render_modal(f, state);
+}
+
+fn is_compact_dashboard(area: Rect) -> bool {
+    area.width < 70 || area.height < 18
 }
 
 fn render_projects(f: &mut Frame, area: Rect, state: &TuiState) {
@@ -2696,6 +2721,7 @@ fn render_preview(f: &mut Frame, area: Rect, state: &TuiState) {
 }
 
 fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
+    let compact = area.width < 70 || area.height <= 3;
     let first_line = if let Some(msg) = &state.status_message {
         format!(" {} ", msg)
     } else {
@@ -2714,8 +2740,16 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
             .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string())
     };
 
-    let hints = " [o]pen [n]ew [r]un action [K]ill session [d]el worktree [D]octor [A]dd [E]dit [X]del project [e]config [/]search [?]help [q]uit";
-    let content = format!("{}\n{}", first_line, hints);
+    let hints = if compact {
+        " Enter open · Tab panel · / search · ? help"
+    } else {
+        " [o]pen [n]ew [r]un action [K]ill session [d]el worktree [D]octor [A]dd [E]dit [X]del project [e]config [/]search [?]help [q]uit"
+    };
+    let content = if compact {
+        hints.to_string()
+    } else {
+        format!("{}\n{}", first_line, hints)
+    };
 
     let theme = &state.theme;
     let paragraph = Paragraph::new(content)
@@ -3678,6 +3712,12 @@ fn switch_priority_score(entry: &SwitchSessionEntry, criterion: SwitcherPriority
 /// Render the session switch picker into the frame.
 fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core::theme::Theme) {
     let area = f.area();
+    let compact = is_compact_switch_picker(area);
+    let picker_area = if compact {
+        compact_switch_picker_area(area, state)
+    } else {
+        area
+    };
 
     // Fill background
     let bg_style = Style::default()
@@ -3690,15 +3730,26 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
         .title(" Switch Session ")
         .title_style(theme_style_to_style(&theme.modal_title))
         .border_style(theme_style_to_style(&theme.modal_border));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = block.inner(picker_area);
+    f.render_widget(block, picker_area);
 
     if inner.height < 2 {
         return;
     }
 
-    let show_detail = inner.height >= 7;
-    let detail_height = if inner.height >= 9 { 6 } else { 4 };
+    let has_detail = selected_switch_entry_has_detail(state);
+    let show_detail = if compact {
+        has_detail && inner.height >= 5
+    } else {
+        inner.height >= 7
+    };
+    let detail_height = if compact {
+        selected_switch_detail_height(state)
+    } else if inner.height >= 9 {
+        6
+    } else {
+        4
+    };
     let constraints = if show_detail {
         vec![Constraint::Min(1), Constraint::Length(detail_height), Constraint::Length(1)]
     } else {
@@ -3742,7 +3793,9 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
                 ("      ".to_string(), 6)
             };
 
-            let label = if inner_width > left_display_len + right_cols + 1 {
+            let label = if compact {
+                compact_switch_label(entry, marker, inner_width)
+            } else if inner_width > left_display_len + right_cols + 1 {
                 let padding = inner_width - left_display_len - right_cols;
                 format!(
                     "{}{}{}{}{}",
@@ -3777,10 +3830,110 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
     }
 
     let footer = Paragraph::new(Line::from(Span::styled(
-        " j/k navigate  Enter switch  Esc close",
+        if compact { " j/k · Enter switch · Esc close" } else { " j/k navigate  Enter switch  Esc close" },
         theme_style_to_style(&theme.text_dim),
     )));
     f.render_widget(footer, chunks[chunks.len() - 1]);
+}
+
+fn is_compact_switch_picker(area: Rect) -> bool {
+    area.width < 90 || area.height < 18
+}
+
+fn compact_switch_picker_area(area: Rect, state: &SwitchPickerState) -> Rect {
+    let visible_items = state.entries.len().clamp(1, 8) as u16;
+    let detail_height = selected_switch_detail_height(state);
+    let desired_height = visible_items + detail_height + 3; // borders + footer
+    let height = desired_height.clamp(5, area.height);
+    let width = area.width.min(84).max(20);
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    Rect::new(x, area.y, width, height)
+}
+
+fn selected_switch_entry_has_detail(state: &SwitchPickerState) -> bool {
+    state
+        .selected_entry()
+        .is_some_and(|entry| entry.activity.is_some() || !entry.notifications.is_empty())
+}
+
+fn selected_switch_detail_height(state: &SwitchPickerState) -> u16 {
+    let Some(entry) = state.selected_entry() else {
+        return 0;
+    };
+    if entry.activity.is_none() && entry.notifications.is_empty() {
+        return 0;
+    }
+
+    let mut lines = 0usize;
+    if entry.activity.is_some() {
+        lines += 1;
+    }
+    lines += entry.notifications.len().min(2);
+    if entry.notifications.len() > 2 {
+        lines += 1;
+    }
+
+    (lines as u16 + 1).clamp(3, 6)
+}
+
+fn compact_switch_label(entry: &SwitchSessionEntry, marker: &str, inner_width: usize) -> String {
+    let mut right_parts = Vec::new();
+    if let Some(activity) = &entry.activity {
+        right_parts.push(match activity.state {
+            SwitchAgentActivityState::Working => "work".to_string(),
+            SwitchAgentActivityState::Waiting => "wait".to_string(),
+        });
+    }
+    if entry.notification_count > 0 {
+        right_parts.push(format!("\u{1f514}{}", entry.notification_count));
+    }
+    if let Some(age) = entry.age.as_deref().filter(|age| !age.is_empty()) {
+        right_parts.push(age.to_string());
+    }
+
+    let right = right_parts.join(" ");
+    let marker_len = marker.chars().count();
+    let right_len = right.chars().count();
+    let reserved = marker_len + if right.is_empty() { 0 } else { right_len + 1 };
+    let name_width = inner_width.saturating_sub(reserved).max(4);
+    let name = compact_session_name(&entry.session_name, name_width);
+
+    if right.is_empty() {
+        format!("{marker}{name}")
+    } else {
+        format!("{marker}{name} {right}")
+    }
+}
+
+fn compact_session_name(session: &str, max_chars: usize) -> String {
+    let len = session.chars().count();
+    if len <= max_chars {
+        return session.to_string();
+    }
+    if max_chars <= 1 {
+        return "…".to_string();
+    }
+
+    let Some((project, branch)) = session.split_once(':') else {
+        return format!("{}…", session.chars().take(max_chars - 1).collect::<String>());
+    };
+
+    let prefix = format!("{project}:");
+    let prefix_len = prefix.chars().count();
+    if prefix_len + 2 >= max_chars {
+        return format!("{}…", session.chars().take(max_chars - 1).collect::<String>());
+    }
+
+    let suffix_len = max_chars - prefix_len - 1;
+    let suffix = branch
+        .chars()
+        .rev()
+        .take(suffix_len)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{prefix}…{suffix}")
 }
 
 fn render_switch_detail(
@@ -4115,7 +4268,7 @@ mod tests {
         fn fetch_all_sessions(&self, _: &[Project]) -> Vec<(String, Vec<Session>)> {
             Vec::new()
         }
-        fn fetch_notifications(&self) -> HashSet<String> {
+        fn fetch_notifications(&self, _: &[Project]) -> HashSet<String> {
             HashSet::new()
         }
         fn fetch_activity(&self) -> z_core::activity::SessionActivity {
@@ -4359,6 +4512,19 @@ mod tests {
         let out = render_to_string(&state, 80, 24);
         assert!(out.contains("PROJECTS"), "should still render PROJECTS panel");
         assert!(out.contains("WORKTREES"), "should still render WORKTREES panel");
+    }
+
+    #[test]
+    fn renders_compact_mobile_dashboard() {
+        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        state.preview_data = PreviewData::Ready(make_git_info());
+
+        let out = render_to_string(&state, 46, 18);
+
+        assert!(out.contains("PROJECTS"), "compact layout should keep projects visible");
+        assert!(out.contains("WORKTREES"), "compact layout should keep worktrees visible");
+        assert!(out.contains("PREVIEW"), "compact layout should keep preview visible");
+        assert!(out.contains("Enter open"), "compact status should use short mobile hints");
     }
 
     #[test]
@@ -7821,6 +7987,55 @@ mod tests {
         assert!(out.contains("j/k"), "should render j/k hint");
         assert!(out.contains("Enter"), "should render Enter hint");
         assert!(out.contains("Esc"), "should render Esc hint");
+    }
+
+    #[test]
+    fn switch_picker_renders_compact_mobile_layout() {
+        let state = SwitchPickerState::with_entries(
+            vec![SwitchSessionEntry {
+                session_name: "hermes:feature/very-long-mobile-branch".to_string(),
+                age: Some("4m".to_string()),
+                notification_count: 2,
+                notifications: vec![SwitchNotification {
+                    level: NotifyLevel::Warning,
+                    message: "Needs permission".to_string(),
+                    created_at_ms: Some(1_000),
+                }],
+                activity: Some(SwitchAgentActivity {
+                    tool: "opencode".to_string(),
+                    state: SwitchAgentActivityState::Waiting,
+                    updated_at_ms: 1_000,
+                    reason: Some("permission".to_string()),
+                }),
+            }],
+            "other:main".to_string(),
+        );
+
+        let out = render_switch_picker_to_string(&state, 36, 14);
+
+        assert!(out.contains("Switch Session"), "compact picker should render title");
+        assert!(out.contains("hermes:"), "compact picker should preserve project prefix");
+        assert!(out.contains("wait"), "compact picker should keep activity visible");
+        assert!(out.contains("Enter"), "compact footer should keep the switch action visible");
+        assert!(out.contains("Esc"), "compact footer should keep close visible");
+    }
+
+    #[test]
+    fn switch_picker_compact_wide_mobile_hides_empty_detail() {
+        let state = SwitchPickerState::new(
+            vec!["z:main".to_string(), "hermes:main".to_string()],
+            "z:main".to_string(),
+        );
+
+        let out = render_switch_picker_to_string(&state, 76, 24);
+
+        assert!(out.contains("Switch Session"));
+        assert!(out.contains("z:main"));
+        assert!(out.contains("hermes:main"));
+        assert!(out.contains("j/k"));
+        assert!(out.contains("Enter"));
+        assert!(!out.contains("No notifications"));
+        assert!(!out.contains("Selected"));
     }
 
     #[test]

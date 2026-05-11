@@ -1,6 +1,6 @@
 use crate::domain::{
-    AgentActivityState, AgentActivityStatus, NotificationRecord, NotificationSource,
-    NotifyLevel, WorktreeIdentity, WorktreeMetadataFile,
+    AgentActivityState, AgentActivityStatus, NotificationRecord, NotificationSource, NotifyLevel,
+    WorktreeIdentity, WorktreeMetadataFile,
 };
 
 /// Current metadata schema version after adding agent activity status.
@@ -15,7 +15,8 @@ pub struct AgentActivitySettings {
 impl AgentActivitySettings {
     pub fn from_seconds(working_update_min_interval_seconds: u64) -> Self {
         Self {
-            working_update_min_interval_ms: working_update_min_interval_seconds.saturating_mul(1000),
+            working_update_min_interval_ms: working_update_min_interval_seconds
+                .saturating_mul(1000),
         }
     }
 }
@@ -204,7 +205,13 @@ fn upsert_waiting_notification(
 ) -> bool {
     let auto_resolve = level != NotifyLevel::Error;
     if let Some(notification) = file.notifications.iter_mut().find(|notification| {
-        notification_source_matches(notification, &target, &tool, &auto_resolve_key, auto_resolve)
+        notification_source_matches(
+            notification,
+            &target,
+            &tool,
+            &auto_resolve_key,
+            auto_resolve,
+        )
     }) {
         let next = NotificationRecord {
             id: notification.id.clone(),
@@ -370,11 +377,13 @@ mod tests {
 
         assert_eq!(file.llm_status[0].state, AgentActivityState::Waiting);
         assert_eq!(file.notifications.len(), 1);
-        assert!(file.notifications[0]
-            .source
-            .as_ref()
-            .expect("source")
-            .auto_resolve);
+        assert!(
+            file.notifications[0]
+                .source
+                .as_ref()
+                .expect("source")
+                .auto_resolve
+        );
     }
 
     #[test]
@@ -492,7 +501,13 @@ mod tests {
         );
 
         assert_eq!(file.notifications.len(), 2);
-        assert!(file.notifications.iter().any(|notification| notification.id == "manual"));
-        assert!(file.notifications.iter().any(|notification| notification.id == "error"));
+        assert!(file
+            .notifications
+            .iter()
+            .any(|notification| notification.id == "manual"));
+        assert!(file
+            .notifications
+            .iter()
+            .any(|notification| notification.id == "error"));
     }
 }

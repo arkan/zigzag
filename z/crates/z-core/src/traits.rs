@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use crate::activity::SessionActivity;
-use crate::domain::{CiStatus, Layout, NotifyLevel, PullRequest, Project, ReviewStatus, Session, Worktree};
+use crate::domain::{
+    CiStatus, Layout, NotifyLevel, Project, PullRequest, ReviewStatus, Session, Worktree,
+};
 use crate::error::Result;
 use crate::theme::Theme;
 
@@ -19,7 +21,13 @@ pub trait ProjectStoreWriter {
 
 pub trait SessionManager {
     fn list_sessions(&self, project: &str) -> Result<Vec<Session>>;
-    fn create_session(&self, project: &str, branch: &str, layout: Layout, theme: &Theme) -> Result<Session>;
+    fn create_session(
+        &self,
+        project: &str,
+        branch: &str,
+        layout: Layout,
+        theme: &Theme,
+    ) -> Result<Session>;
     fn attach_session(&self, session: &Session) -> Result<()>;
     fn detach_session(&self, session: &Session) -> Result<()>;
     fn kill_session(&self, session: &Session) -> Result<()>;
@@ -43,7 +51,7 @@ pub trait Notifier {
 
 pub trait SessionRefresher: Send + Sync {
     fn fetch_all_sessions(&self, projects: &[Project]) -> Vec<(String, Vec<Session>)>;
-    fn fetch_notifications(&self) -> HashSet<String>;
+    fn fetch_notifications(&self, projects: &[Project]) -> HashSet<String>;
     fn fetch_activity(&self) -> SessionActivity;
 }
 

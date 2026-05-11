@@ -5,9 +5,9 @@ use std::collections::HashSet;
 
 use crate::activity_store::FileActivityStore;
 use z_core::activity::SessionActivity;
-use z_core::domain::{Layout, Project, Session};
+use z_core::domain::{DiscoveredWorktree, Layout, Project, Session};
 use z_core::error::{Result, ZError};
-use z_core::traits::{SessionManager, SessionRefresher};
+use z_core::traits::{SessionManager, SessionRefresher, WorktreeMetadataStore};
 
 /// Strip ANSI escape sequences from a string.
 ///
@@ -55,7 +55,13 @@ impl SessionManager for ZellijSessionManager {
         }
     }
 
-    fn create_session(&self, project: &str, branch: &str, layout: Layout, theme: &z_core::theme::Theme) -> Result<Session> {
+    fn create_session(
+        &self,
+        project: &str,
+        branch: &str,
+        layout: Layout,
+        theme: &z_core::theme::Theme,
+    ) -> Result<Session> {
         let session = Session::new(project, branch);
 
         // Clean up any dead (EXITED) session with the same name first,
@@ -131,11 +137,69 @@ impl SessionManager for ZellijSessionManager {
 /// reads worktree metadata for notification badges.
 pub struct ZellijSessionRefresher;
 
+pub(crate) fn fetch_project_notification_aliases(projects: &[Project]) -> HashSet<String> {
+    let mut aliases = HashSet::new();
+
+    let local_discovered = projects
+        .iter()
+        .filter(|project| project.host.is_none())
+        .flat_map(discover_local_project_worktrees)
+        .collect::<Vec<_>>();
+    aliases.extend(
+        crate::worktree_metadata_store::LocalWorktreeMetadataStore::default()
+            .notification_session_aliases(Some(&local_discovered))
+            .unwrap_or_default(),
+    );
+
+    for project in projects.iter().filter(|project| project.host.is_some()) {
+        let Some(host) = project.host.as_deref() else {
+            continue;
+        };
+        let discovered = crate::worktree_manager::list_remote_worktrees_detailed(
+            host,
+            &project.path,
+            &project.name,
+        )
+        .ok();
+        let Ok(metadata) =
+            crate::worktree_metadata_store::RemoteWorktreeMetadataStore::new(host).read_metadata()
+        else {
+            continue;
+        };
+        aliases.extend(
+            crate::worktree_metadata_store::notification_aliases_from_metadata(
+                &metadata,
+                discovered.as_deref(),
+            ),
+        );
+    }
+
+    aliases
+}
+
+fn discover_local_project_worktrees(project: &Project) -> Vec<DiscoveredWorktree> {
+    Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&project.path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+        .map(|stdout| {
+            crate::worktree_manager::parse_git_worktree_porcelain_detailed(
+                &stdout,
+                &project.name,
+                &project.path,
+                None,
+            )
+        })
+        .unwrap_or_default()
+}
+
 impl SessionRefresher for ZellijSessionRefresher {
     fn fetch_all_sessions(&self, projects: &[Project]) -> Vec<(String, Vec<Session>)> {
         // Split into local and remote projects.
-        let (local, remote): (Vec<_>, Vec<_>) =
-            projects.iter().partition(|p| p.host.is_none());
+        let (local, remote): (Vec<_>, Vec<_>) = projects.iter().partition(|p| p.host.is_none());
 
         // Local: one `zellij list-sessions` call, parse per project.
         let mut results: Vec<(String, Vec<Session>)> = Vec::with_capacity(projects.len());
@@ -180,10 +244,8 @@ impl SessionRefresher for ZellijSessionRefresher {
         results
     }
 
-    fn fetch_notifications(&self) -> HashSet<String> {
-        crate::worktree_metadata_store::LocalWorktreeMetadataStore::default()
-            .notification_session_aliases(None)
-            .unwrap_or_default()
+    fn fetch_notifications(&self, projects: &[Project]) -> HashSet<String> {
+        fetch_project_notification_aliases(projects)
     }
 
     fn fetch_activity(&self) -> SessionActivity {
@@ -258,10 +320,26 @@ pub fn parse_session_age(line: &str) -> Option<String> {
 
 /// Convert a zellij duration string (e.g. `"2h 30m 5s"`) to the largest unit.
 fn compact_duration(s: &str) -> Option<String> {
-    if let Some(n) = extract_unit(s, 'd') { if n > 0 { return Some(format!("{}d", n)); } }
-    if let Some(n) = extract_unit(s, 'h') { if n > 0 { return Some(format!("{}h", n)); } }
-    if let Some(n) = extract_unit(s, 'm') { if n > 0 { return Some(format!("{}m", n)); } }
-    if let Some(n) = extract_unit(s, 's') { if n > 0 { return Some(format!("{}s", n)); } }
+    if let Some(n) = extract_unit(s, 'd') {
+        if n > 0 {
+            return Some(format!("{}d", n));
+        }
+    }
+    if let Some(n) = extract_unit(s, 'h') {
+        if n > 0 {
+            return Some(format!("{}h", n));
+        }
+    }
+    if let Some(n) = extract_unit(s, 'm') {
+        if n > 0 {
+            return Some(format!("{}m", n));
+        }
+    }
+    if let Some(n) = extract_unit(s, 's') {
+        if n > 0 {
+            return Some(format!("{}s", n));
+        }
+    }
     None
 }
 
@@ -474,14 +552,20 @@ mod tests {
     #[test]
     fn parse_session_name_with_dashes() {
         let result = parse_session_name("myapp:feat-login");
-        assert_eq!(result, Some(("myapp".to_string(), "feat-login".to_string())));
+        assert_eq!(
+            result,
+            Some(("myapp".to_string(), "feat-login".to_string()))
+        );
     }
 
     #[test]
     fn parse_session_name_colon_in_branch() {
         // splitn(2, ':') — only first colon splits; remainder is branch
         let result = parse_session_name("myapp:feat:extra");
-        assert_eq!(result, Some(("myapp".to_string(), "feat:extra".to_string())));
+        assert_eq!(
+            result,
+            Some(("myapp".to_string(), "feat:extra".to_string()))
+        );
     }
 
     #[test]
@@ -571,7 +655,10 @@ mod tests {
         let colored = "\x1b[31mmyapp:main\x1b[0m [Created: 5h ago] \x1b[31m(EXITED)\x1b[0m";
         let stripped = strip_ansi(colored);
         let sessions = parse_zellij_sessions(&stripped, "myapp");
-        assert!(sessions.is_empty(), "EXITED sessions must be filtered even after ANSI stripping");
+        assert!(
+            sessions.is_empty(),
+            "EXITED sessions must be filtered even after ANSI stripping"
+        );
     }
 
     #[test]
@@ -708,7 +795,10 @@ mod tests {
     fn sessions_with_ages_exited_with_extra_metadata() {
         let output = "myapp:main [Created: 5h ago] (EXITED - 2 hours ago)\n";
         let sessions = list_all_z_sessions_with_ages_from_output(output);
-        assert!(sessions.is_empty(), "EXITED anywhere in the line should exclude it");
+        assert!(
+            sessions.is_empty(),
+            "EXITED anywhere in the line should exclude it"
+        );
     }
 
     #[test]
@@ -773,5 +863,4 @@ mod tests {
             "ZELLIJ env var must not be passed to child subprocess"
         );
     }
-
 }

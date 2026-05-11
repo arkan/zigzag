@@ -9,9 +9,9 @@ every binary target (`z-cli`, `z-tui`) depends on `z-core` for its core types,
 parsing, and rendering primitives.
 
 This crate is deliberately **I/O-agnostic at the boundary**: traits (e.g.
-`ProjectStore`, `SessionManager`, `DepChecker`, `NotificationStore`,
-`ActivityStore`) define storage and execution interfaces; concrete adapters
-live in consumer crates.
+`ProjectStore`, `SessionManager`, `DepChecker`, `ActivityStore`,
+`WorktreeMetadataStore`) define storage and execution interfaces; concrete
+adapters live in consumer crates.
 
 ## Design Patterns
 
