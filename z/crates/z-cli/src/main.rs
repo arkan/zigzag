@@ -19,12 +19,14 @@ mod zellij_action;
 use std::collections::HashSet;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use std::fs;
 
 use z_core::config::{effective_layout, parse_global_config_kdl, GlobalConfig, PerRepoConfig};
 use z_core::depcheck::{check_deps, format_dep_error, DepCheckStatus};
 use z_core::domain::{NotifyLevel, Session};
+use z_core::log::{LogLevel, Logger};
 use z_core::traits::{
     Notifier, ProjectStore, ProjectStoreWriter, SessionManager, WorktreeManager,
     WorktreeMetadataStore,
@@ -46,13 +48,12 @@ use crate::worktree_manager::WtWorktreeManager;
 
 use z_tui::{Navigation, PreviewContext, PreviewDataSource, ProjectEntry, TuiAction};
 
-/// Resolve the absolute path to the current `z` binary.
-/// Falls back to `"z"` (assumes PATH) if `current_exe()` fails.
+/// Resolve the command used in generated Zellij layouts.
+///
+/// Keep this PATH-based so long-lived Zellij sessions do not bake transient
+/// build/install paths into their keybindings.
 fn resolve_bin_path() -> String {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.to_str().map(String::from))
-        .unwrap_or_else(|| "z".to_string())
+    "z".to_string()
 }
 
 /// Resolve the session name from the environment.
@@ -81,7 +82,21 @@ fn resolve_required_session_env(command: &str) -> z_core::error::Result<String> 
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let command = args.first().map(|s| s.as_str());
+    if command == Some("switch") {
+        log_switch_event(&switch_bootstrap_log_message(&args), LogLevel::Info);
+    }
     let is_doctor = args.first().map(|s| s.as_str()) == Some("doctor");
+
+    if command == Some("switch") {
+        if let Err(e) = check_switch_deps() {
+            log_switch_event(&format!("dependency check failed: {e}"), LogLevel::Error);
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+        run();
+        return;
+    }
 
     let checker = ProcessDepChecker;
     let results = check_deps(&checker);
@@ -270,6 +285,7 @@ fn run() {
         }
         Some("switch") => {
             if let Err(e) = cmd_switch() {
+                log_switch_event(&format!("error: {e}"), LogLevel::Error);
                 eprintln!("error: {}", e);
                 std::process::exit(1);
             }
@@ -1600,6 +1616,10 @@ struct SwitchLockGuard {
     path: PathBuf,
 }
 
+const SWITCH_LOCK_MAX_AGE: Duration = Duration::from_secs(120);
+const SWITCH_LOCK_WAIT_TIMEOUT: Duration = Duration::from_millis(1500);
+const SWITCH_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
 impl Drop for SwitchLockGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
@@ -1608,6 +1628,7 @@ impl Drop for SwitchLockGuard {
 
 fn acquire_switch_lock(path: impl AsRef<Path>) -> io::Result<Option<SwitchLockGuard>> {
     let path = path.as_ref();
+    let started_at = SystemTime::now();
     loop {
         match fs::OpenOptions::new()
             .write(true)
@@ -1621,8 +1642,19 @@ fn acquire_switch_lock(path: impl AsRef<Path>) -> io::Result<Option<SwitchLockGu
                 }));
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                if switch_lock_is_too_old(path) {
+                    match fs::remove_file(path) {
+                        Ok(()) => continue,
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                        Err(e) => return Err(e),
+                    }
+                }
                 if switch_lock_owner_is_active(path) {
-                    return Ok(None);
+                    if switch_lock_wait_timeout_elapsed(started_at, SystemTime::now()) {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(SWITCH_LOCK_RETRY_INTERVAL);
+                    continue;
                 }
                 match fs::remove_file(path) {
                     Ok(()) => continue,
@@ -1633,6 +1665,25 @@ fn acquire_switch_lock(path: impl AsRef<Path>) -> io::Result<Option<SwitchLockGu
             Err(e) => return Err(e),
         }
     }
+}
+
+fn switch_lock_wait_timeout_elapsed(started_at: SystemTime, now: SystemTime) -> bool {
+    now.duration_since(started_at)
+        .map(|elapsed| elapsed >= SWITCH_LOCK_WAIT_TIMEOUT)
+        .unwrap_or(false)
+}
+
+fn switch_lock_is_too_old(path: &Path) -> bool {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .map(|modified| switch_lock_is_expired(modified, SystemTime::now()))
+        .unwrap_or(true)
+}
+
+fn switch_lock_is_expired(modified: SystemTime, now: SystemTime) -> bool {
+    now.duration_since(modified)
+        .map(|age| age >= SWITCH_LOCK_MAX_AGE)
+        .unwrap_or(false)
 }
 
 fn switch_lock_owner_is_active(path: &Path) -> bool {
@@ -1657,6 +1708,59 @@ fn process_looks_like_z_switch(pid: u32) -> bool {
     cmdline.split(|byte| *byte == 0).any(|arg| arg == b"switch")
 }
 
+fn check_switch_deps() -> z_core::error::Result<()> {
+    let output = std::process::Command::new("zellij")
+        .arg("--version")
+        .output()
+        .map_err(|e| z_core::error::ZError::Session(format!("zellij is required for z switch: {e}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(z_core::error::ZError::Session(format!(
+        "zellij --version failed: {}",
+        stderr.trim()
+    )))
+}
+
+fn switch_bootstrap_log_message(args: &[String]) -> String {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_string))
+        .unwrap_or_else(|| "<unknown>".to_string());
+    let z_session = std::env::var("Z_SESSION_NAME").unwrap_or_else(|_| "<unset>".to_string());
+    let zellij_session =
+        std::env::var("ZELLIJ_SESSION_NAME").unwrap_or_else(|_| "<unset>".to_string());
+    format!(
+        "bootstrap pid={} ppid={} exe={} args={:?} Z_SESSION_NAME={} ZELLIJ_SESSION_NAME={}",
+        std::process::id(),
+        parent_process_id(),
+        exe,
+        args,
+        z_session,
+        zellij_session,
+    )
+}
+
+fn parent_process_id() -> u32 {
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_to_string("/proc/self/stat")
+            .ok()
+            .and_then(|stat| stat.split_whitespace().nth(3).and_then(|ppid| ppid.parse().ok()))
+            .unwrap_or(0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
+}
+
+fn log_switch_event(message: &str, level: LogLevel) {
+    let logger = log::FileLogger::new();
+    let _ = logger.log(level, &format!("switch: {message}"));
+}
+
 /// Launch the interactive session switch picker.
 ///
 /// Guard: must be run inside a Zellij session (`$Z_SESSION_NAME` or `$ZELLIJ_SESSION_NAME` set).
@@ -1664,14 +1768,16 @@ fn process_looks_like_z_switch(pid: u32) -> bool {
 /// selects a session runs `zellij action switch-session <name>`.
 fn cmd_switch() -> z_core::error::Result<()> {
     let current_session = resolve_required_session_env("switch")?;
+    log_switch_event(&format!("start current_session={current_session}"), LogLevel::Info);
 
     // Prevent multiple switch pickers from opening simultaneously, while
     // allowing stale lock files from crashed/interrupted panes to self-heal.
-    let Some(_lock) = acquire_switch_lock("/tmp/z-switch.lock")
+    let Some(lock) = acquire_switch_lock("/tmp/z-switch.lock")
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?
     else {
         // Another switcher is already running — exit silently so the floating
         // pane closes immediately via close_on_exit.
+        log_switch_event("lock busy after wait; exiting", LogLevel::Warning);
         return Ok(());
     };
 
@@ -1682,31 +1788,57 @@ fn cmd_switch() -> z_core::error::Result<()> {
         .read_metadata()
         .ok();
     let mut sessions = list_all_z_sessions_with_ages();
+    log_switch_event(
+        &format!("listed {} active z session(s)", sessions.len()),
+        LogLevel::Info,
+    );
     z_core::activity::sort_by_recent_attach(&mut sessions, &activity, |s| s.0.as_str());
     let mut switch_entries =
         build_switch_entries(sessions, metadata.as_ref(), &discovered, &global);
     z_tui::sort_switch_entries(&mut switch_entries, &global.switcher.priority);
+    log_switch_event(
+        &format!("built {} switch entrie(s)", switch_entries.len()),
+        LogLevel::Info,
+    );
+    if switch_entries.is_empty() {
+        log_switch_event("no active z sessions found; showing diagnostic", LogLevel::Warning);
+        eprintln!("z switch: no active z sessions found");
+        std::thread::sleep(Duration::from_secs(2));
+        return Ok(());
+    }
 
     let selected = z_tui::run_switch_picker_with_entries(switch_entries, current_session)
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
     if let Some(session_name) = selected {
+        log_switch_event(&format!("selected {session_name}"), LogLevel::Info);
+        // Release the picker lock before switching sessions. The Zellij action
+        // can move the client away from the pane that launched this process.
+        drop(lock);
+
         let output = std::process::Command::new("zellij")
             .args(["action", "switch-session", &session_name])
             .output()
             .map_err(|e| z_core::error::ZError::Session(e.to_string()))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            log_switch_event(
+                &format!("zellij switch-session failed: status={} stderr={}", output.status, stderr.trim()),
+                LogLevel::Error,
+            );
             return Err(z_core::error::ZError::Session(format!(
                 "zellij action switch-session failed: {}",
                 stderr.trim()
             )));
         }
+        log_switch_event(&format!("zellij switched to {session_name}"), LogLevel::Info);
         z_core::session_entry::record_session_attach(
             &activity_store::FileActivityStore::default(),
             &session_name,
         );
         clear_metadata_after_session_entry(&session_name);
+    } else {
+        log_switch_event("picker returned no selection", LogLevel::Info);
     }
 
     Ok(())
@@ -2395,6 +2527,32 @@ mod tests {
     /// Mutex to serialize tests that manipulate switch lock files.
     static SWITCH_LOCK_MUTEX: Mutex<()> = Mutex::new(());
 
+    fn clear_session_env() {
+        std::env::remove_var("Z_SESSION_NAME");
+        std::env::remove_var("ZELLIJ_SESSION_NAME");
+    }
+
+    fn test_project_name(suffix: &str) -> String {
+        format!("z-test-{}-{suffix}", std::process::id())
+    }
+
+    fn test_identity(project_name: &str) -> z_core::domain::WorktreeIdentity {
+        z_core::domain::WorktreeIdentity {
+            host: None,
+            project_root: PathBuf::from(format!("/tmp/{project_name}")),
+            worktree_path: PathBuf::from(format!("/tmp/{project_name}.main")),
+        }
+    }
+
+    fn test_discovered_worktree(project_name: &str) -> z_core::domain::DiscoveredWorktree {
+        z_core::domain::DiscoveredWorktree {
+            identity: test_identity(project_name),
+            project_name: project_name.to_string(),
+            branch: Some("main".to_string()),
+            is_primary_checkout: false,
+        }
+    }
+
     #[derive(Default)]
     struct RecordingProjectStore {
         removed: Vec<String>,
@@ -2422,30 +2580,9 @@ mod tests {
         }
     }
 
-    fn clear_session_env() {
-        std::env::remove_var("Z_SESSION_NAME");
-        std::env::remove_var("ZELLIJ_SESSION_NAME");
-    }
-
-    fn test_project_name(suffix: &str) -> String {
-        format!("switch-entry-test-{}-{suffix}", std::process::id())
-    }
-
-    fn test_identity(project_name: &str) -> z_core::domain::WorktreeIdentity {
-        z_core::domain::WorktreeIdentity {
-            host: None,
-            project_root: PathBuf::from(format!("/repo/{project_name}")),
-            worktree_path: PathBuf::from(format!("/repo/{project_name}")),
-        }
-    }
-
-    fn test_discovered_worktree(project_name: &str) -> z_core::domain::DiscoveredWorktree {
-        z_core::domain::DiscoveredWorktree {
-            identity: test_identity(project_name),
-            project_name: project_name.to_string(),
-            branch: Some("main".to_string()),
-            is_primary_checkout: true,
-        }
+    #[test]
+    fn resolve_bin_path_uses_path_command() {
+        assert_eq!(resolve_bin_path(), "z");
     }
 
     fn temp_switch_lock_path(name: &str) -> PathBuf {
@@ -2634,6 +2771,34 @@ mod tests {
             !path.exists(),
             "lock guard should remove the lock file on drop"
         );
+    }
+
+    #[test]
+    fn switch_lock_expiry_uses_lock_file_age() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+
+        assert!(!switch_lock_is_expired(
+            now - SWITCH_LOCK_MAX_AGE + Duration::from_millis(1),
+            now,
+        ));
+        assert!(switch_lock_is_expired(
+            now - SWITCH_LOCK_MAX_AGE,
+            now,
+        ));
+    }
+
+    #[test]
+    fn switch_lock_wait_timeout_uses_elapsed_time() {
+        let started_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+
+        assert!(!switch_lock_wait_timeout_elapsed(
+            started_at,
+            started_at + SWITCH_LOCK_WAIT_TIMEOUT - Duration::from_millis(1),
+        ));
+        assert!(switch_lock_wait_timeout_elapsed(
+            started_at,
+            started_at + SWITCH_LOCK_WAIT_TIMEOUT,
+        ));
     }
 
     #[test]

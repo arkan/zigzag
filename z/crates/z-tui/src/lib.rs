@@ -38,6 +38,7 @@ pub fn fuzzy_match(query: &str, target: &str) -> bool {
 }
 
 use crossterm::{
+    cursor::Show,
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -4055,19 +4056,51 @@ fn format_relative_age(created_at_ms: u64, now_ms: u64) -> String {
     }
 }
 
+const SWITCH_PICKER_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const SWITCH_PICKER_STARTUP_INPUT_GRACE: Duration = Duration::from_millis(250);
+
+fn switch_picker_idle_timeout_elapsed(last_input: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(last_input) >= SWITCH_PICKER_IDLE_TIMEOUT
+}
+
+fn switch_picker_should_ignore_key(
+    key: event::KeyEvent,
+    started_at: Instant,
+    now: Instant,
+) -> bool {
+    if key.kind != event::KeyEventKind::Press {
+        return true;
+    }
+    if now.saturating_duration_since(started_at) < SWITCH_PICKER_STARTUP_INPUT_GRACE {
+        return matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q'))
+            || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL));
+    }
+    false
+}
+
 fn switch_picker_event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     state: &mut SwitchPickerState,
     theme: &z_core::theme::Theme,
 ) -> io::Result<Option<String>> {
+    let started_at = Instant::now();
+    let mut last_input = Instant::now();
     loop {
         terminal.draw(|f| render_switch_picker(f, state, theme))?;
 
         if !event::poll(Duration::from_millis(100))? {
+            if switch_picker_idle_timeout_elapsed(last_input, Instant::now()) {
+                return Ok(None);
+            }
             continue;
         }
 
-        if let Event::Key(key) = event::read()? {
+        let event = event::read()?;
+        last_input = Instant::now();
+        if let Event::Key(key) = event {
+            if switch_picker_should_ignore_key(key, started_at, last_input) {
+                continue;
+            }
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => state.move_down(),
                 KeyCode::Char('k') | KeyCode::Up => state.move_up(),
@@ -4124,19 +4157,23 @@ fn run_switch_picker_state(mut state: SwitchPickerState) -> io::Result<Option<St
     }
 
     enable_raw_mode()?;
+    let _restore_terminal = TerminalRestoreGuard;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let theme = z_core::theme::Theme::default();
-    let result = switch_picker_event_loop(&mut terminal, &mut state, &theme);
+    switch_picker_event_loop(&mut terminal, &mut state, &theme)
+}
 
-    let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
-    let _ = terminal.show_cursor();
+struct TerminalRestoreGuard;
 
-    result
+impl Drop for TerminalRestoreGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -8174,6 +8211,59 @@ mod tests {
         );
 
         let _out = render_switch_picker_to_string(&state, 12, 3);
+    }
+
+    #[test]
+    fn switch_picker_idle_timeout_elapsed_after_limit() {
+        let last_input = Instant::now();
+
+        assert!(!switch_picker_idle_timeout_elapsed(
+            last_input,
+            last_input + SWITCH_PICKER_IDLE_TIMEOUT - Duration::from_millis(1),
+        ));
+        assert!(switch_picker_idle_timeout_elapsed(
+            last_input,
+            last_input + SWITCH_PICKER_IDLE_TIMEOUT,
+        ));
+    }
+
+    #[test]
+    fn switch_picker_ignores_non_press_key_events() {
+        let started_at = Instant::now();
+        let key = event::KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            event::KeyEventKind::Release,
+        );
+
+        assert!(switch_picker_should_ignore_key(
+            key,
+            started_at,
+            started_at + SWITCH_PICKER_STARTUP_INPUT_GRACE + Duration::from_millis(1),
+        ));
+    }
+
+    #[test]
+    fn switch_picker_ignores_startup_cancel_and_enter_keys() {
+        let started_at = Instant::now();
+        let during_grace = started_at + Duration::from_millis(50);
+        let after_grace = started_at + SWITCH_PICKER_STARTUP_INPUT_GRACE;
+
+        assert!(switch_picker_should_ignore_key(
+            event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            started_at,
+            during_grace,
+        ));
+        assert!(switch_picker_should_ignore_key(
+            event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            started_at,
+            during_grace,
+        ));
+        assert!(!switch_picker_should_ignore_key(
+            event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            started_at,
+            after_grace,
+        ));
     }
 
     #[test]
