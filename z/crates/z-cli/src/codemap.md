@@ -82,7 +82,7 @@ All SSH command construction uses `remote::shell_quote` which wraps values in si
 1. Creates `KdlProjectStore`, loads `GlobalConfig`, loads built-in workflows once.
 2. `loop`:
    a. Calls `build_entries` → fetches projects, one-shot `zellij list-sessions`, worktree counts, per-repo configs. Builds `Vec<ProjectEntry>`.
-   b. Loads notification set via `FileNotificationStore::sessions_with_notifications`.
+   b. Loads local and remote notification aliases from worktree metadata.
    c. Calls `z_tui::run_tui(...)` with a `TuiCallbacks` closure bundle.
    d. Matches `TuiAction` result:
       - `Open` / `New` / `NewFromIssue` / `NewFromPr` → `cmd_open` with optional prompt injection

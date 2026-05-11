@@ -7,13 +7,13 @@ mod git_preview;
 mod log;
 mod notify;
 mod preview;
-mod repo_config;
 mod remote;
+mod repo_config;
 mod session_manager;
 mod session_open;
-mod worktree_metadata_store;
 mod workspace;
 mod worktree_manager;
+mod worktree_metadata_store;
 mod zellij_action;
 
 use std::collections::HashSet;
@@ -25,7 +25,10 @@ use std::fs;
 use z_core::config::{effective_layout, parse_global_config_kdl, GlobalConfig, PerRepoConfig};
 use z_core::depcheck::{check_deps, format_dep_error, DepCheckStatus};
 use z_core::domain::{NotifyLevel, Session};
-use z_core::traits::{ProjectStore, ProjectStoreWriter, SessionManager, WorktreeManager, WorktreeMetadataStore, Notifier};
+use z_core::traits::{
+    Notifier, ProjectStore, ProjectStoreWriter, SessionManager, WorktreeManager,
+    WorktreeMetadataStore,
+};
 
 use z_autopilot::builtin::builtin_workflows;
 use z_autopilot::dsl::AutopilotWorkflow;
@@ -37,8 +40,7 @@ use crate::config_store::KdlProjectStore;
 use crate::depcheck_impl::ProcessDepChecker;
 use crate::notify::DispatchNotifier;
 use crate::session_manager::{
-    list_all_z_sessions_with_ages, parse_session_name, ZellijSessionManager,
-    ZellijSessionRefresher,
+    list_all_z_sessions_with_ages, parse_session_name, ZellijSessionManager, ZellijSessionRefresher,
 };
 use crate::worktree_manager::WtWorktreeManager;
 
@@ -67,12 +69,14 @@ fn resolve_session_env() -> Option<String> {
 }
 
 fn resolve_required_session_env(command: &str) -> z_core::error::Result<String> {
-    resolve_session_env().filter(|session| !session.is_empty()).ok_or_else(|| {
-        z_core::error::ZError::Session(format!(
-            "z {command} must be run inside a Zellij session \
+    resolve_session_env()
+        .filter(|session| !session.is_empty())
+        .ok_or_else(|| {
+            z_core::error::ZError::Session(format!(
+                "z {command} must be run inside a Zellij session \
              (neither Z_SESSION_NAME nor ZELLIJ_SESSION_NAME is set)"
-        ))
-    })
+            ))
+        })
 }
 
 fn main() {
@@ -163,7 +167,9 @@ fn run() {
                         .windows(2)
                         .any(|pair| pair[0] == "--confirm" && pair[1] == branch);
                     if project.is_empty() || branch.is_empty() {
-                        eprintln!("usage: z worktree delete <project> <branch> [--confirm <branch>]");
+                        eprintln!(
+                            "usage: z worktree delete <project> <branch> [--confirm <branch>]"
+                        );
                         std::process::exit(1);
                     }
                     if args.iter().any(|arg| arg == "--force") {
@@ -221,7 +227,11 @@ fn run() {
         Some("notify") => {
             let env_session = resolve_session_env();
             match resolve_notify_command_args(&args[1..], env_session.as_deref()) {
-                Ok(NotifyCommand::Legacy { session, message, level }) => {
+                Ok(NotifyCommand::Legacy {
+                    session,
+                    message,
+                    level,
+                }) => {
                     if let Err(e) = cmd_notify(&session, &message, level) {
                         eprintln!("error: {}", e);
                         std::process::exit(1);
@@ -399,9 +409,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
                         if wt.identity.host.is_some() {
                             return None;
                         }
-                        let result = crate::worktree_manager::check_git_safety(
-                            &wt.identity.worktree_path,
-                        );
+                        let result =
+                            crate::worktree_manager::check_git_safety(&wt.identity.worktree_path);
                         match result {
                             Ok(safety) => Some((wt.identity.clone(), safety)),
                             Err(_) => None,
@@ -440,14 +449,21 @@ fn cmd_tui() -> z_core::error::Result<()> {
 
             if topology_diagnostics.contains(&WorktreeDiagnostic::MetadataUnavailable) {
                 for entry in &mut worktree_entries {
-                    entry.diagnostics.push(WorktreeDiagnostic::MetadataUnavailable);
+                    entry
+                        .diagnostics
+                        .push(WorktreeDiagnostic::MetadataUnavailable);
                 }
             }
 
             if topology_diagnostics.contains(&WorktreeDiagnostic::RemoteUnavailable) {
                 for entry in &mut worktree_entries {
-                    if !entry.diagnostics.contains(&WorktreeDiagnostic::RemoteUnavailable) {
-                        entry.diagnostics.push(WorktreeDiagnostic::RemoteUnavailable);
+                    if !entry
+                        .diagnostics
+                        .contains(&WorktreeDiagnostic::RemoteUnavailable)
+                    {
+                        entry
+                            .diagnostics
+                            .push(WorktreeDiagnostic::RemoteUnavailable);
                     }
                 }
             }
@@ -528,21 +544,25 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
             },
             kill_session_fn: &|session_name| {
-                let (project_name, branch) =
-                    parse_session_name(session_name).ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidInput, format!(
+                let (project_name, branch) = parse_session_name(session_name).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
                             "invalid session name {:?}: expected project:branch",
                             session_name
-                        ))
-                    })?;
+                        ),
+                    )
+                })?;
                 let sess = z_core::domain::Session {
                     name: session_name.to_string(),
                     project: project_name,
                     branch,
                 };
-                (ZellijSessionManager { bin_path: resolve_bin_path() })
-                    .kill_session(&sess)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                (ZellijSessionManager {
+                    bin_path: resolve_bin_path(),
+                })
+                .kill_session(&sess)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
                 Ok(())
             },
             delete_worktree_fn: &|project_name, branch, force| {
@@ -608,7 +628,9 @@ fn cmd_tui() -> z_core::error::Result<()> {
             initial_idx,
             status_message.take(),
             callbacks,
-            Box::new(preview::CliPreviewDataSource::new(Box::new(forge::GhForgeClient))),
+            Box::new(preview::CliPreviewDataSource::new(Box::new(
+                forge::GhForgeClient,
+            ))),
             Box::new(ZellijSessionRefresher),
             theme,
             global.actions.clone(),
@@ -629,7 +651,12 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 initial_project = Some(project);
             }
 
-            TuiAction::NewFromIssue { project, number, title, slug } => {
+            TuiAction::NewFromIssue {
+                project,
+                number,
+                title,
+                slug,
+            } => {
                 let branch = format!("grill/{}-{}", number, slug);
                 let global = load_global_config();
                 let per_repo = load_per_repo_config_for_project(&project);
@@ -643,7 +670,12 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 initial_project = Some(project);
             }
 
-            TuiAction::NewFromPr { project, number, title, branch } => {
+            TuiAction::NewFromPr {
+                project,
+                number,
+                title,
+                branch,
+            } => {
                 let global = load_global_config();
                 let per_repo = load_per_repo_config_for_project(&project);
                 let template = z_core::config::effective_pr_prompt_template(&global, &per_repo);
@@ -661,7 +693,11 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 cmd_edit_per_repo_config(&project_path)?;
             }
 
-            TuiAction::RunAction { session, command, pane_type } => {
+            TuiAction::RunAction {
+                session,
+                command,
+                pane_type,
+            } => {
                 let request = zellij_action::ZellijActionRequest {
                     session: Some(session),
                     tab_name: None,
@@ -694,8 +730,9 @@ fn cmd_tui() -> z_core::error::Result<()> {
 }
 
 fn load_notification_aliases() -> HashSet<String> {
-    worktree_metadata_store::LocalWorktreeMetadataStore::default()
-        .notification_session_aliases(None)
+    KdlProjectStore::new()
+        .list_projects()
+        .map(|projects| session_manager::fetch_project_notification_aliases(&projects))
         .unwrap_or_default()
 }
 
@@ -780,8 +817,7 @@ fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> z_core::error::Re
     let config_file = config_dir.join("z.kdl");
 
     // Create .config/ directory if missing (create_dir_all is a no-op if it exists).
-    fs::create_dir_all(&config_dir)
-        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+    fs::create_dir_all(&config_dir).map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
     // Create the file with a commented template if it doesn't exist.
     if !config_file.exists() {
@@ -809,8 +845,7 @@ fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> z_core::error::Re
 //   review true        // open a PR after each autopilot session
 // }
 ";
-        fs::write(&config_file, template)
-            .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+        fs::write(&config_file, template).map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
     }
 
     // Determine editor: $EDITOR, falling back to vi.
@@ -820,7 +855,9 @@ fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> z_core::error::Re
     let status = std::process::Command::new(&editor)
         .arg(&config_file)
         .status()
-        .map_err(|e| z_core::error::ZError::Io(format!("failed to launch editor '{}': {}", editor, e)))?;
+        .map_err(|e| {
+            z_core::error::ZError::Io(format!("failed to launch editor '{}': {}", editor, e))
+        })?;
 
     if !status.success() {
         eprintln!("editor exited with status: {}", status);
@@ -829,9 +866,15 @@ fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> z_core::error::Re
     Ok(())
 }
 
-fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z_core::error::Result<()> {
+fn cmd_open(
+    project_name: &str,
+    branch: Option<&str>,
+    prompt: Option<&str>,
+) -> z_core::error::Result<()> {
     let store = KdlProjectStore::new();
-    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
+    let session_mgr = ZellijSessionManager {
+        bin_path: resolve_bin_path(),
+    };
 
     // Resolve project — returns ProjectNotFound if not in config.
     let project = store.get_project(project_name)?;
@@ -844,10 +887,8 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
     // Discover the actual primary checkout branch instead of assuming "main".
     let effective_branch = match branch {
         Some(b) => b.to_string(),
-        None => {
-            worktree_manager::discover_primary_branch(&project.path)
-                .unwrap_or_else(|_| "main".to_string())
-        }
+        None => worktree_manager::discover_primary_branch(&project.path)
+            .unwrap_or_else(|_| "main".to_string()),
     };
 
     let wt_mgr = WtWorktreeManager::new(project.path.clone());
@@ -891,7 +932,10 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
         } else {
             // Create new worktree via `wt switch -c <branch>`.
             let new_wt = wt_mgr.create_worktree(&project.name, branch_name)?;
-            log::log_info(&logger, &format!("worktree {} created for {}", branch_name, project_name));
+            log::log_info(
+                &logger,
+                &format!("worktree {} created for {}", branch_name, project_name),
+            );
             new_wt.path
         };
         worktree_path
@@ -912,8 +956,16 @@ fn cmd_open(project_name: &str, branch: Option<&str>, prompt: Option<&str>) -> z
     inject_claude_stop_hook(&cwd);
     let theme = z_core::theme::Theme::from_name(global.theme);
     session_mgr.create_session(&project.name, &effective_branch, layout, &theme)?;
-    log::log_info(&logger, &format!("session {} created", open_plan.target_session.name));
-    record_worktree_entry(&project, &effective_branch, &cwd, &open_plan.target_session.name)?;
+    log::log_info(
+        &logger,
+        &format!("session {} created", open_plan.target_session.name),
+    );
+    record_worktree_entry(
+        &project,
+        &effective_branch,
+        &cwd,
+        &open_plan.target_session.name,
+    )?;
 
     Ok(())
 }
@@ -1009,22 +1061,27 @@ fn cmd_open_remote(
 /// `session_name` — if `None`, detects the current session from `Z_SESSION_NAME`
 /// with `ZELLIJ_SESSION_NAME` fallback.
 fn cmd_close(session_name: Option<&str>) -> z_core::error::Result<()> {
-    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
+    let session_mgr = ZellijSessionManager {
+        bin_path: resolve_bin_path(),
+    };
 
     let name = match session_name {
         Some(n) if !n.is_empty() => n.to_string(),
         _ => resolve_required_session_env("close")?,
     };
 
-    let (project, branch) =
-        parse_session_name(&name).ok_or_else(|| {
-            z_core::error::ZError::Session(format!(
-                "invalid session name {:?}: expected project:branch",
-                name
-            ))
-        })?;
+    let (project, branch) = parse_session_name(&name).ok_or_else(|| {
+        z_core::error::ZError::Session(format!(
+            "invalid session name {:?}: expected project:branch",
+            name
+        ))
+    })?;
 
-    let session = Session { name: name.clone(), project, branch };
+    let session = Session {
+        name: name.clone(),
+        project,
+        branch,
+    };
     session_mgr.detach_session(&session)?;
     println!("Detached from session: {}", name);
     Ok(())
@@ -1053,7 +1110,9 @@ fn cmd_project_delete(project_name: &str) -> z_core::error::Result<String> {
 ///
 /// For remote projects, delegates to the remote machine via SSH.
 fn cmd_session_kill(project_name: &str, branch: &str) -> z_core::error::Result<()> {
-    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
+    let session_mgr = ZellijSessionManager {
+        bin_path: resolve_bin_path(),
+    };
 
     // Look up the project to check if it's remote.
     let store = KdlProjectStore::new();
@@ -1100,7 +1159,8 @@ fn cmd_worktree_delete(
     if let Some(host) = project.host.as_deref() {
         if !confirmed {
             return Err(z_core::error::ZError::Worktree(
-                "remote worktree delete requires --confirm <branch> after explicit confirmation".to_string(),
+                "remote worktree delete requires --confirm <branch> after explicit confirmation"
+                    .to_string(),
             ));
         }
         let remote_name = project.name.as_str();
@@ -1112,7 +1172,10 @@ fn cmd_worktree_delete(
             remote::shell_quote(branch),
         );
         remote::ssh_run_remote(host, &remote_cmd)?;
-        let msg = format!("Remote worktree '{}' for '{}' deleted.", branch, project_name);
+        let msg = format!(
+            "Remote worktree '{}' for '{}' deleted.",
+            branch, project_name
+        );
         return Ok(msg);
     }
 
@@ -1201,8 +1264,10 @@ fn cmd_worktree_delete(
     }
 
     // Preflight: check for active session
-    let sessions = ZellijSessionManager { bin_path: resolve_bin_path() }
-        .list_sessions(project_name)?;
+    let sessions = ZellijSessionManager {
+        bin_path: resolve_bin_path(),
+    }
+    .list_sessions(project_name)?;
     let session_name = target_session_name;
     let has_active_session = sessions.iter().any(|s| s.name == session_name);
     if has_active_session {
@@ -1225,11 +1290,11 @@ fn cmd_worktree_delete(
             project: project_name.to_string(),
             branch: branch.to_string(),
         };
-        ZellijSessionManager { bin_path: resolve_bin_path() }
-            .kill_session(&session)
-            .map_err(|e| {
-                z_core::error::ZError::Session(format!("Failed to kill session: {e}"))
-            })?;
+        ZellijSessionManager {
+            bin_path: resolve_bin_path(),
+        }
+        .kill_session(&session)
+        .map_err(|e| z_core::error::ZError::Session(format!("Failed to kill session: {e}")))?;
         let _ = activity_store::FileActivityStore::default().remove_entry(&session_name);
     }
 
@@ -1237,8 +1302,7 @@ fn cmd_worktree_delete(
     wt_mgr.remove_worktree(target, confirmed)?;
 
     // Clean metadata
-    let metadata_store =
-        crate::worktree_metadata_store::LocalWorktreeMetadataStore::default();
+    let metadata_store = crate::worktree_metadata_store::LocalWorktreeMetadataStore::default();
     let identity = z_core::domain::WorktreeIdentity {
         host: None,
         project_root: project.path.clone(),
@@ -1307,7 +1371,11 @@ fn cmd_doctor(fix: bool, interactive: bool) -> z_core::error::Result<String> {
                     let path_str = project.path.display();
                     if let Some(host) = project.host.as_deref() {
                         let remote_name = project.name.as_str();
-                        match worktree_manager::list_remote_worktrees_detailed(host, &project.path, remote_name) {
+                        match worktree_manager::list_remote_worktrees_detailed(
+                            host,
+                            &project.path,
+                            remote_name,
+                        ) {
                             Ok(worktrees) => {
                                 diagnostics.push(format!(
                                     "  ✓ {} remote:{} ({} worktree(s))",
@@ -1324,19 +1392,26 @@ fn cmd_doctor(fix: bool, interactive: bool) -> z_core::error::Result<String> {
                                     }
                                 }
                             }
-                            Err(e) => diagnostics.push(format!(
-                                "  ✗ {} remote unavailable: {}",
-                                project.name, e
-                            )),
+                            Err(e) => diagnostics
+                                .push(format!("  ✗ {} remote unavailable: {}", project.name, e)),
                         }
                     } else if !project.path.exists() {
-                        diagnostics.push(format!("  ✗ {}: path does not exist ({})", project.name, path_str));
+                        diagnostics.push(format!(
+                            "  ✗ {}: path does not exist ({})",
+                            project.name, path_str
+                        ));
                     } else if !project.path.join(".git").exists() {
-                        diagnostics.push(format!("  ✗ {}: not a git repository ({})", project.name, path_str));
+                        diagnostics.push(format!(
+                            "  ✗ {}: not a git repository ({})",
+                            project.name, path_str
+                        ));
                     } else {
                         let branch = worktree_manager::discover_primary_branch(&project.path)
                             .unwrap_or_else(|_| "unknown".to_string());
-                        diagnostics.push(format!("  ✓ {} ({}, primary: {})", project.name, path_str, branch));
+                        diagnostics.push(format!(
+                            "  ✓ {} ({}, primary: {})",
+                            project.name, path_str, branch
+                        ));
                         if let Ok(output) = std::process::Command::new("git")
                             .args(["worktree", "list", "--porcelain"])
                             .current_dir(&project.path)
@@ -1349,9 +1424,11 @@ fn cmd_doctor(fix: bool, interactive: bool) -> z_core::error::Result<String> {
                                 &project.path,
                                 None,
                             );
-                            let sessions = ZellijSessionManager { bin_path: resolve_bin_path() }
-                                .list_sessions(&project.name)
-                                .unwrap_or_default();
+                            let sessions = ZellijSessionManager {
+                                bin_path: resolve_bin_path(),
+                            }
+                            .list_sessions(&project.name)
+                            .unwrap_or_default();
                             let entries = z_core::worktree_topology::assemble_worktree_entries(
                                 project,
                                 worktrees.clone(),
@@ -1361,22 +1438,27 @@ fn cmd_doctor(fix: bool, interactive: bool) -> z_core::error::Result<String> {
                             );
                             for entry in &entries {
                                 match entry.status {
-                                    z_core::domain::WorktreeStatus::Conflict => diagnostics.push(format!(
-                                        "    ⚠ session-name conflict: {}",
-                                        entry
-                                            .discovered
-                                            .branch
-                                            .as_deref()
-                                            .unwrap_or("(detached)")
-                                    )),
-                                    z_core::domain::WorktreeStatus::Unsupported => diagnostics.push(format!(
-                                        "    ? unsupported detached worktree: {}",
-                                        entry.discovered.identity.worktree_path.display()
-                                    )),
+                                    z_core::domain::WorktreeStatus::Conflict => {
+                                        diagnostics.push(format!(
+                                            "    ⚠ session-name conflict: {}",
+                                            entry
+                                                .discovered
+                                                .branch
+                                                .as_deref()
+                                                .unwrap_or("(detached)")
+                                        ))
+                                    }
+                                    z_core::domain::WorktreeStatus::Unsupported => diagnostics
+                                        .push(format!(
+                                            "    ? unsupported detached worktree: {}",
+                                            entry.discovered.identity.worktree_path.display()
+                                        )),
                                     _ => {}
                                 }
                             }
-                            for session in z_core::worktree_topology::find_orphan_sessions(&sessions, &worktrees) {
+                            for session in z_core::worktree_topology::find_orphan_sessions(
+                                &sessions, &worktrees,
+                            ) {
                                 diagnostics.push(format!("    ⚠ orphan session: {}", session.name));
                             }
                         }
@@ -1394,8 +1476,7 @@ fn cmd_doctor(fix: bool, interactive: bool) -> z_core::error::Result<String> {
     // 3. Check metadata health
     diagnostics.push(String::new());
     diagnostics.push(" Metadata:".to_string());
-    let metadata_store =
-        crate::worktree_metadata_store::LocalWorktreeMetadataStore::default();
+    let metadata_store = crate::worktree_metadata_store::LocalWorktreeMetadataStore::default();
     match metadata_store.read_metadata() {
         Ok(meta) => {
             diagnostics.push(format!(
@@ -1453,9 +1534,9 @@ fn doctor_fix_metadata() -> z_core::error::Result<String> {
     let before_notifications = metadata.notifications.len();
     let before_llm_status = metadata.llm_status.len();
 
-    metadata.worktrees.retain(|record| {
-        record.host.is_some() || record.path.exists()
-    });
+    metadata
+        .worktrees
+        .retain(|record| record.host.is_some() || record.path.exists());
     metadata.notifications.retain(|notification| {
         metadata.worktrees.iter().any(|record| {
             record.host == notification.target.host
@@ -1528,10 +1609,16 @@ impl Drop for SwitchLockGuard {
 fn acquire_switch_lock(path: impl AsRef<Path>) -> io::Result<Option<SwitchLockGuard>> {
     let path = path.as_ref();
     loop {
-        match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
             Ok(mut file) => {
                 writeln!(file, "{}", std::process::id())?;
-                return Ok(Some(SwitchLockGuard { path: path.to_path_buf() }));
+                return Ok(Some(SwitchLockGuard {
+                    path: path.to_path_buf(),
+                }));
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 if switch_lock_owner_is_active(path) {
@@ -1552,7 +1639,11 @@ fn switch_lock_owner_is_active(path: &Path) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
     };
-    let Some(pid) = content.lines().next().and_then(|line| line.trim().parse::<u32>().ok()) else {
+    let Some(pid) = content
+        .lines()
+        .next()
+        .and_then(|line| line.trim().parse::<u32>().ok())
+    else {
         return false;
     };
     process_looks_like_z_switch(pid)
@@ -1563,9 +1654,7 @@ fn process_looks_like_z_switch(pid: u32) -> bool {
     let Ok(cmdline) = fs::read(cmdline_path) else {
         return false;
     };
-    cmdline
-        .split(|byte| *byte == 0)
-        .any(|arg| arg == b"switch")
+    cmdline.split(|byte| *byte == 0).any(|arg| arg == b"switch")
 }
 
 /// Launch the interactive session switch picker.
@@ -1594,7 +1683,8 @@ fn cmd_switch() -> z_core::error::Result<()> {
         .ok();
     let mut sessions = list_all_z_sessions_with_ages();
     z_core::activity::sort_by_recent_attach(&mut sessions, &activity, |s| s.0.as_str());
-    let mut switch_entries = build_switch_entries(sessions, metadata.as_ref(), &discovered, &global);
+    let mut switch_entries =
+        build_switch_entries(sessions, metadata.as_ref(), &discovered, &global);
     z_tui::sort_switch_entries(&mut switch_entries, &global.switcher.priority);
 
     let selected = z_tui::run_switch_picker_with_entries(switch_entries, current_session)
@@ -1663,14 +1753,18 @@ fn build_switch_entries(
                         .iter()
                         .filter(|status| status.target == worktree.identity)
                         .filter_map(|status| match status.state {
-                            z_core::domain::AgentActivityState::Waiting => Some(z_tui::SwitchAgentActivity {
-                                tool: status.tool.clone(),
-                                state: z_tui::SwitchAgentActivityState::Waiting,
-                                updated_at_ms: status.updated_at_ms,
-                                reason: status.reason.clone(),
-                            }),
+                            z_core::domain::AgentActivityState::Waiting => {
+                                Some(z_tui::SwitchAgentActivity {
+                                    tool: status.tool.clone(),
+                                    state: z_tui::SwitchAgentActivityState::Waiting,
+                                    updated_at_ms: status.updated_at_ms,
+                                    reason: status.reason.clone(),
+                                })
+                            }
                             z_core::domain::AgentActivityState::Working => {
-                                if z_core::agent_activity::working_status_is_fresh(status, now_ms, ttl_ms) {
+                                if z_core::agent_activity::working_status_is_fresh(
+                                    status, now_ms, ttl_ms,
+                                ) {
                                     Some(z_tui::SwitchAgentActivity {
                                         tool: status.tool.clone(),
                                         state: z_tui::SwitchAgentActivityState::Working,
@@ -1683,8 +1777,12 @@ fn build_switch_entries(
                             }
                         })
                         .max_by_key(|activity| match activity.state {
-                            z_tui::SwitchAgentActivityState::Waiting => (1u8, activity.updated_at_ms),
-                            z_tui::SwitchAgentActivityState::Working => (0u8, activity.updated_at_ms),
+                            z_tui::SwitchAgentActivityState::Waiting => {
+                                (1u8, activity.updated_at_ms)
+                            }
+                            z_tui::SwitchAgentActivityState::Working => {
+                                (0u8, activity.updated_at_ms)
+                            }
                         });
                 }
             }
@@ -1701,9 +1799,16 @@ fn build_switch_entries(
 }
 
 fn clear_metadata_after_session_entry(session_name: &str) {
-    if let Ok(NotifyTarget::Local(identity)) = resolve_notify_target(session_name) {
-        let _ = worktree_metadata_store::LocalWorktreeMetadataStore::default()
-            .clear_notifications(&identity);
+    match resolve_notify_target(session_name) {
+        Ok(NotifyTarget::Local(identity)) => {
+            let _ = worktree_metadata_store::LocalWorktreeMetadataStore::default()
+                .clear_notifications(&identity);
+        }
+        Ok(NotifyTarget::Remote { host, identity, .. }) => {
+            let _ = worktree_metadata_store::RemoteWorktreeMetadataStore::new(host)
+                .clear_notifications(&identity);
+        }
+        Err(_) => {}
     }
 }
 
@@ -1722,8 +1827,7 @@ fn cmd_logs_viewer() -> z_core::error::Result<()> {
     let logger = log::FileLogger::new();
     let entries = logger.read_recent(500);
     let lines: Vec<String> = entries.iter().map(|e| e.format()).collect();
-    z_tui::run_log_viewer(lines)
-        .map_err(|e| z_core::error::ZError::Io(e.to_string()))
+    z_tui::run_log_viewer(lines).map_err(|e| z_core::error::ZError::Io(e.to_string()))
 }
 
 /// Run the action picker inside a Zellij floating pane.
@@ -1732,8 +1836,8 @@ fn cmd_logs_viewer() -> z_core::error::Result<()> {
 fn cmd_actions() -> z_core::error::Result<()> {
     let session_name = resolve_required_session_env("actions")?;
 
-    let (project_name, branch) = session_manager::parse_session_name(&session_name)
-        .ok_or_else(|| {
+    let (project_name, branch) =
+        session_manager::parse_session_name(&session_name).ok_or_else(|| {
             z_core::error::ZError::Session(format!(
                 "cannot parse session name '{session_name}' (expected project:branch)"
             ))
@@ -1786,8 +1890,8 @@ fn cmd_actions() -> z_core::error::Result<()> {
         return Ok(());
     }
 
-    let selected = z_tui::run_action_picker(actions)
-        .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
+    let selected =
+        z_tui::run_action_picker(actions).map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
     if let Some(action) = selected {
         match &action.action {
@@ -1800,9 +1904,7 @@ fn cmd_actions() -> z_core::error::Result<()> {
                 })
                 .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
                 if !status.success() {
-                    return Err(z_core::error::ZError::Io(
-                        "action command failed".into(),
-                    ));
+                    return Err(z_core::error::ZError::Io("action command failed".into()));
                 }
             }
             z_core::action::ActionType::OpenUrl { url } => {
@@ -1847,20 +1949,21 @@ fn inject_claude_stop_hook(cwd: &std::path::Path) {
 // Notification command
 // ---------------------------------------------------------------------------
 
-/// Write a notification for `session` and dispatch it to configured channels.
-///
-/// This is the integration point for Claude Code hooks and other external
-/// triggers. The file is always written (for TUI badge); additional channels
-/// (macOS native, Telegram) are dispatched based on `~/.config/z/config.kdl`.
+/// Write a metadata-backed notification for `session` and dispatch configured channels.
 fn cmd_notify(session: &str, message: &str, level: NotifyLevel) -> z_core::error::Result<()> {
     migrate_local_metadata_if_needed()?;
     if let Ok(target) = resolve_notify_target(session) {
         match target {
             NotifyTarget::Local(identity) => {
-                worktree_metadata_store::LocalWorktreeMetadataStore::default()
-                    .add_notification(identity, level.clone(), message)?;
+                worktree_metadata_store::LocalWorktreeMetadataStore::default().add_notification(
+                    identity,
+                    level.clone(),
+                    message,
+                )?;
             }
-            NotifyTarget::Remote { host, session_name } => {
+            NotifyTarget::Remote {
+                host, session_name, ..
+            } => {
                 let remote_cmd = format!(
                     "z notify {} {} --level {}",
                     remote::shell_quote(&session_name),
@@ -1893,26 +1996,30 @@ fn cmd_notify_event(event: NotifyEventCommand) -> z_core::error::Result<()> {
             let activity_event = match event.kind {
                 NotifyEventKind::LlmWorking => z_core::agent_activity::AgentActivityEvent::Working,
                 NotifyEventKind::LlmIdle => z_core::agent_activity::AgentActivityEvent::Idle,
-                NotifyEventKind::LlmWaiting => z_core::agent_activity::AgentActivityEvent::Waiting {
-                    level: event.level.clone(),
-                    message: event
-                        .message
-                        .clone()
-                        .unwrap_or_else(|| default_waiting_message(&event.tool, event.reason.as_deref())),
-                },
+                NotifyEventKind::LlmWaiting => {
+                    z_core::agent_activity::AgentActivityEvent::Waiting {
+                        level: event.level.clone(),
+                        message: event.message.clone().unwrap_or_else(|| {
+                            default_waiting_message(&event.tool, event.reason.as_deref())
+                        }),
+                    }
+                }
             };
             apply_event_after_successful_migration(migrate_local_metadata_if_needed(), || {
-                worktree_metadata_store::LocalWorktreeMetadataStore::default().apply_agent_activity(
-                    identity,
-                    &event.tool,
-                    activity_event,
-                    event.reason,
-                    settings,
-                )?;
+                worktree_metadata_store::LocalWorktreeMetadataStore::default()
+                    .apply_agent_activity(
+                        identity,
+                        &event.tool,
+                        activity_event,
+                        event.reason,
+                        settings,
+                    )?;
                 Ok(())
             })
         }
-        NotifyTarget::Remote { host, session_name } => {
+        NotifyTarget::Remote {
+            host, session_name, ..
+        } => {
             let remote_cmd = event.to_remote_command(&session_name);
             remote::ssh_run_remote(&host, &remote_cmd)
         }
@@ -1932,7 +2039,11 @@ where
 
 enum NotifyTarget {
     Local(z_core::domain::WorktreeIdentity),
-    Remote { host: String, session_name: String },
+    Remote {
+        host: String,
+        session_name: String,
+        identity: z_core::domain::WorktreeIdentity,
+    },
 }
 
 fn resolve_notify_target(session_name: &str) -> z_core::error::Result<NotifyTarget> {
@@ -1945,13 +2056,19 @@ fn resolve_notify_target(session_name: &str) -> z_core::error::Result<NotifyTarg
         }
 
         let discovered = if let Some(host) = project.host.as_deref() {
-            worktree_manager::list_remote_worktrees_detailed(host, &project.path, &lookup_project_name)?
+            worktree_manager::list_remote_worktrees_detailed(
+                host,
+                &project.path,
+                &lookup_project_name,
+            )?
         } else {
             let output = std::process::Command::new("git")
                 .args(["worktree", "list", "--porcelain"])
                 .current_dir(&project.path)
                 .output()
-                .map_err(|e| z_core::error::ZError::Worktree(format!("git worktree list failed: {e}")))?;
+                .map_err(|e| {
+                    z_core::error::ZError::Worktree(format!("git worktree list failed: {e}"))
+                })?;
             if !output.status.success() {
                 return Err(z_core::error::ZError::Worktree(format!(
                     "git worktree list exited with status {}",
@@ -1973,23 +2090,21 @@ fn resolve_notify_target(session_name: &str) -> z_core::error::Result<NotifyTarg
                     Ok(NotifyTarget::Remote {
                         host,
                         session_name: session_name.to_string(),
+                        identity: worktree.identity,
                     })
                 } else {
                     Ok(NotifyTarget::Local(worktree.identity))
                 }
             }
-            z_core::domain::SessionAliasResolution::Ambiguous(_) => Err(
-                z_core::error::ZError::Session(format!(
+            z_core::domain::SessionAliasResolution::Ambiguous(_) => {
+                Err(z_core::error::ZError::Session(format!(
                     "session {} resolves to multiple worktrees",
                     session_name
-                )),
-            ),
-            z_core::domain::SessionAliasResolution::None => Err(
-                z_core::error::ZError::Session(format!(
-                    "session {} does not resolve to a worktree",
-                    session_name
-                )),
-            ),
+                )))
+            }
+            z_core::domain::SessionAliasResolution::None => Err(z_core::error::ZError::Session(
+                format!("session {} does not resolve to a worktree", session_name),
+            )),
         };
     }
 
@@ -2084,7 +2199,11 @@ fn resolve_notify_command_args(
         resolve_notify_event_args(args, env_session).map(NotifyCommand::Event)
     } else {
         let (session, message, level) = resolve_notify_args(args, env_session)?;
-        Ok(NotifyCommand::Legacy { session, message, level })
+        Ok(NotifyCommand::Legacy {
+            session,
+            message,
+            level,
+        })
     }
 }
 
@@ -2104,7 +2223,9 @@ fn resolve_notify_event_args(
     while i < args.len() {
         match args[i].as_str() {
             "--event" => {
-                let value = args.get(i + 1).ok_or_else(|| "--event requires a value".to_string())?;
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--event requires a value".to_string())?;
                 event = Some(match value.as_str() {
                     "llm.working" => NotifyEventKind::LlmWorking,
                     "llm.idle" => NotifyEventKind::LlmIdle,
@@ -2146,18 +2267,28 @@ fn resolve_notify_event_args(
                 i += 2;
             }
             "--level" => {
-                let value = args.get(i + 1).ok_or_else(|| "--level requires a value".to_string())?;
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--level requires a value".to_string())?;
                 level_seen = true;
                 level = match value.as_str() {
                     "info" => NotifyLevel::Info,
                     "warning" => NotifyLevel::Warning,
                     "error" => NotifyLevel::Error,
-                    _ => return Err("event mode --level must be info, warning, or error".to_string()),
+                    _ => {
+                        return Err("event mode --level must be info, warning, or error".to_string())
+                    }
                 };
                 i += 2;
             }
-            arg if arg.starts_with("--") => return Err(format!("unknown notify event flag: {arg}")),
-            arg => return Err(format!("event mode does not accept positional argument: {arg}")),
+            arg if arg.starts_with("--") => {
+                return Err(format!("unknown notify event flag: {arg}"))
+            }
+            arg => {
+                return Err(format!(
+                    "event mode does not accept positional argument: {arg}"
+                ))
+            }
         }
     }
 
@@ -2165,7 +2296,10 @@ fn resolve_notify_event_args(
     let tool = tool.ok_or_else(|| "--tool is required for llm events".to_string())?;
     let session = session
         .or_else(|| env_session.map(str::to_string))
-        .ok_or_else(|| "no session specified and neither Z_SESSION_NAME nor ZELLIJ_SESSION_NAME is set".to_string())?;
+        .ok_or_else(|| {
+            "no session specified and neither Z_SESSION_NAME nor ZELLIJ_SESSION_NAME is set"
+                .to_string()
+        })?;
 
     match kind {
         NotifyEventKind::LlmWorking | NotifyEventKind::LlmIdle if message.is_some() => Err(
@@ -2271,7 +2405,10 @@ mod tests {
             Ok(())
         }
 
-        fn update_project(&mut self, _project: &z_core::domain::Project) -> z_core::error::Result<()> {
+        fn update_project(
+            &mut self,
+            _project: &z_core::domain::Project,
+        ) -> z_core::error::Result<()> {
             Ok(())
         }
 
@@ -2359,7 +2496,10 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].notification_count, 1);
-        assert_eq!(entries[0].notifications[0].message, "OpenCode needs permission");
+        assert_eq!(
+            entries[0].notifications[0].message,
+            "OpenCode needs permission"
+        );
         assert_eq!(
             entries[0].activity.as_ref().map(|activity| activity.state),
             Some(z_tui::SwitchAgentActivityState::Waiting)
@@ -2438,7 +2578,9 @@ mod tests {
         let mut called = false;
 
         let result = apply_event_after_successful_migration(
-            Err(z_core::error::ZError::MetadataCorrupt("bad json".to_string())),
+            Err(z_core::error::ZError::MetadataCorrupt(
+                "bad json".to_string(),
+            )),
             || {
                 called = true;
                 Ok(())
@@ -2446,7 +2588,10 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(!called, "event mutation must not run after migration failure");
+        assert!(
+            !called,
+            "event mutation must not run after migration failure"
+        );
     }
 
     #[test]
@@ -2457,10 +2602,19 @@ mod tests {
 
         let lock = acquire_switch_lock(&path).unwrap();
 
-        assert!(lock.is_some(), "stale lock should be replaced by a live lock");
-        assert_eq!(fs::read_to_string(&path).unwrap().trim(), std::process::id().to_string());
+        assert!(
+            lock.is_some(),
+            "stale lock should be replaced by a live lock"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap().trim(),
+            std::process::id().to_string()
+        );
         drop(lock);
-        assert!(!path.exists(), "lock guard should remove the lock file on drop");
+        assert!(
+            !path.exists(),
+            "lock guard should remove the lock file on drop"
+        );
     }
 
     #[test]
@@ -2471,9 +2625,15 @@ mod tests {
 
         let lock = acquire_switch_lock(&path).unwrap();
 
-        assert!(lock.is_some(), "invalid lock contents should be treated as stale");
+        assert!(
+            lock.is_some(),
+            "invalid lock contents should be treated as stale"
+        );
         drop(lock);
-        assert!(!path.exists(), "lock guard should remove the lock file on drop");
+        assert!(
+            !path.exists(),
+            "lock guard should remove the lock file on drop"
+        );
     }
 
     #[test]
@@ -2604,8 +2764,7 @@ mod tests {
     #[test]
     fn resolve_notify_args_one_positional_with_env_uses_env_session() {
         let args = vec!["hello world".into()];
-        let (session, message, level) =
-            resolve_notify_args(&args, Some("env-session")).unwrap();
+        let (session, message, level) = resolve_notify_args(&args, Some("env-session")).unwrap();
         assert_eq!(session, "env-session");
         assert_eq!(message, "hello world");
         assert_eq!(level, NotifyLevel::Info);
@@ -2615,7 +2774,10 @@ mod tests {
     fn resolve_notify_args_one_positional_no_env_returns_error() {
         let args = vec!["hello world".into()];
         let err = resolve_notify_args(&args, None).unwrap_err();
-        assert!(err.contains("Z_SESSION_NAME"), "error should mention env var: {err}");
+        assert!(
+            err.contains("Z_SESSION_NAME"),
+            "error should mention env var: {err}"
+        );
     }
 
     #[test]
@@ -2641,13 +2803,8 @@ mod tests {
 
     #[test]
     fn resolve_notify_args_one_positional_with_level_and_env() {
-        let args: Vec<String> = vec![
-            "deploy done".into(),
-            "--level".into(),
-            "error".into(),
-        ];
-        let (session, message, level) =
-            resolve_notify_args(&args, Some("env-session")).unwrap();
+        let args: Vec<String> = vec!["deploy done".into(), "--level".into(), "error".into()];
+        let (session, message, level) = resolve_notify_args(&args, Some("env-session")).unwrap();
         assert_eq!(session, "env-session");
         assert_eq!(message, "deploy done");
         assert_eq!(level, NotifyLevel::Error);
@@ -2708,7 +2865,10 @@ mod tests {
         assert_eq!(command.session, "myapp:main");
         assert_eq!(command.kind, NotifyEventKind::LlmWaiting);
         assert_eq!(command.reason.as_deref(), Some("permission"));
-        assert_eq!(command.message.as_deref(), Some("OpenCode needs permission"));
+        assert_eq!(
+            command.message.as_deref(),
+            Some("OpenCode needs permission")
+        );
         assert_eq!(command.level, NotifyLevel::Error);
     }
 
@@ -2734,7 +2894,10 @@ mod tests {
         assert_eq!(command.session, "myapp:main");
         assert_eq!(command.kind, NotifyEventKind::LlmWaiting);
         assert_eq!(command.reason.as_deref(), Some("input"));
-        assert_eq!(command.message.as_deref(), Some("OpenCode is waiting for input"));
+        assert_eq!(
+            command.message.as_deref(),
+            Some("OpenCode is waiting for input")
+        );
         assert_eq!(command.level, NotifyLevel::Info);
     }
 
@@ -2852,10 +3015,18 @@ mod tests {
         let _guard = SESSION_ENV_MUTEX.lock().unwrap();
         clear_session_env();
 
-        let err = resolve_required_session_env("switch").unwrap_err().to_string();
+        let err = resolve_required_session_env("switch")
+            .unwrap_err()
+            .to_string();
 
-        assert!(err.contains("Z_SESSION_NAME"), "error should mention Z_SESSION_NAME: {err}");
-        assert!(err.contains("ZELLIJ_SESSION_NAME"), "error should mention ZELLIJ_SESSION_NAME: {err}");
+        assert!(
+            err.contains("Z_SESSION_NAME"),
+            "error should mention Z_SESSION_NAME: {err}"
+        );
+        assert!(
+            err.contains("ZELLIJ_SESSION_NAME"),
+            "error should mention ZELLIJ_SESSION_NAME: {err}"
+        );
         clear_session_env();
     }
 
@@ -2902,14 +3073,20 @@ mod tests {
     fn format_workflow_list_includes_trigger() {
         let wfs = builtin_workflows().unwrap();
         let output = format_workflow_list(&wfs);
-        assert!(output.contains("post-push"), "must show trigger for pr-ci-fix");
+        assert!(
+            output.contains("post-push"),
+            "must show trigger for pr-ci-fix"
+        );
     }
 
     #[test]
     fn format_workflow_list_includes_description() {
         let wfs = builtin_workflows().unwrap();
         let output = format_workflow_list(&wfs);
-        assert!(output.contains("Monitor CI"), "must include pr-ci-fix description");
+        assert!(
+            output.contains("Monitor CI"),
+            "must include pr-ci-fix description"
+        );
     }
 
     // ── format_run_status tests ───────────────────────────────────────────────
@@ -3055,10 +3232,22 @@ mod tests {
         let config_file = project_path.join(".config").join("z.kdl");
         assert!(config_file.exists(), ".config/z.kdl should be created");
         let contents = fs::read_to_string(&config_file).unwrap();
-        assert!(contents.contains("layout"), "template should mention layout");
-        assert!(contents.contains("claude"), "template should mention claude");
-        assert!(contents.contains("deploy"), "template should mention deploy");
-        assert!(contents.contains("autopilot"), "template should mention autopilot");
+        assert!(
+            contents.contains("layout"),
+            "template should mention layout"
+        );
+        assert!(
+            contents.contains("claude"),
+            "template should mention claude"
+        );
+        assert!(
+            contents.contains("deploy"),
+            "template should mention deploy"
+        );
+        assert!(
+            contents.contains("autopilot"),
+            "template should mention autopilot"
+        );
     }
 
     #[test]
@@ -3075,7 +3264,10 @@ mod tests {
         cmd_edit_per_repo_config(&project_path).expect("should succeed");
 
         let contents = fs::read_to_string(&config_file).unwrap();
-        assert_eq!(contents, original, "existing file should not be overwritten");
+        assert_eq!(
+            contents, original,
+            "existing file should not be overwritten"
+        );
     }
 
     #[test]
@@ -3092,7 +3284,10 @@ mod tests {
         let project_path = unique_test_dir("missing_editor");
         std::env::set_var("EDITOR", "/nonexistent/editor/binary");
         let result = cmd_edit_per_repo_config(&project_path);
-        assert!(result.is_err(), "should fail when editor binary doesn't exist");
+        assert!(
+            result.is_err(),
+            "should fail when editor binary doesn't exist"
+        );
     }
 
     #[test]
@@ -3108,7 +3303,10 @@ mod tests {
         std::env::set_var("EDITOR", "true");
         cmd_edit_per_repo_config(&project_path).expect("should succeed");
 
-        assert!(marker.exists(), "unrelated files in .config/ should be preserved");
+        assert!(
+            marker.exists(),
+            "unrelated files in .config/ should be preserved"
+        );
         assert_eq!(fs::read_to_string(&marker).unwrap(), "keep me");
     }
 }
@@ -3158,12 +3356,10 @@ fn cmd_autopilot_dispatch(sub: Option<&str>, args: &[String]) -> z_core::error::
             }
             cmd_autopilot_run(project, workflow)
         }
-        Some(unknown) => {
-            Err(z_core::error::ZError::Io(format!(
-                "unknown autopilot subcommand: {:?}\nusage: z autopilot [list|status|prune|run]",
-                unknown
-            )))
-        }
+        Some(unknown) => Err(z_core::error::ZError::Io(format!(
+            "unknown autopilot subcommand: {:?}\nusage: z autopilot [list|status|prune|run]",
+            unknown
+        ))),
     }
 }
 
@@ -3176,7 +3372,9 @@ pub fn cmd_autopilot_list(project_path: Option<&std::path::Path>) -> z_core::err
     Ok(())
 }
 
-fn load_autopilot_workflows(project_path: Option<&std::path::Path>) -> z_core::error::Result<Vec<AutopilotWorkflow>> {
+fn load_autopilot_workflows(
+    project_path: Option<&std::path::Path>,
+) -> z_core::error::Result<Vec<AutopilotWorkflow>> {
     let mut all_workflows: Vec<AutopilotWorkflow> = builtin_workflows()
         .map_err(|e| z_core::error::ZError::Io(format!("load built-in workflows: {e}")))?;
 
@@ -3185,7 +3383,11 @@ fn load_autopilot_workflows(project_path: Option<&std::path::Path>) -> z_core::e
         if let Ok(content) = fs::read_to_string(&repo_config_path) {
             match repo_config::parse_repo_config_projection(&content) {
                 Ok(projection) => all_workflows.extend(projection.workflows),
-                Err(e) => eprintln!("warning: failed to parse {}: {}", repo_config_path.display(), e),
+                Err(e) => eprintln!(
+                    "warning: failed to parse {}: {}",
+                    repo_config_path.display(),
+                    e
+                ),
             }
         }
     }
@@ -3208,8 +3410,8 @@ fn cmd_autopilot_run(project_name: &str, workflow_name: &str) -> z_core::error::
         })?;
 
     let global = load_global_config();
-    let notify_session = resolve_session_env()
-        .unwrap_or_else(|| format!("{}:autopilot", project.name));
+    let notify_session =
+        resolve_session_env().unwrap_or_else(|| format!("{}:autopilot", project.name));
     let event_notifier = DispatchNotifier::from_config(&global.notifications, &notify_session);
     let step_notifier = DispatchNotifier::from_config(&global.notifications, &notify_session);
     let executor = autopilot_runner::CliStepExecutor::new(
@@ -3238,7 +3440,8 @@ pub fn cmd_autopilot_status(project_filter: Option<&str>) -> z_core::error::Resu
     let state_dir = autopilot_state_dir();
     let runs = list_runs(&state_dir)?;
 
-    let filtered: Vec<&WorkflowRun> = runs.iter()
+    let filtered: Vec<&WorkflowRun> = runs
+        .iter()
         .filter(|r| project_filter.map_or(true, |p| r.project == p))
         .collect();
 
@@ -3275,7 +3478,10 @@ pub fn format_workflow_list(workflows: &[AutopilotWorkflow]) -> String {
     for wf in workflows {
         let desc = wf.description.as_deref().unwrap_or("");
         let trigger = wf.trigger.as_str();
-        out.push_str(&format!("  {:30}  trigger: {:25}  {}\n", wf.name, trigger, desc));
+        out.push_str(&format!(
+            "  {:30}  trigger: {:25}  {}\n",
+            wf.name, trigger, desc
+        ));
     }
     out
 }
@@ -3338,7 +3544,9 @@ pub fn format_run_loop_report(report: &RunLoopReport) -> String {
 
 fn cmd_list() -> z_core::error::Result<()> {
     let store = KdlProjectStore::new();
-    let session_mgr = ZellijSessionManager { bin_path: resolve_bin_path() };
+    let session_mgr = ZellijSessionManager {
+        bin_path: resolve_bin_path(),
+    };
 
     let projects = store.list_projects()?;
 
@@ -3353,8 +3561,7 @@ fn cmd_list() -> z_core::error::Result<()> {
         // Remote projects: list sessions on the remote host via SSH.
         // Local projects: query the local Zellij instance.
         let sessions = if let Some(host) = &project.host {
-            match remote::list_remote_sessions(host, &project.name)
-            {
+            match remote::list_remote_sessions(host, &project.name) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!(

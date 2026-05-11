@@ -204,27 +204,14 @@ pub enum WorktreeStatus {
 pub enum WorktreeDiagnostic {
     DetachedHead,
     SessionNameCollision(Vec<String>),
-    StaleMetadataPath {
-        stored: PathBuf,
-        actual: PathBuf,
-    },
-    StaleMetadataBranch {
-        stored: String,
-        actual: String,
-    },
-    StaleProjectName {
-        stored: String,
-        actual: String,
-    },
+    StaleMetadataPath { stored: PathBuf, actual: PathBuf },
+    StaleMetadataBranch { stored: String, actual: String },
+    StaleProjectName { stored: String, actual: String },
     NoUpstream,
     RemoteUnavailable,
     MetadataUnavailable,
-    SessionOrphan {
-        session_name: String,
-    },
-    UnattachedNotification {
-        id: String,
-    },
+    SessionOrphan { session_name: String },
+    UnattachedNotification { id: String },
 }
 
 /// Describes how a worktree relates to a Zellij session.
@@ -413,9 +400,7 @@ pub fn resolve_session_alias(
     match matching.len() {
         0 => SessionAliasResolution::None,
         1 => SessionAliasResolution::Unique(matching[0].clone()),
-        _ => SessionAliasResolution::Ambiguous(
-            matching.into_iter().cloned().collect(),
-        ),
+        _ => SessionAliasResolution::Ambiguous(matching.into_iter().cloned().collect()),
     }
 }
 
@@ -743,7 +728,12 @@ mod tests {
     #[test]
     fn resolve_unique_match_by_branch() {
         let worktrees = vec![
-            make_wt("myapp", "/repo", "/repo/.worktrees/feat-login", Some("feat/login")),
+            make_wt(
+                "myapp",
+                "/repo",
+                "/repo/.worktrees/feat-login",
+                Some("feat/login"),
+            ),
             make_wt("myapp", "/repo", "/repo/.worktrees/other", Some("other")),
         ];
         let result = resolve_session_alias("myapp:feat-login", &worktrees);
@@ -769,8 +759,18 @@ mod tests {
     fn resolve_ambiguous_on_collision() {
         // Two different branches that produce the same sanitized session name
         let worktrees = vec![
-            make_wt("myapp", "/repo", "/repo/.worktrees/feat-login", Some("feat/login")),
-            make_wt("myapp", "/repo", "/repo/.worktrees/feat-login-2", Some("feat-login")),
+            make_wt(
+                "myapp",
+                "/repo",
+                "/repo/.worktrees/feat-login",
+                Some("feat/login"),
+            ),
+            make_wt(
+                "myapp",
+                "/repo",
+                "/repo/.worktrees/feat-login-2",
+                Some("feat-login"),
+            ),
         ];
         let result = resolve_session_alias("myapp:feat-login", &worktrees);
         assert!(matches!(result, SessionAliasResolution::Ambiguous(_)));
@@ -797,12 +797,7 @@ mod tests {
 
     #[test]
     fn resolve_detached_head_uses_head_as_branch() {
-        let worktrees = vec![make_wt(
-            "myapp",
-            "/repo",
-            "/repo/.worktrees/detached",
-            None,
-        )];
+        let worktrees = vec![make_wt("myapp", "/repo", "/repo/.worktrees/detached", None)];
         let result = resolve_session_alias("myapp:HEAD", &worktrees);
         assert!(matches!(result, SessionAliasResolution::Unique(_)));
     }

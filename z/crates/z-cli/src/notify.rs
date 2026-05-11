@@ -75,22 +75,14 @@ impl Notifier for TelegramNotifier {
             NotifyLevel::Error => "\u{274c} ",
         };
         let text = format!("{}{}", prefix, message);
-        let url = format!(
-            "https://api.telegram.org/bot{}/sendMessage",
-            self.token
-        );
+        let url = format!("https://api.telegram.org/bot{}/sendMessage", self.token);
         let body = format!(
             "chat_id={}&text={}",
             percent_encode(&self.chat_id),
             percent_encode(&text)
         );
         let status = std::process::Command::new("curl")
-            .args([
-                "-s",
-                "-X", "POST",
-                &url,
-                "--data", &body,
-            ])
+            .args(["-s", "-X", "POST", &url, "--data", &body])
             .status()
             .map_err(|e| ZError::Io(format!("curl (telegram): {}", e)))?;
         if !status.success() {
@@ -143,8 +135,7 @@ impl DispatchNotifier {
         }
 
         if config.telegram {
-            if let (Some(token), Some(chat_id)) =
-                (&config.telegram_token, &config.telegram_chat_id)
+            if let (Some(token), Some(chat_id)) = (&config.telegram_token, &config.telegram_chat_id)
             {
                 notifiers.push(Box::new(TelegramNotifier {
                     token: token.clone(),
@@ -191,7 +182,10 @@ mod tests {
     impl MockNotifier {
         fn new() -> (Self, Arc<Mutex<Vec<(String, NotifyLevel)>>>) {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let notifier = Self { calls: Arc::clone(&calls), fail: false };
+            let notifier = Self {
+                calls: Arc::clone(&calls),
+                fail: false,
+            };
             (notifier, calls)
         }
 
@@ -203,7 +197,10 @@ mod tests {
 
     impl Notifier for MockNotifier {
         fn notify(&self, message: &str, level: NotifyLevel) -> Result<()> {
-            self.calls.lock().unwrap().push((message.to_string(), level));
+            self.calls
+                .lock()
+                .unwrap()
+                .push((message.to_string(), level));
             if self.fail {
                 Err(ZError::Io("mock failure".to_string()))
             } else {

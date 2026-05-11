@@ -15,9 +15,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use z_core::domain::{
-    DiscoveredWorktree, NotifyLevel, UnattachedActivity,
-    NotificationRecord, UnattachedNotification, WorktreeIdentity,
-    WorktreeMetadataFile, WorktreeMetadataRecord,
+    DiscoveredWorktree, NotificationRecord, NotifyLevel, UnattachedActivity,
+    UnattachedNotification, WorktreeIdentity, WorktreeMetadataFile, WorktreeMetadataRecord,
 };
 use z_core::error::{Result, ZError};
 use z_core::traits::WorktreeMetadataStore;
@@ -96,6 +95,19 @@ impl RemoteWorktreeMetadataStore {
         }
         data
     }
+
+    /// Clear notifications attached to a remote Worktree identity after successful entry.
+    pub fn clear_notifications(&self, identity: &WorktreeIdentity) -> Result<()> {
+        let mut file = self.read_metadata()?;
+        file.version = CURRENT_VERSION;
+        file.notifications
+            .retain(|notification| notification.target != *identity);
+        file.llm_status.retain(|status| {
+            !(status.target == *identity
+                && matches!(status.state, z_core::domain::AgentActivityState::Waiting))
+        });
+        self.write_metadata(&file)
+    }
 }
 
 impl LocalWorktreeMetadataStore {
@@ -163,9 +175,7 @@ impl LocalWorktreeMetadataStore {
                 }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                     if attempt + 1 < LOCK_RETRY_COUNT {
-                        std::thread::sleep(std::time::Duration::from_millis(
-                            LOCK_RETRY_DELAY_MS,
-                        ));
+                        std::thread::sleep(std::time::Duration::from_millis(LOCK_RETRY_DELAY_MS));
                     } else {
                         return Err(ZError::MetadataLock(format!(
                             "lock file exists after {LOCK_RETRY_COUNT} retries: {}",
@@ -250,12 +260,13 @@ impl LocalWorktreeMetadataStore {
 
         let legacy_notifications = self.read_legacy_notifications(&notifications_path);
         let mut report = MigrationReport::default();
-        let mut cleaned_sessions: Vec<String> = Vec::new();
+        let mut files_to_cleanup: Vec<PathBuf> = Vec::new();
 
         for (session_name, notifications) in &legacy_notifications {
             for (file_id, level, message, created_at) in notifications {
                 let dedup_key = format!("{session_name}/{file_id}");
                 if metadata.migrated_legacy_ids.contains(&dedup_key) {
+                    files_to_cleanup.push(notifications_path.join(session_name).join(file_id));
                     continue; // already migrated
                 }
 
@@ -292,9 +303,8 @@ impl LocalWorktreeMetadataStore {
                         report.unattached_notifications += 1;
                     }
                 }
+                files_to_cleanup.push(notifications_path.join(session_name).join(file_id));
             }
-            // Mark session directory for cleanup only if we migrated any new files
-            cleaned_sessions.push(session_name.clone());
         }
 
         if report.migrated_notifications > 0 || report.unattached_notifications > 0 {
@@ -302,11 +312,13 @@ impl LocalWorktreeMetadataStore {
             self.write_atomic_unlocked(&metadata)?;
         }
 
-        // Delete legacy files only after metadata write succeeded
-        if !cleaned_sessions.is_empty() && notifications_path.exists() {
-            for session_name in &cleaned_sessions {
-                let dir = notifications_path.join(session_name);
-                let _ = fs::remove_dir_all(&dir);
+        // Delete only files that were successfully read and represented in metadata.
+        if !files_to_cleanup.is_empty() && notifications_path.exists() {
+            for file in &files_to_cleanup {
+                let _ = fs::remove_file(file);
+                if let Some(dir) = file.parent() {
+                    let _ = fs::remove_dir(dir);
+                }
             }
         }
 
@@ -343,7 +355,10 @@ impl LocalWorktreeMetadataStore {
             match resolution {
                 z_core::domain::SessionAliasResolution::Unique(wt) => {
                     let record = ensure_worktree_record(&mut metadata_records, &wt);
-                    if record.last_opened_at.map_or(true, |existing| *ts > existing) {
+                    if record
+                        .last_opened_at
+                        .map_or(true, |existing| *ts > existing)
+                    {
                         record.last_opened_at = Some(*ts);
                     }
                     record.last_session_name = Some(session_name.clone());
@@ -365,9 +380,9 @@ impl LocalWorktreeMetadataStore {
                         last_attached_at: *ts,
                     });
                     report.unattached_activity += 1;
-                    report
-                        .diagnostics
-                        .push(format!("unresolved session name (activity): {session_name}"));
+                    report.diagnostics.push(format!(
+                        "unresolved session name (activity): {session_name}"
+                    ));
                 }
             }
         }
@@ -421,10 +436,8 @@ impl LocalWorktreeMetadataStore {
             return std::collections::HashMap::new();
         }
 
-        let mut result: std::collections::HashMap<
-            String,
-            Vec<(String, NotifyLevel, String, u64)>,
-        > = std::collections::HashMap::new();
+        let mut result: std::collections::HashMap<String, Vec<(String, NotifyLevel, String, u64)>> =
+            std::collections::HashMap::new();
 
         let entries = match fs::read_dir(&base) {
             Ok(e) => e,
@@ -452,10 +465,7 @@ impl LocalWorktreeMetadataStore {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
-                let id = file_entry
-                    .file_name()
-                    .to_string_lossy()
-                    .to_string();
+                let id = file_entry.file_name().to_string_lossy().to_string();
                 let created_at = file_entry
                     .path()
                     .file_stem()
@@ -527,8 +537,10 @@ impl LocalWorktreeMetadataStore {
     pub fn remove_worktree(&self, identity: &WorktreeIdentity) -> Result<()> {
         self.update_metadata(|file| {
             file.version = CURRENT_VERSION;
-            file.worktrees.retain(|record| !record_matches_identity(record, identity));
-            file.notifications.retain(|notification| notification.target != *identity);
+            file.worktrees
+                .retain(|record| !record_matches_identity(record, identity));
+            file.notifications
+                .retain(|notification| notification.target != *identity);
             file.llm_status.retain(|status| status.target != *identity);
         })
     }
@@ -578,7 +590,8 @@ impl LocalWorktreeMetadataStore {
     pub fn clear_notifications(&self, identity: &WorktreeIdentity) -> Result<()> {
         self.update_metadata(|file| {
             file.version = CURRENT_VERSION;
-            file.notifications.retain(|notification| notification.target != *identity);
+            file.notifications
+                .retain(|notification| notification.target != *identity);
             file.llm_status.retain(|status| {
                 !(status.target == *identity
                     && matches!(status.state, z_core::domain::AgentActivityState::Waiting))
@@ -625,34 +638,45 @@ impl LocalWorktreeMetadataStore {
         discovered: Option<&[z_core::domain::DiscoveredWorktree]>,
     ) -> Result<std::collections::HashSet<String>> {
         let file = self.read_metadata()?;
-        let mut aliases = std::collections::HashSet::new();
-        for notification in &file.notifications {
-            // Try matching against discovered worktrees first (more complete)
-            if let Some(discovered) = discovered {
-                if let Some(wt) = discovered.iter().find(|wt| wt.identity == notification.target) {
-                    if let Some(branch) = &wt.branch {
-                        aliases.insert(z_core::domain::derive_session_name(
-                            &wt.project_name,
-                            branch,
-                        ));
-                        continue;
-                    }
-                }
-            }
-            // Fall back to metadata records
-            if let Some(record) = file
-                .worktrees
+        Ok(notification_aliases_from_metadata(&file, discovered))
+    }
+}
+
+pub(crate) fn notification_aliases_from_metadata(
+    file: &WorktreeMetadataFile,
+    discovered: Option<&[z_core::domain::DiscoveredWorktree]>,
+) -> std::collections::HashSet<String> {
+    let mut aliases = std::collections::HashSet::new();
+    for notification in &file.notifications {
+        if let Some(discovered) = discovered {
+            if let Some(wt) = discovered
                 .iter()
-                .find(|record| record_matches_identity(record, &notification.target))
+                .find(|wt| wt.identity == notification.target)
             {
-                if let Some(branch) = record.branch.as_deref() {
-                    aliases
-                        .insert(z_core::domain::derive_session_name(&record.project_name, branch));
+                if let Some(branch) = &wt.branch {
+                    aliases.insert(z_core::domain::derive_session_name(
+                        &wt.project_name,
+                        branch,
+                    ));
+                    continue;
                 }
             }
         }
-        Ok(aliases)
+
+        if let Some(record) = file
+            .worktrees
+            .iter()
+            .find(|record| record_matches_identity(record, &notification.target))
+        {
+            if let Some(branch) = record.branch.as_deref() {
+                aliases.insert(z_core::domain::derive_session_name(
+                    &record.project_name,
+                    branch,
+                ));
+            }
+        }
     }
+    aliases
 }
 
 impl WorktreeMetadataStore for LocalWorktreeMetadataStore {
@@ -1092,9 +1116,7 @@ mod tests {
             Some("feat/login"),
         )];
 
-        let report = store
-            .migrate_legacy_activity(&worktrees)
-            .unwrap();
+        let report = store.migrate_legacy_activity(&worktrees).unwrap();
 
         assert_eq!(report.migrated_worktrees, 1);
         assert_eq!(report.unattached_activity, 0);
@@ -1142,11 +1164,7 @@ mod tests {
         let notif_base = test_dir();
         let session_dir = notif_base.join("myapp:ghost");
         fs::create_dir_all(&session_dir).unwrap();
-        fs::write(
-            session_dir.join("123_0"),
-            "warning\nLegacy notification",
-        )
-        .unwrap();
+        fs::write(session_dir.join("123_0"), "warning\nLegacy notification").unwrap();
 
         let worktrees = vec![];
 
@@ -1235,8 +1253,14 @@ mod tests {
         };
 
         let local_view = store.apply_local_host(data);
-        assert_eq!(local_view.worktrees[0].host.as_deref(), Some("remote.example"));
-        assert_eq!(local_view.notifications[0].target.host.as_deref(), Some("remote.example"));
+        assert_eq!(
+            local_view.worktrees[0].host.as_deref(),
+            Some("remote.example")
+        );
+        assert_eq!(
+            local_view.notifications[0].target.host.as_deref(),
+            Some("remote.example")
+        );
 
         let remote_file = store.strip_local_host(local_view);
         assert_eq!(remote_file.worktrees[0].host, None);
@@ -1297,7 +1321,11 @@ mod tests {
             migrated_legacy_ids: std::collections::HashSet::new(),
         };
         fs::create_dir_all(&dir).unwrap();
-        fs::write(store.metadata_path(), serde_json::to_vec_pretty(&data).unwrap()).unwrap();
+        fs::write(
+            store.metadata_path(),
+            serde_json::to_vec_pretty(&data).unwrap(),
+        )
+        .unwrap();
 
         drop(guard);
         let report = handle.join().unwrap();
@@ -1317,12 +1345,7 @@ mod tests {
         activity.insert("myapp:main".to_string(), 1_800_000_000u64); // newer
         write_legacy_activity(&dir, &activity);
 
-        let worktrees = vec![make_discovered_wt(
-            "myapp",
-            "/repo",
-            "/repo",
-            Some("main"),
-        )];
+        let worktrees = vec![make_discovered_wt("myapp", "/repo", "/repo", Some("main"))];
 
         let _report = store.migrate_legacy_activity(&worktrees).unwrap();
         let metadata = store.read_metadata().unwrap();
@@ -1359,10 +1382,13 @@ mod tests {
         store.write_metadata(&data).unwrap();
 
         // Create legacy notification files
-        write_legacy_notification(&notif_base, "myapp:main", "1710000000_0", "info\nBuild done");
-        let worktrees = vec![make_discovered_wt(
-            "myapp", "/repo", "/repo", Some("main"),
-        )];
+        write_legacy_notification(
+            &notif_base,
+            "myapp:main",
+            "1710000000_0",
+            "info\nBuild done",
+        );
+        let worktrees = vec![make_discovered_wt("myapp", "/repo", "/repo", Some("main"))];
 
         let report = store
             .drain_legacy_notifications(&worktrees, Some(&notif_base))
@@ -1385,10 +1411,13 @@ mod tests {
         let (store, dir) = temp_store();
         let notif_base = test_dir();
 
-        write_legacy_notification(&notif_base, "myapp:main", "1710000000_0", "info\nBuild done");
-        let worktrees = vec![make_discovered_wt(
-            "myapp", "/repo", "/repo", Some("main"),
-        )];
+        write_legacy_notification(
+            &notif_base,
+            "myapp:main",
+            "1710000000_0",
+            "info\nBuild done",
+        );
+        let worktrees = vec![make_discovered_wt("myapp", "/repo", "/repo", Some("main"))];
 
         // First drain
         let report1 = store
@@ -1415,7 +1444,12 @@ mod tests {
         let (store, dir) = temp_store();
         let notif_base = test_dir();
 
-        write_legacy_notification(&notif_base, "myapp:ghost", "1710000000_0", "warning\nUnknown session");
+        write_legacy_notification(
+            &notif_base,
+            "myapp:ghost",
+            "1710000000_0",
+            "warning\nUnknown session",
+        );
         let worktrees = vec![]; // no matching worktrees
 
         let report = store
@@ -1425,7 +1459,10 @@ mod tests {
         assert_eq!(report.unattached_notifications, 1);
         let metadata = store.read_metadata().unwrap();
         assert_eq!(metadata.unattached_notifications.len(), 1);
-        assert_eq!(metadata.unattached_notifications[0].session_name, "myapp:ghost");
+        assert_eq!(
+            metadata.unattached_notifications[0].session_name,
+            "myapp:ghost"
+        );
 
         cleanup(&dir);
         cleanup(&notif_base);
@@ -1438,9 +1475,7 @@ mod tests {
         let notif_base = test_dir();
 
         write_legacy_notification(&notif_base, "myapp:main", "1710000000_0", "info\nHello");
-        let worktrees = vec![make_discovered_wt(
-            "myapp", "/repo", "/repo", Some("main"),
-        )];
+        let worktrees = vec![make_discovered_wt("myapp", "/repo", "/repo", Some("main"))];
 
         // Make the metadata path read-only to force write failure
         let meta_path = store.metadata_path();
@@ -1459,6 +1494,63 @@ mod tests {
 
         cleanup(&dir);
         cleanup(&notif_base);
+    }
+
+    #[test]
+    fn drain_preserves_unread_legacy_files_when_cleaning_processed_files() {
+        let (store, dir) = temp_store();
+        let notif_base = test_dir();
+
+        write_legacy_notification(&notif_base, "myapp:main", "1710000000_0", "info\nHello");
+        fs::create_dir_all(notif_base.join("myapp:main").join("unread-entry")).unwrap();
+        let worktrees = vec![make_discovered_wt("myapp", "/repo", "/repo", Some("main"))];
+
+        let report = store
+            .drain_legacy_notifications(&worktrees, Some(&notif_base))
+            .unwrap();
+
+        assert_eq!(report.migrated_notifications, 1);
+        assert!(!notif_base.join("myapp:main").join("1710000000_0").exists());
+        assert!(notif_base.join("myapp:main").join("unread-entry").exists());
+
+        cleanup(&dir);
+        cleanup(&notif_base);
+    }
+
+    #[test]
+    fn notification_aliases_can_use_discovered_worktree_without_metadata_record() {
+        let identity = WorktreeIdentity {
+            host: None,
+            project_root: PathBuf::from("/repo"),
+            worktree_path: PathBuf::from("/repo/.worktrees/feat-login"),
+        };
+        let metadata = WorktreeMetadataFile {
+            version: CURRENT_VERSION,
+            worktrees: vec![],
+            notifications: vec![NotificationRecord {
+                id: "n1".to_string(),
+                target: identity.clone(),
+                level: NotifyLevel::Info,
+                message: "hello".to_string(),
+                created_at: 1,
+                source: None,
+            }],
+            unattached_notifications: vec![],
+            unattached_activity: vec![],
+            migration_diagnostics: vec![],
+            llm_status: vec![],
+            migrated_legacy_ids: std::collections::HashSet::new(),
+        };
+        let discovered = vec![DiscoveredWorktree {
+            identity,
+            project_name: "myapp".to_string(),
+            branch: Some("feat/login".to_string()),
+            is_primary_checkout: false,
+        }];
+
+        let aliases = notification_aliases_from_metadata(&metadata, Some(&discovered));
+
+        assert!(aliases.contains("myapp:feat-login"));
     }
 
     // -----------------------------------------------------------------------
