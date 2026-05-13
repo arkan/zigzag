@@ -85,7 +85,7 @@ impl ActionPreview {
             pr_number: pr.map(|pr| pr.number),
             pr_url: pr.map(|pr| pr.url.clone()),
             ci_status,
-            has_new_comments: review.map_or(false, |review| review.has_new_comments),
+            has_new_comments: review.is_some_and(|review| review.has_new_comments),
         }
     }
 }
@@ -212,7 +212,7 @@ fn parse_action_node(node: &KdlNode) -> Result<ActionDef> {
                 let raw = first_string_arg(child).ok_or_else(|| {
                     ZError::ConfigParse(format!("action '{name}': when missing value"))
                 })?;
-                condition = ActionCondition::from_str(raw).ok_or_else(|| {
+                condition = ActionCondition::parse_str(raw).ok_or_else(|| {
                     ZError::ConfigParse(format!("action '{name}': unknown condition '{raw}'"))
                 })?;
             }
@@ -220,7 +220,7 @@ fn parse_action_node(node: &KdlNode) -> Result<ActionDef> {
                 let raw = first_string_arg(child).ok_or_else(|| {
                     ZError::ConfigParse(format!("action '{name}': context missing value"))
                 })?;
-                context = ActionContext::from_str(raw).ok_or_else(|| {
+                context = ActionContext::parse_str(raw).ok_or_else(|| {
                     ZError::ConfigParse(format!("action '{name}': unknown context '{raw}'"))
                 })?;
             }
@@ -228,7 +228,7 @@ fn parse_action_node(node: &KdlNode) -> Result<ActionDef> {
                 let raw = first_string_arg(child).ok_or_else(|| {
                     ZError::ConfigParse(format!("action '{name}': pane missing value"))
                 })?;
-                pane = PaneType::from_str(raw).ok_or_else(|| {
+                pane = PaneType::parse_str(raw).ok_or_else(|| {
                     ZError::ConfigParse(format!("action '{name}': unknown pane type '{raw}'"))
                 })?;
             }
@@ -267,7 +267,13 @@ fn parse_action_node(node: &KdlNode) -> Result<ActionDef> {
 // ---------------------------------------------------------------------------
 
 impl ActionCondition {
+    /// Backwards-compatible alias for callers that used the pre-Rust-1.95 helper.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<ActionCondition> {
+        Self::parse_str(s)
+    }
+
+    pub fn parse_str(s: &str) -> Option<ActionCondition> {
         match s {
             "always" => Some(ActionCondition::Always),
             "has_pr" => Some(ActionCondition::HasPr),
@@ -288,7 +294,13 @@ impl ActionCondition {
 }
 
 impl ActionContext {
+    /// Backwards-compatible alias for callers that used the pre-Rust-1.95 helper.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<ActionContext> {
+        Self::parse_str(s)
+    }
+
+    pub fn parse_str(s: &str) -> Option<ActionContext> {
         match s {
             "project" => Some(ActionContext::Project),
             "session" => Some(ActionContext::Session),
@@ -305,7 +317,13 @@ impl ActionContext {
 }
 
 impl PaneType {
+    /// Backwards-compatible alias for callers that used the pre-Rust-1.95 helper.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<PaneType> {
+        Self::parse_str(s)
+    }
+
+    pub fn parse_str(s: &str) -> Option<PaneType> {
         match s {
             "float" => Some(PaneType::Float),
             "float-fullscreen" => Some(PaneType::FloatFullscreen),
@@ -620,26 +638,26 @@ action "Open PR" {
             ActionCondition::HasNewComments,
         ];
         for c in &conditions {
-            assert_eq!(ActionCondition::from_str(c.as_str()).as_ref(), Some(c));
+            assert_eq!(ActionCondition::parse_str(c.as_str()).as_ref(), Some(c));
         }
     }
 
     #[test]
     fn condition_unknown_returns_none() {
-        assert_eq!(ActionCondition::from_str("nonexistent"), None);
+        assert_eq!(ActionCondition::parse_str("nonexistent"), None);
     }
 
     #[test]
     fn context_roundtrip() {
         let contexts = [ActionContext::Project, ActionContext::Session];
         for c in &contexts {
-            assert_eq!(ActionContext::from_str(c.as_str()).as_ref(), Some(c));
+            assert_eq!(ActionContext::parse_str(c.as_str()).as_ref(), Some(c));
         }
     }
 
     #[test]
     fn context_unknown_returns_none() {
-        assert_eq!(ActionContext::from_str("unknown"), None);
+        assert_eq!(ActionContext::parse_str("unknown"), None);
     }
 
     #[test]
@@ -651,13 +669,13 @@ action "Open PR" {
             PaneType::Tab,
         ];
         for t in &types {
-            assert_eq!(PaneType::from_str(t.as_str()).as_ref(), Some(t));
+            assert_eq!(PaneType::parse_str(t.as_str()).as_ref(), Some(t));
         }
     }
 
     #[test]
     fn pane_type_unknown_returns_none() {
-        assert_eq!(PaneType::from_str("popup"), None);
+        assert_eq!(PaneType::parse_str("popup"), None);
     }
 
     // -----------------------------------------------------------------------

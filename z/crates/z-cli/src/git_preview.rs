@@ -40,7 +40,7 @@ pub fn parse_git_preview_output(output: &str) -> Result<GitPreviewInfo> {
         ));
     }
 
-    let is_dirty = sections.get(1).map_or(false, |s| !s.trim().is_empty());
+    let is_dirty = sections.get(1).is_some_and(|s| !s.trim().is_empty());
     let commits = sections
         .get(2)
         .map(|s| parse_commits(s))

@@ -355,10 +355,7 @@ impl LocalWorktreeMetadataStore {
             match resolution {
                 z_core::domain::SessionAliasResolution::Unique(wt) => {
                     let record = ensure_worktree_record(&mut metadata_records, &wt);
-                    if record
-                        .last_opened_at
-                        .map_or(true, |existing| *ts > existing)
-                    {
+                    if record.last_opened_at.is_none_or(|existing| *ts > existing) {
                         record.last_opened_at = Some(*ts);
                     }
                     record.last_session_name = Some(session_name.clone());
@@ -439,7 +436,7 @@ impl LocalWorktreeMetadataStore {
         let mut result: std::collections::HashMap<String, Vec<(String, NotifyLevel, String, u64)>> =
             std::collections::HashMap::new();
 
-        let entries = match fs::read_dir(&base) {
+        let entries = match fs::read_dir(base) {
             Ok(e) => e,
             Err(_) => return result,
         };
@@ -896,7 +893,7 @@ mod tests {
         };
         store.write_metadata(&data).unwrap();
         assert!(store.metadata_path().exists());
-        cleanup(&dir.parent().unwrap().parent().unwrap());
+        cleanup(dir.parent().unwrap().parent().unwrap());
     }
 
     #[test]

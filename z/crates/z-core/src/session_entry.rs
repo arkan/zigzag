@@ -68,7 +68,7 @@ mod tests {
 
         let effects = record_session_attach(&activity, "app:main");
 
-        assert_eq!(effects.activity_recorded, true);
+        assert!(effects.activity_recorded);
         assert_eq!(activity.recorded.borrow().as_slice(), ["app:main"]);
     }
 
@@ -78,6 +78,6 @@ mod tests {
 
         let effects = record_session_attach(&activity, "app:main");
 
-        assert_eq!(effects.activity_recorded, false);
+        assert!(!effects.activity_recorded);
     }
 }

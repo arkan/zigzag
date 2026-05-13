@@ -71,7 +71,7 @@ pub fn prune_terminal_runs(
     let runs = list_runs(state_dir)?;
     let mut removed = Vec::new();
     for run in runs {
-        if project_filter.map_or(false, |project| run.project != project) {
+        if project_filter.is_some_and(|project| run.project != project) {
             continue;
         }
         if is_terminal_run(&run) {
@@ -94,13 +94,10 @@ fn collect_runs(dir: &Path, runs: &mut Vec<WorkflowRun>) -> Result<()> {
         if path.is_dir() {
             collect_runs(&path, runs)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
-            match std::fs::read_to_string(&path) {
-                Ok(json) => {
-                    if let Ok(run) = serde_json::from_str::<WorkflowRun>(&json) {
-                        runs.push(run);
-                    }
+            if let Ok(json) = std::fs::read_to_string(&path) {
+                if let Ok(run) = serde_json::from_str::<WorkflowRun>(&json) {
+                    runs.push(run);
                 }
-                Err(_) => {}
             }
         }
     }
