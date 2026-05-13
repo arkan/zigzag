@@ -3532,6 +3532,7 @@ impl SwitchPickerState {
                 notification_count: *count,
                 notifications: Vec::new(),
                 activity: None,
+                last_attach: None,
             })
             .collect();
         Self { sessions, ages, notification_counts, entries, selected, current_session }
@@ -3560,6 +3561,7 @@ impl SwitchPickerState {
                 notification_count: *count,
                 notifications: Vec::new(),
                 activity: None,
+                last_attach: None,
             })
             .collect();
         Self { sessions, ages, notification_counts, entries, selected, current_session }
@@ -3593,6 +3595,7 @@ impl SwitchPickerState {
                 notification_count: *count,
                 notifications: Vec::new(),
                 activity: None,
+                last_attach: None,
             })
             .collect();
         Self { sessions, ages, notification_counts, entries, selected, current_session }
@@ -3637,6 +3640,9 @@ pub struct SwitchSessionEntry {
     pub notification_count: usize,
     pub notifications: Vec<SwitchNotification>,
     pub activity: Option<SwitchAgentActivity>,
+    /// Unix timestamp (seconds) of last session attach, from SessionActivity.
+    /// `None` if no activity has been recorded for this session.
+    pub last_attach: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3672,17 +3678,29 @@ pub fn sort_switch_entries(
     let mut indexed = entries.to_vec().into_iter().enumerate().collect::<Vec<_>>();
     indexed.sort_by(|(left_index, left), (right_index, right)| {
         for criterion in &order {
-            if *criterion == SwitcherPriorityCriterion::Recent {
-                let ordering = left_index.cmp(right_index);
-                if !ordering.is_eq() {
-                    return ordering;
+            match criterion {
+                SwitcherPriorityCriterion::Recent => {
+                    // Compare by last_attach descending; None sorts after Some.
+                    // Tie → fall through to next criterion / original index.
+                    match (left.last_attach, right.last_attach) {
+                        (Some(l), Some(r)) => {
+                            let cmp = r.cmp(&l); // descending (most recent first)
+                            if !cmp.is_eq() {
+                                return cmp;
+                            }
+                        }
+                        (Some(_), None) => return std::cmp::Ordering::Less,
+                        (None, Some(_)) => return std::cmp::Ordering::Greater,
+                        (None, None) => {}
+                    }
                 }
-                continue;
-            }
-            let left_score = switch_priority_score(left, *criterion);
-            let right_score = switch_priority_score(right, *criterion);
-            if left_score != right_score {
-                return left_score.cmp(&right_score);
+                _ => {
+                    let left_score = switch_priority_score(left, *criterion);
+                    let right_score = switch_priority_score(right, *criterion);
+                    if left_score != right_score {
+                        return left_score.cmp(&right_score);
+                    }
+                }
             }
         }
         left_index.cmp(right_index)
@@ -3778,8 +3796,7 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
         .constraints(constraints)
         .split(inner);
 
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let right_cols = 22;
+    let list_width = chunks[0].width as usize;
     let items: Vec<ListItem> = state
         .entries
         .iter()
@@ -3788,41 +3805,7 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
             let name = &entry.session_name;
             let is_current = name == &state.current_session;
             let marker = if is_current { "\u{25cf} " } else { "  " };
-            let left = format!("{}{}", marker, name);
-            let left_display_len = marker.chars().count() + name.len();
-            let age_str = entry_age_or_notification_age(entry, now_ms);
-            let notif_count = entry.notification_count;
-
-            let age_col = format!("{:>4}", age_str);
-            let activity_col = match entry.activity.as_ref().map(|activity| activity.state) {
-                Some(SwitchAgentActivityState::Working) => "\u{1f916} working ".to_string(),
-                Some(SwitchAgentActivityState::Waiting) => "\u{26a0} waiting ".to_string(),
-                None => "          ".to_string(),
-            };
-            let (badge_col, _badge_display_len) = if notif_count > 0 {
-                let digits = notif_count.to_string();
-                let display_len = 2 + 1 + digits.len();
-                let pad = 6usize.saturating_sub(display_len);
-                (format!("\u{1f514} {}{}", digits, " ".repeat(pad)), 6)
-            } else {
-                ("      ".to_string(), 6)
-            };
-
-            let label = if compact {
-                compact_switch_label(entry, marker, inner_width, now_ms)
-            } else if inner_width > left_display_len + right_cols + 1 {
-                let padding = inner_width - left_display_len - right_cols;
-                format!(
-                    "{}{}{}{}{}",
-                    left,
-                    " ".repeat(padding),
-                    activity_col,
-                    badge_col,
-                    age_col
-                )
-            } else {
-                left
-            };
+            let label = switch_row_label(entry, marker, list_width, compact, now_ms);
             let style = if i == state.selected {
                 theme_style_to_style(&theme.item_selected_focused)
             } else if is_current {
@@ -3897,42 +3880,95 @@ fn selected_switch_detail_height(state: &SwitchPickerState) -> u16 {
     (lines as u16 + 1).clamp(3, 6)
 }
 
-fn compact_switch_label(
-    entry: &SwitchSessionEntry,
-    marker: &str,
-    inner_width: usize,
-    now_ms: u64,
-) -> String {
+fn switch_row_metadata(entry: &SwitchSessionEntry, compact: bool, now_ms: u64) -> String {
     let mut right_parts = Vec::new();
     if let Some(activity) = &entry.activity {
         right_parts.push(match activity.state {
-            SwitchAgentActivityState::Working => "work".to_string(),
-            SwitchAgentActivityState::Waiting => "wait".to_string(),
+            SwitchAgentActivityState::Working if compact => "work".to_string(),
+            SwitchAgentActivityState::Waiting if compact => "wait".to_string(),
+            SwitchAgentActivityState::Working => "\u{1f916} working".to_string(),
+            SwitchAgentActivityState::Waiting => "\u{26a0} waiting".to_string(),
         });
     }
     if entry.notification_count > 0 {
-        right_parts.push(format!("\u{1f514}{}", entry.notification_count));
+        let separator = if compact { "" } else { " " };
+        right_parts.push(format!("\u{1f514}{separator}{}", entry.notification_count));
     }
     let age = entry_age_or_notification_age(entry, now_ms);
     if !age.is_empty() {
         right_parts.push(age);
     }
 
-    let right = right_parts.join(" ");
-    let marker_len = marker.chars().count();
-    let right_len = right.chars().count();
-    let reserved = marker_len + if right.is_empty() { 0 } else { right_len + 1 };
-    let name_width = inner_width.saturating_sub(reserved).max(4);
-    let name = compact_session_name(&entry.session_name, name_width);
+    right_parts.join(" ")
+}
+
+fn switch_row_label(
+    entry: &SwitchSessionEntry,
+    marker: &str,
+    row_width: usize,
+    compact: bool,
+    now_ms: u64,
+) -> String {
+    let right = switch_row_metadata(entry, compact, now_ms);
+    let marker_len = display_width(marker);
+
+    if row_width <= marker_len {
+        return marker.chars().take(row_width).collect();
+    }
 
     if right.is_empty() {
-        format!("{marker}{name}")
-    } else {
-        format!("{marker}{name} {right}")
+        let name_width = row_width.saturating_sub(marker_len);
+        return format!("{marker}{}", compact_session_name(&entry.session_name, name_width));
     }
+
+    let right_len = display_width(&right);
+    if row_width <= marker_len + right_len {
+        let right_width = row_width.saturating_sub(marker_len);
+        return format!("{marker}{}", compact_right_metadata(&right, right_width));
+    }
+
+    let name_width = row_width - marker_len - right_len - 1;
+    let name = compact_session_name(&entry.session_name, name_width);
+    let name_len = display_width(&name);
+    let padding = row_width.saturating_sub(marker_len + name_len + right_len);
+
+    format!("{marker}{name}{}{right}", " ".repeat(padding))
+}
+
+fn compact_right_metadata(metadata: &str, max_width: usize) -> String {
+    if display_width(metadata) <= max_width {
+        return metadata.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let suffix_width = max_width - 1;
+    let mut width = 0usize;
+    let mut chars = Vec::new();
+    for ch in metadata.chars().rev() {
+        let char_width = display_width(&ch.to_string());
+        if width + char_width > suffix_width {
+            break;
+        }
+        width += char_width;
+        chars.push(ch);
+    }
+    let suffix = chars.into_iter().rev().collect::<String>();
+    format!("…{suffix}")
+}
+
+fn display_width(value: &str) -> usize {
+    Span::raw(value).width()
 }
 
 fn compact_session_name(session: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
     let len = session.chars().count();
     if len <= max_chars {
         return session.to_string();
@@ -8011,6 +8047,7 @@ mod tests {
                     updated_at_ms: 1_000,
                     reason: Some("permission".to_string()),
                 }),
+                last_attach: None,
             }],
             "other:main".to_string(),
         );
@@ -8033,6 +8070,7 @@ mod tests {
                 notification_count: 0,
                 notifications: vec![],
                 activity: None,
+                last_attach: None,
             },
             SwitchSessionEntry {
                 session_name: "waiting:main".to_string(),
@@ -8045,12 +8083,96 @@ mod tests {
                     updated_at_ms: 1_000,
                     reason: Some("permission".to_string()),
                 }),
+                last_attach: None,
             },
         ];
 
         sort_switch_entries(&mut entries, &z_core::config::SwitcherConfig::default().priority);
 
         assert_eq!(entries[0].session_name, "waiting:main");
+    }
+
+    #[test]
+    fn switch_picker_sort_by_recent_attach_puts_largest_first_and_none_last() {
+        let mut entries = vec![
+            SwitchSessionEntry {
+                session_name: "z:medium".to_string(),
+                age: None,
+                notification_count: 0,
+                notifications: vec![],
+                activity: None,
+                last_attach: Some(200),
+            },
+            SwitchSessionEntry {
+                session_name: "z:oldest".to_string(),
+                age: None,
+                notification_count: 0,
+                notifications: vec![],
+                activity: None,
+                last_attach: Some(100),
+            },
+            SwitchSessionEntry {
+                session_name: "z:newest".to_string(),
+                age: None,
+                notification_count: 0,
+                notifications: vec![],
+                activity: None,
+                last_attach: Some(300),
+            },
+            SwitchSessionEntry {
+                session_name: "z:unknown".to_string(),
+                age: None,
+                notification_count: 0,
+                notifications: vec![],
+                activity: None,
+                last_attach: None,
+            },
+        ];
+
+        sort_switch_entries(&mut entries, &z_core::config::SwitcherConfig::default().priority);
+
+        assert_eq!(
+            entries.iter().map(|e| e.session_name.as_str()).collect::<Vec<_>>(),
+            vec!["z:newest", "z:medium", "z:oldest", "z:unknown"],
+            "large last_attach first, None last"
+        );
+    }
+
+    #[test]
+    fn switch_picker_sort_with_waiting_priority_waiting_still_outranks_recent() {
+        let mut entries = vec![
+            SwitchSessionEntry {
+                session_name: "recent:main".to_string(),
+                age: Some("1s".to_string()),
+                notification_count: 0,
+                notifications: vec![],
+                activity: None,
+                last_attach: Some(999),
+            },
+            SwitchSessionEntry {
+                session_name: "waiting:main".to_string(),
+                age: Some("1h".to_string()),
+                notification_count: 1,
+                notifications: vec![],
+                activity: Some(SwitchAgentActivity {
+                    tool: "opencode".to_string(),
+                    state: SwitchAgentActivityState::Waiting,
+                    updated_at_ms: 1_000,
+                    reason: Some("permission".to_string()),
+                }),
+                last_attach: None,
+            },
+        ];
+
+        // Priority where Waiting comes before Recent
+        let priority = vec![
+            z_core::config::SwitcherPriorityCriterion::Waiting,
+            z_core::config::SwitcherPriorityCriterion::Recent,
+        ];
+        sort_switch_entries(&mut entries, &priority);
+
+        assert_eq!(entries[0].session_name, "waiting:main",
+            "waiting entry should come first when Waiting is before Recent in priority");
     }
 
     #[test]
@@ -8083,6 +8205,7 @@ mod tests {
                     updated_at_ms: 1_000,
                     reason: Some("permission".to_string()),
                 }),
+                last_attach: None,
             }],
             "other:main".to_string(),
         );
@@ -8441,6 +8564,7 @@ mod tests {
                     created_at_ms: Some(now.saturating_sub(2 * 60 * 60 * 1000)),
                 }],
                 activity: None,
+                last_attach: None,
             }],
             "other-session".to_string(),
         );
@@ -8477,6 +8601,7 @@ mod tests {
                     created_at_ms: Some(now.saturating_sub(5 * 60 * 1000)),
                 }],
                 activity: None,
+                last_attach: None,
             }],
             "other-session".to_string(),
         );
@@ -8592,6 +8717,7 @@ mod tests {
                 },
             ],
             activity: None,
+            last_attach: None,
         };
 
         assert_eq!(entry_age_or_notification_age(&entry, 120_000), "30s");
@@ -8605,6 +8731,7 @@ mod tests {
             notification_count: 0,
             notifications: Vec::new(),
             activity: None,
+            last_attach: None,
         };
 
         assert_eq!(entry_age_or_notification_age(&entry, 120_000), "2h");
@@ -8622,14 +8749,101 @@ mod tests {
                 created_at_ms: Some(60_000),
             }],
             activity: None,
+            last_attach: None,
         };
-        let label = compact_switch_label(&entry, "  ", 40, 120_000);
+        let label = switch_row_label(&entry, "  ", 40, true, 120_000);
 
         assert!(label.contains("1m"), "compact label should contain notification age: {label:?}");
         assert!(
             !label.contains("1h"),
             "compact label should not contain session age: {label:?}"
         );
+    }
+
+    #[test]
+    fn switch_row_label_aligns_compact_metadata_right() {
+        let entry = SwitchSessionEntry {
+            session_name: "very-long-project-name:very-long-feature-branch".to_string(),
+            age: Some("12h".to_string()),
+            notification_count: 2,
+            notifications: vec![SwitchNotification {
+                level: NotifyLevel::Warning,
+                message: "needs attention".to_string(),
+                created_at_ms: Some(120_000),
+            }],
+            activity: Some(SwitchAgentActivity {
+                tool: "opencode".to_string(),
+                state: SwitchAgentActivityState::Waiting,
+                updated_at_ms: 120_000,
+                reason: None,
+            }),
+            last_attach: None,
+        };
+
+        let label = switch_row_label(&entry, "  ", 42, true, 3_600_000);
+
+        assert_eq!(display_width(&label), 42, "label should fill row width: {label:?}");
+        assert!(label.ends_with("wait \u{1f514}2 58m"), "metadata should be right-aligned: {label:?}");
+    }
+
+    #[test]
+    fn switch_row_label_aligns_desktop_metadata_right() {
+        let entry = SwitchSessionEntry {
+            session_name: "very-long-project-name:very-long-feature-branch".to_string(),
+            age: Some("12h".to_string()),
+            notification_count: 2,
+            notifications: vec![SwitchNotification {
+                level: NotifyLevel::Warning,
+                message: "needs attention".to_string(),
+                created_at_ms: Some(120_000),
+            }],
+            activity: Some(SwitchAgentActivity {
+                tool: "opencode".to_string(),
+                state: SwitchAgentActivityState::Waiting,
+                updated_at_ms: 120_000,
+                reason: None,
+            }),
+            last_attach: None,
+        };
+
+        let label = switch_row_label(&entry, "  ", 64, false, 3_600_000);
+
+        assert_eq!(display_width(&label), 64, "label should fill row width: {label:?}");
+        assert!(
+            label.ends_with("\u{26a0} waiting \u{1f514} 2 58m"),
+            "metadata should be right-aligned: {label:?}"
+        );
+    }
+
+    #[test]
+    fn switch_picker_compact_uses_modal_width_for_right_metadata() {
+        let now = unix_now_ms_for_render();
+        let state = SwitchPickerState::with_entries(
+            vec![SwitchSessionEntry {
+                session_name: "very-long-project-name:very-long-feature-branch".to_string(),
+                age: Some("12h".to_string()),
+                notification_count: 2,
+                notifications: vec![SwitchNotification {
+                    level: NotifyLevel::Warning,
+                    message: "needs attention".to_string(),
+                    created_at_ms: Some(now.saturating_sub(58 * 60 * 1000)),
+                }],
+                activity: Some(SwitchAgentActivity {
+                    tool: "opencode".to_string(),
+                    state: SwitchAgentActivityState::Waiting,
+                    updated_at_ms: now.saturating_sub(58 * 60 * 1000),
+                    reason: None,
+                }),
+                last_attach: None,
+            }],
+            "other:main".to_string(),
+        );
+
+        let out = render_switch_picker_to_string(&state, 120, 10);
+
+        assert!(out.contains("wait"), "compact row should keep status visible: {out:?}");
+        assert!(out.contains("58m"), "compact row should keep age visible: {out:?}");
+        assert!(out.contains('\u{1f514}'), "compact row should keep notification badge visible: {out:?}");
     }
 
     // ── Theme style tests (TestBackend) ──────────────────────────────────
