@@ -3710,10 +3710,27 @@ fn switch_priority_score(entry: &SwitchSessionEntry, criterion: SwitcherPriority
     }
 }
 
+/// Returns the display string for the age column of a switch picker row.
+/// Notified entries show compact age of the latest notification instead of session age.
+fn entry_age_or_notification_age(entry: &SwitchSessionEntry, now_ms: u64) -> String {
+    if entry.notification_count > 0 || !entry.notifications.is_empty() {
+        return entry
+            .notifications
+            .iter()
+            .filter_map(|notification| notification.created_at_ms)
+            .max()
+            .map(|created_at_ms| format_compact_relative_age(created_at_ms, now_ms))
+            .unwrap_or_default();
+    }
+
+    entry.age.as_deref().unwrap_or("").to_string()
+}
+
 /// Render the session switch picker into the frame.
 fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core::theme::Theme) {
     let area = f.area();
     let compact = is_compact_switch_picker(area);
+    let now_ms = unix_now_ms_for_render();
     let picker_area = if compact {
         compact_switch_picker_area(area, state)
     } else {
@@ -3773,10 +3790,7 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
             let marker = if is_current { "\u{25cf} " } else { "  " };
             let left = format!("{}{}", marker, name);
             let left_display_len = marker.chars().count() + name.len();
-            let age_str = entry
-                .age
-                .as_deref()
-                .unwrap_or("");
+            let age_str = entry_age_or_notification_age(entry, now_ms);
             let notif_count = entry.notification_count;
 
             let age_col = format!("{:>4}", age_str);
@@ -3795,7 +3809,7 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
             };
 
             let label = if compact {
-                compact_switch_label(entry, marker, inner_width)
+                compact_switch_label(entry, marker, inner_width, now_ms)
             } else if inner_width > left_display_len + right_cols + 1 {
                 let padding = inner_width - left_display_len - right_cols;
                 format!(
@@ -3883,7 +3897,12 @@ fn selected_switch_detail_height(state: &SwitchPickerState) -> u16 {
     (lines as u16 + 1).clamp(3, 6)
 }
 
-fn compact_switch_label(entry: &SwitchSessionEntry, marker: &str, inner_width: usize) -> String {
+fn compact_switch_label(
+    entry: &SwitchSessionEntry,
+    marker: &str,
+    inner_width: usize,
+    now_ms: u64,
+) -> String {
     let mut right_parts = Vec::new();
     if let Some(activity) = &entry.activity {
         right_parts.push(match activity.state {
@@ -3894,8 +3913,9 @@ fn compact_switch_label(entry: &SwitchSessionEntry, marker: &str, inner_width: u
     if entry.notification_count > 0 {
         right_parts.push(format!("\u{1f514}{}", entry.notification_count));
     }
-    if let Some(age) = entry.age.as_deref().filter(|age| !age.is_empty()) {
-        right_parts.push(age.to_string());
+    let age = entry_age_or_notification_age(entry, now_ms);
+    if !age.is_empty() {
+        right_parts.push(age);
     }
 
     let right = right_parts.join(" ");
@@ -4053,6 +4073,19 @@ fn format_relative_age(created_at_ms: u64, now_ms: u64) -> String {
         format!("{}h ago", seconds / 3600)
     } else {
         format!("{}d ago", seconds / 86_400)
+    }
+}
+
+fn format_compact_relative_age(created_at_ms: u64, now_ms: u64) -> String {
+    let seconds = now_ms.saturating_sub(created_at_ms) / 1000;
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 60 * 60 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 60 * 60 * 24 {
+        format!("{}h", seconds / 3600)
+    } else {
+        format!("{}d", seconds / 86_400)
     }
 }
 
@@ -8396,15 +8429,25 @@ mod tests {
 
     #[test]
     fn switch_picker_badge_with_age_both_visible() {
-        let state = SwitchPickerState::with_notifications(
-            vec!["myapp:main".to_string()],
-            vec![Some("3h".to_string())],
-            vec![1],
-            "myapp:main".to_string(),
+        let now = unix_now_ms_for_render();
+        let state = SwitchPickerState::with_entries(
+            vec![SwitchSessionEntry {
+                session_name: "myapp:main".to_string(),
+                age: Some("3h".to_string()),
+                notification_count: 1,
+                notifications: vec![SwitchNotification {
+                    level: NotifyLevel::Info,
+                    message: "test".to_string(),
+                    created_at_ms: Some(now.saturating_sub(2 * 60 * 60 * 1000)),
+                }],
+                activity: None,
+            }],
+            "other-session".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains('\u{1f514}'), "should render 🔔 badge");
-        assert!(out.contains("3h"), "should render age '3h' alongside badge");
+        assert!(out.contains("2h"), "should render notification age '2h' alongside badge");
+        assert!(!out.contains("3h"), "should NOT render stale session age");
     }
 
     #[test]
@@ -8422,16 +8465,26 @@ mod tests {
 
     #[test]
     fn switch_picker_large_notification_count() {
-        let state = SwitchPickerState::with_notifications(
-            vec!["myapp:main".to_string()],
-            vec![Some("1h".to_string())],
-            vec![99],
-            "myapp:main".to_string(),
+        let now = unix_now_ms_for_render();
+        let state = SwitchPickerState::with_entries(
+            vec![SwitchSessionEntry {
+                session_name: "myapp:main".to_string(),
+                age: Some("1h".to_string()),
+                notification_count: 99,
+                notifications: vec![SwitchNotification {
+                    level: NotifyLevel::Info,
+                    message: "test".to_string(),
+                    created_at_ms: Some(now.saturating_sub(5 * 60 * 1000)),
+                }],
+                activity: None,
+            }],
+            "other-session".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains('\u{1f514}'), "should render 🔔 badge for large count");
         assert!(out.contains("99"), "should render count 99");
-        assert!(out.contains("1h"), "should still render age alongside large count");
+        assert!(out.contains("5m"), "should render notification age alongside large count");
+        assert!(!out.contains("1h"), "should NOT render stale session age");
     }
 
     #[test]
@@ -8518,6 +8571,65 @@ mod tests {
         assert!(out.contains("1h"), "should render age for alpha");
         assert!(out.contains("3d"), "should render age for gamma");
         assert!(out.contains("beta:dev"), "should render beta name without age");
+    }
+
+    #[test]
+    fn row_age_prefers_latest_notification_timestamp() {
+        let entry = SwitchSessionEntry {
+            session_name: "test:session".to_string(),
+            age: Some("1h".to_string()),
+            notification_count: 2,
+            notifications: vec![
+                SwitchNotification {
+                    level: NotifyLevel::Info,
+                    message: "older".to_string(),
+                    created_at_ms: Some(30_000),
+                },
+                SwitchNotification {
+                    level: NotifyLevel::Warning,
+                    message: "newer".to_string(),
+                    created_at_ms: Some(90_000),
+                },
+            ],
+            activity: None,
+        };
+
+        assert_eq!(entry_age_or_notification_age(&entry, 120_000), "30s");
+    }
+
+    #[test]
+    fn row_age_falls_back_to_session_age_when_no_notifications() {
+        let entry = SwitchSessionEntry {
+            session_name: "test:session".to_string(),
+            age: Some("2h".to_string()),
+            notification_count: 0,
+            notifications: Vec::new(),
+            activity: None,
+        };
+
+        assert_eq!(entry_age_or_notification_age(&entry, 120_000), "2h");
+    }
+
+    #[test]
+    fn compact_label_uses_notification_age_instead_of_session_age() {
+        let entry = SwitchSessionEntry {
+            session_name: "test:session".to_string(),
+            age: Some("1h".to_string()),
+            notification_count: 1,
+            notifications: vec![SwitchNotification {
+                level: NotifyLevel::Info,
+                message: "msg".to_string(),
+                created_at_ms: Some(60_000),
+            }],
+            activity: None,
+        };
+        let label = compact_switch_label(&entry, "  ", 40, 120_000);
+
+        assert!(label.contains("1m"), "compact label should contain notification age: {label:?}");
+        assert!(
+            !label.contains("1h"),
+            "compact label should not contain session age: {label:?}"
+        );
     }
 
     // ── Theme style tests (TestBackend) ──────────────────────────────────
