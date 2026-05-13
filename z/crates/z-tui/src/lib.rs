@@ -2157,82 +2157,77 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('d') => {
-                        if state.focused_panel == Panel::Worktrees {
-                            // Delete worktree
-                            if let Some(wt) = state.filtered_worktrees().get(state.selected_session)
-                            {
-                                let project = state
-                                    .selected_entry()
-                                    .map(|e| e.project.name.clone())
-                                    .unwrap_or_default();
-                                let branch = wt.discovered.branch.clone().unwrap_or_default();
-                                let safety_reasons: Vec<&'static str> = wt
-                                    .safety
-                                    .as_ref()
-                                    .map(|safety| {
-                                        let mut reasons = Vec::new();
-                                        if safety.dirty {
-                                            reasons.push("dirty");
-                                        }
-                                        if safety.ahead > 0 {
-                                            reasons.push("ahead");
-                                        }
-                                        if !safety.has_upstream {
-                                            reasons.push("no upstream");
-                                        }
-                                        reasons
-                                    })
-                                    .unwrap_or_default();
-                                let has_active_session =
-                                    matches!(wt.status, WorktreeStatus::Active);
-                                let requires_strong_confirmation =
-                                    !wt.discovered.is_primary_checkout
-                                        && (has_active_session || !safety_reasons.is_empty());
-                                let status = if wt.discovered.is_primary_checkout {
-                                    "primary checkout".to_string()
-                                } else if has_active_session {
-                                    "active session".to_string()
-                                } else if !safety_reasons.is_empty() {
-                                    safety_reasons.join(", ")
-                                } else {
-                                    "inactive".to_string()
-                                };
-                                let protection_reason = if wt.discovered.is_primary_checkout {
-                                    Some("Cannot delete primary checkout.".to_string())
-                                } else if wt.discovered.branch.is_none() {
-                                    Some("Cannot delete unsupported/detached worktree from the dashboard.".to_string())
-                                } else {
-                                    None
-                                };
-                                state.modal = Some(Modal::DeleteWorktreeConfirm {
-                                    project,
-                                    branch,
-                                    status,
-                                    protection_reason,
-                                    requires_strong_confirmation,
-                                    confirmation_input: String::new(),
-                                });
-                            }
+                    KeyCode::Char('d') if state.focused_panel == Panel::Worktrees => {
+                        // Delete worktree
+                        if let Some(wt) = state.filtered_worktrees().get(state.selected_session) {
+                            let project = state
+                                .selected_entry()
+                                .map(|e| e.project.name.clone())
+                                .unwrap_or_default();
+                            let branch = wt.discovered.branch.clone().unwrap_or_default();
+                            let safety_reasons: Vec<&'static str> = wt
+                                .safety
+                                .as_ref()
+                                .map(|safety| {
+                                    let mut reasons = Vec::new();
+                                    if safety.dirty {
+                                        reasons.push("dirty");
+                                    }
+                                    if safety.ahead > 0 {
+                                        reasons.push("ahead");
+                                    }
+                                    if !safety.has_upstream {
+                                        reasons.push("no upstream");
+                                    }
+                                    reasons
+                                })
+                                .unwrap_or_default();
+                            let has_active_session = matches!(wt.status, WorktreeStatus::Active);
+                            let requires_strong_confirmation = !wt.discovered.is_primary_checkout
+                                && (has_active_session || !safety_reasons.is_empty());
+                            let status = if wt.discovered.is_primary_checkout {
+                                "primary checkout".to_string()
+                            } else if has_active_session {
+                                "active session".to_string()
+                            } else if !safety_reasons.is_empty() {
+                                safety_reasons.join(", ")
+                            } else {
+                                "inactive".to_string()
+                            };
+                            let protection_reason = if wt.discovered.is_primary_checkout {
+                                Some("Cannot delete primary checkout.".to_string())
+                            } else if wt.discovered.branch.is_none() {
+                                Some(
+                                    "Cannot delete unsupported/detached worktree from the dashboard."
+                                        .to_string(),
+                                )
+                            } else {
+                                None
+                            };
+                            state.modal = Some(Modal::DeleteWorktreeConfirm {
+                                project,
+                                branch,
+                                status,
+                                protection_reason,
+                                requires_strong_confirmation,
+                                confirmation_input: String::new(),
+                            });
                         }
                     }
 
-                    KeyCode::Char('K') => {
+                    KeyCode::Char('K') if state.focused_panel == Panel::Worktrees => {
                         // Kill active session only (uppercase K)
-                        if state.focused_panel == Panel::Worktrees {
-                            let session_name = state
-                                .filtered_worktrees()
-                                .get(state.selected_session)
-                                .and_then(|wt| match &wt.session_link {
-                                    SessionLink::Active(s) => Some(s.name.clone()),
-                                    _ => None,
-                                });
-                            if let Some(session) = session_name {
-                                state.modal = Some(Modal::DeleteSessionConfirm { session });
-                            } else {
-                                state.status_message =
-                                    Some("No active session to kill.".to_string());
-                            }
+                        let session_name = state
+                            .filtered_worktrees()
+                            .get(state.selected_session)
+                            .and_then(|wt| match &wt.session_link {
+                                SessionLink::Active(s) => Some(s.name.clone()),
+                                _ => None,
+                            });
+                        if let Some(session) = session_name {
+                            state.modal = Some(Modal::DeleteSessionConfirm { session });
+                        } else {
+                            state.status_message = Some("No active session to kill.".to_string());
                         }
                     }
 
@@ -2266,10 +2261,8 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('A') => {
-                        if state.focused_panel == Panel::Projects {
-                            state.modal = Some(Modal::AddProject(ProjectForm::new()));
-                        }
+                    KeyCode::Char('A') if state.focused_panel == Panel::Projects => {
+                        state.modal = Some(Modal::AddProject(ProjectForm::new()));
                     }
 
                     KeyCode::Char('D') => {
@@ -2300,24 +2293,22 @@ fn event_loop<B: Backend>(
                         }
                     }
 
-                    KeyCode::Char('E') => {
-                        if state.focused_panel == Panel::Projects {
-                            if let Some(entry) = state.selected_entry() {
-                                let project = &entry.project;
-                                let mut form = ProjectForm::new();
-                                form.fields[0].value = project.path.to_string_lossy().to_string();
-                                form.fields[1].value = project.name.clone();
-                                form.fields[2].value = project.host.clone().unwrap_or_default();
-                                form.fields[3].value = match &project.transport {
-                                    Some(z_core::domain::Transport::Mosh) => "mosh".to_string(),
-                                    Some(z_core::domain::Transport::Ssh) => "ssh".to_string(),
-                                    None => String::new(),
-                                };
-                                // Suppress path-basename autofill: name is already set.
-                                form.name_was_modified = true;
-                                let original_name = project.name.clone();
-                                state.modal = Some(Modal::EditProject(form, original_name));
-                            }
+                    KeyCode::Char('E') if state.focused_panel == Panel::Projects => {
+                        if let Some(entry) = state.selected_entry() {
+                            let project = &entry.project;
+                            let mut form = ProjectForm::new();
+                            form.fields[0].value = project.path.to_string_lossy().to_string();
+                            form.fields[1].value = project.name.clone();
+                            form.fields[2].value = project.host.clone().unwrap_or_default();
+                            form.fields[3].value = match &project.transport {
+                                Some(z_core::domain::Transport::Mosh) => "mosh".to_string(),
+                                Some(z_core::domain::Transport::Ssh) => "ssh".to_string(),
+                                None => String::new(),
+                            };
+                            // Suppress path-basename autofill: name is already set.
+                            form.name_was_modified = true;
+                            let original_name = project.name.clone();
+                            state.modal = Some(Modal::EditProject(form, original_name));
                         }
                     }
 
@@ -3986,7 +3977,7 @@ pub fn sort_switch_entries(
         }
         left_index.cmp(right_index)
     });
-    for (slot, (_, entry)) in entries.iter_mut().zip(indexed.into_iter()) {
+    for (slot, (_, entry)) in entries.iter_mut().zip(indexed) {
         *slot = entry;
     }
 }
