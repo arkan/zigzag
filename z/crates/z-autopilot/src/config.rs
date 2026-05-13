@@ -5,21 +5,12 @@ use z_core::error::{Result, ZError};
 
 /// Full autopilot configuration from `.config/z.kdl`: project-level settings +
 /// any custom workflow definitions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RepoAutopilotConfig {
     /// Project-level settings (auto_push, review).
     pub config: AutopilotConfig,
     /// Custom workflow definitions in this repo.
     pub workflows: Vec<AutopilotWorkflow>,
-}
-
-impl Default for RepoAutopilotConfig {
-    fn default() -> Self {
-        RepoAutopilotConfig {
-            config: AutopilotConfig::default(),
-            workflows: Vec::new(),
-        }
-    }
 }
 
 /// Parse both autopilot config settings and custom workflow definitions from
@@ -306,8 +297,8 @@ autopilot "simple" {
         };
         let wf = make_workflow(None, None);
         let resolved = resolve_config(&project, &wf);
-        assert_eq!(resolved.auto_push, true);
-        assert_eq!(resolved.review, false);
+        assert!(resolved.auto_push);
+        assert!(!resolved.review);
     }
 
     #[test]
@@ -318,8 +309,8 @@ autopilot "simple" {
         };
         let wf = make_workflow(Some(false), Some(true));
         let resolved = resolve_config(&project, &wf);
-        assert_eq!(resolved.auto_push, false);
-        assert_eq!(resolved.review, true);
+        assert!(!resolved.auto_push);
+        assert!(resolved.review);
     }
 
     #[test]
@@ -330,8 +321,8 @@ autopilot "simple" {
         };
         let wf = make_workflow(None, Some(true));
         let resolved = resolve_config(&project, &wf);
-        assert_eq!(resolved.auto_push, true); // from project
-        assert_eq!(resolved.review, true); // from workflow
+        assert!(resolved.auto_push); // from project
+        assert!(resolved.review); // from workflow
     }
 
     #[test]
@@ -342,8 +333,8 @@ autopilot "simple" {
         };
         let wf = make_workflow(Some(false), None);
         let resolved = resolve_config(&project, &wf);
-        assert_eq!(resolved.auto_push, false); // from workflow
-        assert_eq!(resolved.review, true); // from project
+        assert!(!resolved.auto_push); // from workflow
+        assert!(resolved.review); // from project
     }
 
     // ---------------------------------------------------------------------------
@@ -582,8 +573,8 @@ autopilot {
         };
         let wf = make_workflow(Some(false), Some(true));
         let resolved = resolve_config(&project, &wf);
-        assert_eq!(resolved.auto_push, false);
-        assert_eq!(resolved.review, true);
+        assert!(!resolved.auto_push);
+        assert!(resolved.review);
     }
 
     #[test]
@@ -594,7 +585,7 @@ autopilot {
         };
         let wf = make_workflow(Some(true), Some(false));
         let resolved = resolve_config(&project, &wf);
-        assert_eq!(resolved.auto_push, true);
-        assert_eq!(resolved.review, false);
+        assert!(resolved.auto_push);
+        assert!(!resolved.review);
     }
 }

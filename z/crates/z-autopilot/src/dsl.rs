@@ -14,7 +14,13 @@ pub enum Trigger {
 }
 
 impl Trigger {
+    /// Backwards-compatible alias for callers that used the pre-Rust-1.95 helper.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Trigger> {
+        Self::parse_str(s)
+    }
+
+    pub fn parse_str(s: &str) -> Option<Trigger> {
         match s {
             "post-push" => Some(Trigger::PostPush),
             "pr-approved" => Some(Trigger::PrApproved),
@@ -244,7 +250,7 @@ fn parse_autopilot_node(node: &KdlNode) -> Result<AutopilotWorkflow> {
                 let raw = first_string_arg(child).ok_or_else(|| {
                     ZError::ConfigParse(format!("autopilot '{name}': trigger missing value"))
                 })?;
-                trigger = Some(Trigger::from_str(raw).ok_or_else(|| {
+                trigger = Some(Trigger::parse_str(raw).ok_or_else(|| {
                     ZError::ConfigParse(format!("autopilot '{name}': unknown trigger '{raw}'"))
                 })?);
             }
@@ -573,9 +579,9 @@ autopilot "manual-test" {
             ("new-commits-on-main", Trigger::NewCommitsOnMain),
             ("manual", Trigger::Manual),
         ] {
-            assert_eq!(Trigger::from_str(s), Some(expected));
+            assert_eq!(Trigger::parse_str(s), Some(expected));
         }
-        assert_eq!(Trigger::from_str("unknown-trigger"), None);
+        assert_eq!(Trigger::parse_str("unknown-trigger"), None);
     }
 
     #[test]
@@ -804,7 +810,7 @@ autopilot "test" {
             Trigger::Manual,
         ];
         for t in &triggers {
-            assert_eq!(Trigger::from_str(t.as_str()).as_ref(), Some(t));
+            assert_eq!(Trigger::parse_str(t.as_str()).as_ref(), Some(t));
         }
     }
 

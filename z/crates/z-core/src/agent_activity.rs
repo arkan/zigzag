@@ -65,36 +65,42 @@ pub fn apply_agent_activity_update(
             );
             changed |= upsert_status(
                 file,
-                update.target,
-                update.tool,
-                AgentActivityState::Working,
-                update.now_ms,
-                update.reason,
-                Some(auto_resolve_key),
-                Some(settings.working_update_min_interval_ms),
+                UpsertStatusArgs {
+                    target: update.target,
+                    tool: update.tool,
+                    state: AgentActivityState::Working,
+                    now_ms: update.now_ms,
+                    reason: update.reason,
+                    auto_resolve_key: Some(auto_resolve_key),
+                    coalesce_interval_ms: Some(settings.working_update_min_interval_ms),
+                },
             );
         }
         AgentActivityEvent::Waiting { level, message } => {
             changed |= upsert_status(
                 file,
-                update.target.clone(),
-                update.tool.clone(),
-                AgentActivityState::Waiting,
-                update.now_ms,
-                update.reason.clone(),
-                Some(auto_resolve_key.clone()),
-                None,
+                UpsertStatusArgs {
+                    target: update.target.clone(),
+                    tool: update.tool.clone(),
+                    state: AgentActivityState::Waiting,
+                    now_ms: update.now_ms,
+                    reason: update.reason.clone(),
+                    auto_resolve_key: Some(auto_resolve_key.clone()),
+                    coalesce_interval_ms: None,
+                },
             );
             changed |= upsert_waiting_notification(
                 file,
-                update.target,
-                update.tool,
-                update.reason,
-                auto_resolve_key,
-                level,
-                message,
-                update.now_ms,
-                update.notification_id,
+                UpsertWaitingNotificationArgs {
+                    target: update.target,
+                    tool: update.tool,
+                    reason: update.reason,
+                    auto_resolve_key,
+                    level,
+                    message,
+                    now_ms: update.now_ms,
+                    notification_id: update.notification_id,
+                },
             );
         }
         AgentActivityEvent::Idle => {
@@ -132,8 +138,7 @@ fn ensure_metadata_version(file: &mut WorktreeMetadataFile) -> bool {
     false
 }
 
-fn upsert_status(
-    file: &mut WorktreeMetadataFile,
+struct UpsertStatusArgs {
     target: WorktreeIdentity,
     tool: String,
     state: AgentActivityState,
@@ -141,7 +146,18 @@ fn upsert_status(
     reason: Option<String>,
     auto_resolve_key: Option<String>,
     coalesce_interval_ms: Option<u64>,
-) -> bool {
+}
+
+fn upsert_status(file: &mut WorktreeMetadataFile, args: UpsertStatusArgs) -> bool {
+    let UpsertStatusArgs {
+        target,
+        tool,
+        state,
+        now_ms,
+        reason,
+        auto_resolve_key,
+        coalesce_interval_ms,
+    } = args;
     if let Some(status) = file
         .llm_status
         .iter_mut()
@@ -192,8 +208,7 @@ fn clear_auto_resolvable_notifications(
     before != file.notifications.len()
 }
 
-fn upsert_waiting_notification(
-    file: &mut WorktreeMetadataFile,
+struct UpsertWaitingNotificationArgs {
     target: WorktreeIdentity,
     tool: String,
     reason: Option<String>,
@@ -202,7 +217,22 @@ fn upsert_waiting_notification(
     message: String,
     now_ms: u64,
     notification_id: String,
+}
+
+fn upsert_waiting_notification(
+    file: &mut WorktreeMetadataFile,
+    args: UpsertWaitingNotificationArgs,
 ) -> bool {
+    let UpsertWaitingNotificationArgs {
+        target,
+        tool,
+        reason,
+        auto_resolve_key,
+        level,
+        message,
+        now_ms,
+        notification_id,
+    } = args;
     let auto_resolve = level != NotifyLevel::Error;
     if let Some(notification) = file.notifications.iter_mut().find(|notification| {
         notification_source_matches(

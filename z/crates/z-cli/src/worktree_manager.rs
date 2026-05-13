@@ -123,12 +123,12 @@ fn parse_git_worktree_porcelain_blocks(output: &str) -> Vec<(PathBuf, Option<Str
     let mut current_branch: Option<String> = None;
 
     for line in output.lines() {
-        if line.starts_with("worktree ") {
+        if let Some(rest) = line.strip_prefix("worktree ") {
             // Flush previous entry.
             if let Some(path) = current_path.take() {
                 entries.push((path, current_branch.take()));
             }
-            current_path = Some(PathBuf::from(&line["worktree ".len()..]));
+            current_path = Some(PathBuf::from(rest));
             current_branch = None;
         } else if let Some(refs) = line.strip_prefix("branch refs/heads/") {
             current_branch = Some(refs.to_string());
@@ -774,7 +774,7 @@ mod tests {
 
     #[test]
     fn discover_primary_branch_fails_on_non_repo() {
-        let result = discover_primary_branch(&std::path::Path::new("/nonexistent"));
+        let result = discover_primary_branch(std::path::Path::new("/nonexistent"));
         assert!(result.is_err());
     }
 
@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn check_git_safety_fails_on_non_repo() {
-        let result = check_git_safety(&std::path::Path::new("/nonexistent"));
+        let result = check_git_safety(std::path::Path::new("/nonexistent"));
         assert!(result.is_err());
     }
 }

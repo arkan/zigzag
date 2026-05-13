@@ -27,14 +27,14 @@ fn is_z_hook(entry: &Value) -> bool {
         return hooks.iter().any(|h| {
             h.get("command")
                 .and_then(|c| c.as_str())
-                .map_or(false, |c| c.starts_with(Z_HOOK_PREFIX))
+                .is_some_and(|c| c.starts_with(Z_HOOK_PREFIX))
         });
     }
     // Legacy format: entry.command
     entry
         .get("command")
         .and_then(|c| c.as_str())
-        .map_or(false, |c| c.starts_with(Z_HOOK_PREFIX))
+        .is_some_and(|c| c.starts_with(Z_HOOK_PREFIX))
 }
 
 /// Merge a Z Stop hook into a Claude Code settings JSON value.

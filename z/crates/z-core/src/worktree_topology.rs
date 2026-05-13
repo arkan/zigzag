@@ -142,7 +142,12 @@ fn apply_collision_diagnostics(entries: &mut [WorktreeEntry]) {
 /// 2. Inactive worktrees with recent activity (have `last_opened_at`).
 /// 3. Primary checkout (if still inactive).
 /// 4. Branch name alphabetically, then path alphabetically.
+#[allow(clippy::ptr_arg)]
 pub fn sort_worktree_entries(entries: &mut Vec<WorktreeEntry>) {
+    sort_worktree_entries_slice(entries.as_mut_slice());
+}
+
+fn sort_worktree_entries_slice(entries: &mut [WorktreeEntry]) {
     entries.sort_by(|a, b| {
         // Active vs inactive
         let a_is_active = matches!(a.status, WorktreeStatus::Active);

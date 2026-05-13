@@ -557,7 +557,7 @@ fn cmd_tui() -> z_core::error::Result<()> {
             swap_fn: &|a, b| {
                 let mut s = config_store::KdlProjectStore::new();
                 s.swap_projects(a, b)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                    .map_err(|e| io::Error::other(e.to_string()))
             },
             kill_session_fn: &|session_name| {
                 let (project_name, branch) = parse_session_name(session_name).ok_or_else(|| {
@@ -578,17 +578,14 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     bin_path: resolve_bin_path(),
                 })
                 .kill_session(&sess)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| io::Error::other(e.to_string()))?;
                 Ok(())
             },
             delete_worktree_fn: &|project_name, branch, force| {
                 cmd_worktree_delete(project_name, branch, force)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                    .map_err(|e| io::Error::other(e.to_string()))
             },
-            doctor_fn: &|fix| {
-                cmd_doctor(fix, false)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
-            },
+            doctor_fn: &|fix| cmd_doctor(fix, false).map_err(|e| io::Error::other(e.to_string())),
             add_project_fn: &|path, name, host, transport| {
                 let transport = match transport {
                     Some("mosh") => Some(z_core::domain::Transport::Mosh),
@@ -603,12 +600,12 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 };
                 let mut s = config_store::KdlProjectStore::new();
                 s.add_project(&project)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                    .map_err(|e| io::Error::other(e.to_string()))
             },
             edit_project_fn: &|original_name, path, name, host, transport| {
                 let mut s = config_store::KdlProjectStore::new();
                 s.remove_project(original_name)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                    .map_err(|e| io::Error::other(e.to_string()))?;
                 let transport = match transport {
                     Some("mosh") => Some(z_core::domain::Transport::Mosh),
                     Some("ssh") => Some(z_core::domain::Transport::Ssh),
@@ -621,17 +618,17 @@ fn cmd_tui() -> z_core::error::Result<()> {
                     transport,
                 };
                 s.add_project(&project)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                    .map_err(|e| io::Error::other(e.to_string()))
             },
             delete_project_fn: &|name| {
                 let mut s = config_store::KdlProjectStore::new();
                 s.remove_project(name)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                    .map_err(|e| io::Error::other(e.to_string()))
             },
             reload_fn: &|| {
                 let s = config_store::KdlProjectStore::new();
-                let entries = build_entries(&s, &builtin)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                let entries =
+                    build_entries(&s, &builtin).map_err(|e| io::Error::other(e.to_string()))?;
                 let notifications = load_notification_aliases();
                 Ok((entries, notifications))
             },
@@ -2285,6 +2282,7 @@ enum NotifyCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 enum NotifyEventKind {
     LlmWorking,
     LlmIdle,
@@ -2532,6 +2530,7 @@ fn resolve_notify_args(
     Ok((session, message, level))
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3660,7 +3659,7 @@ pub fn cmd_autopilot_status(project_filter: Option<&str>) -> z_core::error::Resu
 
     let filtered: Vec<&WorkflowRun> = runs
         .iter()
-        .filter(|r| project_filter.map_or(true, |p| r.project == p))
+        .filter(|r| project_filter.is_none_or(|p| r.project == p))
         .collect();
 
     println!("{}", format_run_status(&filtered));

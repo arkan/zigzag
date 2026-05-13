@@ -77,7 +77,13 @@ pub enum SwitcherPriorityCriterion {
 }
 
 impl SwitcherPriorityCriterion {
+    /// Backwards-compatible alias for callers that used the pre-Rust-1.95 helper.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(value: &str) -> Option<Self> {
+        Self::parse_str(value)
+    }
+
+    pub fn parse_str(value: &str) -> Option<Self> {
         match value {
             "waiting" => Some(Self::Waiting),
             "error" => Some(Self::Error),
@@ -402,7 +408,7 @@ pub fn parse_global_config_kdl(content: &str) -> Result<GlobalConfig> {
                     if let Some(name_str) =
                         node.entries().first().and_then(|e| e.value().as_string())
                     {
-                        config.theme = ThemeName::from_str(name_str).ok_or_else(|| {
+                        config.theme = ThemeName::parse_str(name_str).ok_or_else(|| {
                             ZError::ConfigParse(format!("unknown theme: {name_str:?}"))
                         })?;
                     }
@@ -512,7 +518,7 @@ fn parse_switcher_config_node(node: &KdlNode) -> SwitcherConfig {
             let Some(value) = child.entries().first().and_then(|e| e.value().as_string()) else {
                 continue;
             };
-            match SwitcherPriorityCriterion::from_str(value) {
+            match SwitcherPriorityCriterion::parse_str(value) {
                 Some(criterion) if !configured.contains(&criterion) => configured.push(criterion),
                 Some(_) => {}
                 None => invalid.push(value.to_string()),

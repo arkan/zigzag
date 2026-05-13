@@ -177,6 +177,7 @@ pub enum TuiAction {
 
 /// All callbacks the TUI can invoke to mutate external state without leaving
 /// the alternate screen.
+#[allow(clippy::type_complexity)]
 pub struct TuiCallbacks<'a> {
     pub log_fn: &'a dyn Fn(usize) -> io::Result<Vec<String>>,
     pub swap_fn: &'a dyn Fn(usize, usize) -> io::Result<()>,
@@ -559,6 +560,7 @@ pub struct TuiState {
     /// Default AI review tool name (from global config, default: `"codex"`).
     pub review_tool: String,
     /// Fetches git info from a remote host via SSH. `(ssh_host, project_path) -> GitInfo`.
+    #[allow(clippy::type_complexity)]
     pub remote_preview_fn: Arc<dyn Fn(&str, &str) -> Result<GitInfo, String> + Send + Sync>,
     /// Preview data source used by background preview workers.
     pub preview_source: Arc<dyn PreviewDataSource>,
@@ -577,6 +579,7 @@ pub struct TuiState {
 }
 
 impl TuiState {
+    #[allow(clippy::type_complexity)]
     pub fn new(
         entries: Vec<ProjectEntry>,
         navigation: Navigation,
@@ -1703,6 +1706,7 @@ fn modal_rect(width: u16, height: u16, area: Rect) -> Rect {
 ///
 /// `notifications` — set of session names that have pending notifications;
 /// these sessions will display a 🔔 badge in the WORKTREES panel.
+#[allow(clippy::too_many_arguments)]
 pub fn run_tui(
     entries: Vec<ProjectEntry>,
     navigation: Navigation,
@@ -2358,6 +2362,7 @@ fn open_delete_project_modal(state: &mut TuiState) {
 ///
 /// Called directly from the event loop, so the TUI never leaves the alternate
 /// screen — no flicker, no re-entry.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn apply_edit_project(
     state: &mut TuiState,
     edit_project_fn: &dyn Fn(&str, &str, &str, Option<&str>, Option<&str>) -> io::Result<()>,
@@ -2385,6 +2390,7 @@ fn apply_edit_project(
 ///
 /// Called directly from the event loop, so the TUI never leaves the alternate
 /// screen — no flicker, no re-entry.
+#[allow(clippy::type_complexity)]
 fn apply_add_project(
     state: &mut TuiState,
     add_project_fn: &dyn Fn(&str, &str, Option<&str>, Option<&str>) -> io::Result<()>,
@@ -3024,6 +3030,7 @@ fn render_delete_session_confirm_modal(f: &mut Frame, session: &str, theme: &z_c
     f.render_widget(paragraph, inner);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_delete_worktree_confirm_modal(
     f: &mut Frame,
     project: &str,
@@ -3559,6 +3566,7 @@ fn render_new_session_menu_modal(
     f.render_widget(paragraph, inner);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_gh_picker_modal(
     f: &mut Frame,
     _project: &str,
@@ -3948,7 +3956,7 @@ pub fn sort_switch_entries(
     } else {
         priority.to_vec()
     };
-    let mut indexed = entries.to_vec().into_iter().enumerate().collect::<Vec<_>>();
+    let mut indexed = entries.iter().cloned().enumerate().collect::<Vec<_>>();
     indexed.sort_by(|(left_index, left), (right_index, right)| {
         for criterion in &order {
             match criterion {
@@ -4600,9 +4608,8 @@ pub fn run_log_viewer(lines: Vec<String>) -> io::Result<()> {
             if key.kind != event::KeyEventKind::Press {
                 continue;
             }
-            match advance_modal(&mut modal, key.code) {
-                ModalOutcome::Close => break Ok(()),
-                _ => {}
+            if let ModalOutcome::Close = advance_modal(&mut modal, key.code) {
+                break Ok(());
             }
         }
     };
@@ -4724,6 +4731,7 @@ mod tests {
         Arc::new(MockSessionRefresher)
     }
 
+    #[allow(clippy::type_complexity)]
     fn mock_remote_preview() -> Arc<dyn Fn(&str, &str) -> Result<GitInfo, String> + Send + Sync> {
         Arc::new(|_, _| Err("no remote in tests".to_string()))
     }
@@ -8491,7 +8499,7 @@ mod tests {
         );
         apply_doctor(
             &mut state,
-            &|_| Err(io::Error::new(io::ErrorKind::Other, "metadata read failed")),
+            &|_| Err(io::Error::other("metadata read failed")),
             false,
         );
         assert_eq!(
@@ -10927,7 +10935,7 @@ mod tests {
         );
         apply_delete_session(
             &mut state,
-            &|_| Err(io::Error::new(io::ErrorKind::Other, "session not found")),
+            &|_| Err(io::Error::other("session not found")),
             &make_reload_fn(make_entries()),
             "myapp:feat/login",
         );
@@ -11020,7 +11028,7 @@ mod tests {
         let original_count = state.entries.len();
         apply_delete_project(
             &mut state,
-            &|_| Err(io::Error::new(io::ErrorKind::Other, "permission denied")),
+            &|_| Err(io::Error::other("permission denied")),
             &make_reload_fn(vec![]),
             "myapp",
         );
@@ -11165,7 +11173,7 @@ mod tests {
         let original_count = state.entries.len();
         apply_edit_project(
             &mut state,
-            &|_, _, _, _, _| Err(io::Error::new(io::ErrorKind::Other, "write failed")),
+            &|_, _, _, _, _| Err(io::Error::other("write failed")),
             &make_reload_fn(vec![]),
             "myapp",
             "/path",
@@ -11227,7 +11235,7 @@ mod tests {
         let original_count = state.entries.len();
         apply_add_project(
             &mut state,
-            &|_, _, _, _| Err(io::Error::new(io::ErrorKind::Other, "duplicate name")),
+            &|_, _, _, _| Err(io::Error::other("duplicate name")),
             &make_reload_fn(vec![]),
             "/tmp/x",
             "x",
@@ -11259,7 +11267,7 @@ mod tests {
         let original_count = state.entries.len();
         apply_delete_session(
             &mut state,
-            &|_| Err(io::Error::new(io::ErrorKind::Other, "fail")),
+            &|_| Err(io::Error::other("fail")),
             &make_reload_fn(vec![]), // reload would produce empty list
             "myapp:feat/login",
         );

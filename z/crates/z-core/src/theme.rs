@@ -1,7 +1,7 @@
-/// Theme system for z TUI.
-///
-/// Themes are embedded in the binary as constants. The user selects a theme
-/// by name in `~/.config/z/config.kdl` via `theme "dracula"`.
+//! Theme system for z TUI.
+//!
+//! Themes are embedded in the binary as constants. The user selects a theme
+//! by name in `~/.config/z/config.kdl` via `theme "dracula"`.
 
 /// RGB color triple, framework-agnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,8 +82,14 @@ pub struct Theme {
 }
 
 impl ThemeName {
-    /// Parse a theme name from a string.
+    /// Backwards-compatible alias for callers that used the pre-Rust-1.95 helper.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<ThemeName> {
+        Self::parse_str(s)
+    }
+
+    /// Parse a theme name from a string.
+    pub fn parse_str(s: &str) -> Option<ThemeName> {
         match s {
             "dracula" => Some(ThemeName::Dracula),
             _ => None,
@@ -174,7 +180,7 @@ impl Theme {
     /// using the modern structured format (Zellij 0.41+).
     pub fn to_zellij_kdl(&self) -> String {
         let name = &self.name;
-        match ThemeName::from_str(name) {
+        match ThemeName::parse_str(name) {
             Some(ThemeName::Dracula) => Self::dracula_zellij_kdl(),
             None => Self::dracula_zellij_kdl(), // fallback
         }
@@ -329,17 +335,17 @@ mod tests {
 
     #[test]
     fn theme_name_from_str_dracula() {
-        assert_eq!(ThemeName::from_str("dracula"), Some(ThemeName::Dracula));
+        assert_eq!(ThemeName::parse_str("dracula"), Some(ThemeName::Dracula));
     }
 
     #[test]
     fn theme_name_from_str_unknown() {
-        assert_eq!(ThemeName::from_str("nord"), None);
+        assert_eq!(ThemeName::parse_str("nord"), None);
     }
 
     #[test]
     fn theme_name_from_str_empty() {
-        assert_eq!(ThemeName::from_str(""), None);
+        assert_eq!(ThemeName::parse_str(""), None);
     }
 
     #[test]

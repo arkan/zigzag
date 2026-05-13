@@ -194,6 +194,7 @@ mod tests {
     }
 
     impl MockNotifier {
+        #[allow(clippy::type_complexity)]
         fn new() -> (Self, Arc<Mutex<Vec<(String, NotifyLevel)>>>) {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let n = Self {

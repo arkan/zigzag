@@ -52,8 +52,7 @@ fn applescript_quote(s: &str) -> String {
         "\"{}\"",
         s.replace('\\', "\\\\")
             .replace('"', "\\\"")
-            .replace('\n', " ")
-            .replace('\r', " ")
+            .replace(['\n', '\r'], " ")
     )
 }
 
@@ -180,6 +179,7 @@ mod tests {
     }
 
     impl MockNotifier {
+        #[allow(clippy::type_complexity)]
         fn new() -> (Self, Arc<Mutex<Vec<(String, NotifyLevel)>>>) {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let notifier = Self {
