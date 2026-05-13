@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "z-autopilot"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "kdl",
  "serde",
@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "z-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "kdl",
  "serde_json",
@@ -1016,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "z-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "kdl",
  "semver",
@@ -1027,14 +1027,14 @@ dependencies = [
 
 [[package]]
 name = "z-plugin"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "z-core",
 ]
 
 [[package]]
 name = "z-tui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "z-web"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "z-core",
 ]
