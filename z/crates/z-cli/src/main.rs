@@ -1886,7 +1886,8 @@ fn build_switch_entries(
                         .filter(|notification| notification.target == worktree.identity)
                         .cloned()
                         .collect::<Vec<_>>();
-                    metadata_notifications.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                    metadata_notifications
+                        .sort_by_key(|notification| std::cmp::Reverse(notification.created_at));
                     notification_count = metadata_notifications.len();
                     notifications = metadata_notifications
                         .into_iter()
