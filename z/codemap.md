@@ -1,6 +1,6 @@
 # z — Workspace Codemap
 
-**Version:** 0.5.0  
+**Version:** 0.6.0
 **Edition:** 2021  
 **Resolvers:** `resolver = "2"`
 
