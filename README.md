@@ -1,78 +1,75 @@
 # z
 
-**TUI/CLI project manager for [Zellij](https://github.com/zellij-org/zellij)** — orchestrates sessions, git worktrees, and autopilot workflows from a single dashboard.
+**Rust TUI/CLI for [Zellij](https://github.com/zellij-org/zellij)-based development** — manage projects, git worktrees, Zellij sessions, and workflow automations from one terminal dashboard.
 
-[Overview](#overview) | [Getting started](#getting-started) | [Usage](#usage) | [Working with Zellij](#working-with-zellij) | [Notifications](#notifications) | [Configuration](#configuration) | [Autopilot](#autopilot) | [Architecture](#architecture)
+[Install](#install) · [Basic start](#basic-start) · [Shortcuts](#shortcuts) · [Configuration](#configuration) · [Autopilot](#autopilot) · [Development](#development)
 
 ## Overview
 
-`z` unifies your development workflow around Zellij. Instead of juggling terminals, branches, and CI dashboards separately, `z` gives you a single TUI to manage everything:
+`z` is for developers who keep many repositories, branches, and terminal sessions open at once. It gives you one workflow around Zellij and git worktrees:
 
-- **Project dashboard** — browse all your projects, active sessions, git branch status, PR/CI state
-- **Session lifecycle** — `z open` creates a git worktree (via [worktrunk](https://github.com/max-sixty/worktrunk)), launches a Zellij session with Claude + shell tabs, and attaches
-- **Autopilot workflows** — KDL-defined state machines that monitor CI, auto-fix failures with Claude, merge PRs, deploy — running in the background
-- **Local + remote** — transparent access to remote machines via Zellij HTTPS attach
-- **Fuzzy search** — instantly filter projects and sessions
+- **Project dashboard** — browse configured projects, worktrees, running sessions, notifications, and git/PR/CI preview data.
+- **Worktree-first sessions** — `z open` restores the primary checkout or creates/restores a branch worktree through [`wt`](https://github.com/max-sixty/worktrunk).
+- **Zellij integration** — generated layouts include shortcuts for session switching, actions, and logs.
+- **Action menu** — run contextual tools such as review, lazygit, PR opening, CI fixes, or custom commands.
+- **Autopilot workflows** — KDL-defined background workflows for CI fixes, review follow-up, merge/deploy flows, and custom automation.
 
-```
-┌─ z ────────────────────────────────────────────┐
-│  PROJECTS             SESSIONS                  │
-│  > myapp    ●         main                      │
-│    hermes   ●         feat/login                │
-│    prod-api                                     │
-│  ┌─ PREVIEW ─────────────────────────────────┐  │
-│  │ myapp:feat/login                           │  │
-│  │ branch: 3 ahead, 1 behind · dirty          │  │
-│  │ PR: #42 (open) | CI: passing               │  │
-│  │ 💬 2 new review comments                    │  │
-│  │ session: 3 tabs, 5 panes, up 2h34m         │  │
-│  └───────────────────────────────────────────┘  │
-│  [o]pen [n]ew [r]un [d]el [p]rune [a]utopilot [/] │
-└─────────────────────────────────────────────────┘
+```text
+┌─ z ───────────────────────────────────────────┐
+│ PROJECTS             WORKTREES                 │
+│ > myapp              main                 ●    │
+│   api                feat/login           🔔   │
+│                                                │
+│ PREVIEW                                        │
+│ myapp:feat/login · dirty · PR #42 · CI passing │
+│                                                │
+│ [o]pen [n]ew [r]un [K]ill [d]el [?]help [q]uit│
+└────────────────────────────────────────────────┘
 ```
 
 > [!NOTE]
-> `z` is in **early development**. See the [PRD](docs/PRD.md) and [Specs](docs/SPECS.md) for the full design.
+> `z` is still in early development. For deeper design context, see [`docs/PRD.md`](docs/PRD.md) and [`docs/SPECS.md`](docs/SPECS.md).
 
-## Getting started
+## Install
 
 ### Prerequisites
 
-| Tool | Min version | Role |
-|------|-------------|------|
+| Tool | Minimum | Used for |
+|---|---:|---|
 | [Rust](https://www.rust-lang.org/tools/install) | stable | Build toolchain |
-| [Zellij](https://github.com/zellij-org/zellij) | 0.44.0 | Terminal multiplexer |
-| [worktrunk](https://github.com/max-sixty/worktrunk) (`wt`) | 0.34.0 | Git worktree management |
-| [gh](https://cli.github.com/) | 2.0.0 | GitHub CLI |
+| [Zellij](https://github.com/zellij-org/zellij) | `0.44.0` | Terminal sessions |
+| [`wt`](https://github.com/max-sixty/worktrunk) | `0.34.0` | Git worktrees |
+| [GitHub CLI](https://cli.github.com/) | `2.0.0` | PR, CI, issue data |
 
-`z` checks for these dependencies at startup and reports any missing or outdated tools.
+`z` checks these dependencies at startup and reports missing or outdated tools.
 
-### Install
+### From a release
 
 ```bash
-# One-liner (latest release)
+# Latest release
 curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | bash
 
 # Specific version
-curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | Z_VERSION=v0.2.1 bash
+curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | Z_VERSION=v0.6.0 bash
 
-# Custom install directory (default: ~/.local/bin)
+# Custom install directory, default is ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | Z_INSTALL_DIR=/usr/local/bin bash
 ```
 
-Or build from source:
+### From source
 
 ```bash
-# From the repository
 make install
 
-# Or directly with cargo
+# Or directly
 cargo install --path z/crates/z-cli
 ```
 
-### First-time setup
+## Basic start
 
-1. Create your project list at `~/.config/z/projects.kdl`:
+### 1. Register your projects
+
+Create `~/.config/z/projects.kdl`:
 
 ```kdl
 project "myapp" {
@@ -82,211 +79,121 @@ project "myapp" {
 project "api" {
     path "~/Code/api"
 }
-
-// Remote project
-project "prod" {
-    path "/srv/app"
-    host "https://remote:8080"
-    token "env:ZELLIJ_TOKEN"
-}
 ```
 
-2. Run `z` to open the TUI.
-
-## Usage
-
-### Commands
+### 2. Open the dashboard
 
 ```bash
-z                                # Launch interactive TUI
-z list                           # List all projects and active sessions
-z open <project> [branch]        # Open/attach a session (creates worktree if needed)
-z close [session]                # Detach session (keep worktree)
-z delete <project:branch>        # Kill session + prompt to delete worktree
-z prune [--dry-run]              # Clean orphaned sessions and worktrees
-z switch                         # Switch between sessions (interactive)
-z actions                        # Open action menu (inside Zellij sessions)
-z notify [session] <msg> [--level info|warning|error]
-z autopilot <subcommand>         # Manage autopilot workflows
-z logs [-n <count>]              # View logs
+z
 ```
 
-### Opening a project
-
-```bash
-# Open on the main branch (default)
-z open myapp
-
-# Open or create a feature branch worktree
-z open myapp feat/login
-```
-
-This will:
-1. Create a git worktree for the branch (via `wt`) if it doesn't exist
-2. Generate a Zellij layout with configured tabs/panes
-3. Launch a new Zellij session named `myapp:feat-login`
-4. Attach to the session
-
-### TUI keybindings
+Then use:
 
 | Key | Action |
-|-----|--------|
-| `o` | Open selected project/session |
-| `n` | New session (menu: Blank / From Issue / From PR) |
-| `r` | Open action menu |
-| `d` | Delete session + worktree |
-| `p` | Prune orphaned sessions |
-| `a` | Open autopilot panel |
+|---|---|
+| `↑` / `↓` | Move in the current list |
+| `←` / `→` or `Tab` | Switch between Projects and Worktrees |
+| `Enter` or `o` | Open/restore the selected worktree session |
+| `n` | Create a new worktree + session from a branch, issue, or PR |
 | `/` | Fuzzy search |
-| `q` | Quit |
-
-Both arrow keys and vim-style (`hjkl`) navigation are supported (configurable).
-
-### Creating sessions from Issues / PRs
-
-Pressing `n` opens a menu with three options:
-
-- **Blank** — classic branch name input (previous behavior)
-- **From Issue** — fuzzy-search open GitHub issues, then create a `grill/<id>-<slug>` worktree and launch Claude with a `/grill-me` prompt pre-filled with the issue context
-- **From PR** — fuzzy-search open PRs, checkout the PR branch in a new worktree, and launch Claude with a review-oriented prompt
-
-The prompt templates are overridable in config (global or per-repo):
-
-```kdl
-// In ~/.config/z/config.kdl or .config/z.kdl
-issue-prompt-template "/grill-me Working on issue #{number}: {title}. Fetch context with gh issue view {number} --comments"
-pr-prompt-template "/grill-me Reviewing PR #{number}: {title}. Fetch context with gh pr view {number} --comments"
-```
-
-Available placeholders: `{number}`, `{title}`, `{body}`, `{url}`, `{branch}`.
-
-## Working with Zellij
-
-When you `z open` a project, `z` generates a KDL layout and launches a Zellij session. By default, each session gets a `claude` tab and a `shell` tab (customizable via config).
-
-### Zellij basics
-
-Inside a Zellij session, useful built-in shortcuts:
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+T` then `N` | New tab |
-| `Ctrl+T` then `1-9` | Switch to tab by number |
-| `Ctrl+O` then `D` | Detach from session (session keeps running) |
-| `Ctrl+Q` | Quit session |
+| `?` | Show in-app help |
+| `q` | Quit the dashboard |
 
 > [!TIP]
-> Detaching (`Ctrl+O D`) lets you return to the `z` TUI while your session stays alive in the background. Re-attach anytime with `z open <project>`.
+> Arrow keys always work. `h/j/k/l` navigation is available when `keybindings "vim"` is enabled in your config.
 
-### Session shortcuts
-
-`z` injects custom keybindings into every Zellij session:
-
-| Shortcut | Action |
-|----------|--------|
-| `Alt+Z` | **Action menu** — floating picker with contextual actions (review, lazygit, CI fix, etc.) |
-| `Alt+K` | **Switch session** — floating picker to jump between z-managed sessions |
-| `Alt+L` | **Logs** — view z logs in a floating pane |
-
-These shortcuts work in all Zellij modes. Floating panes close automatically on exit.
-
-### Action menu
-
-The action menu (`Alt+Z` in Zellij, `r` in the TUI) provides contextual actions based on the current project and branch state.
-
-**Built-in actions:**
-
-| Action | Condition | Pane |
-|--------|-----------|------|
-| Review code | Always | Tab |
-| Lazygit | Always | Fullscreen float |
-| Open PR | Has PR | — (shows URL) |
-| Fix CI | CI failing | Tab |
-| Address review comments | New comments | Tab |
-
-Actions are configurable at three levels (built-in < global < per-repo) via KDL:
-
-```kdl
-// In ~/.config/z/config.kdl or .config/z.kdl
-actions {
-    review-tool "codex"    // default AI tool for review actions
-
-    action "Run tests" {
-        run "cargo test"
-        context "session"
-        pane "float"
-    }
-
-    action "Deploy" {
-        run "./deploy.sh"
-        when "has_pr"
-        context "session"
-        pane "tab"
-    }
-}
-```
-
-**Pane types:** `float` (default), `float-fullscreen`, `split`, `tab`
-**Conditions:** `always` (default), `has_pr`, `has_ci_failure`, `has_new_comments`
-**Variables:** `${project}`, `${branch}`, `${session}`, `${pr_number}`, `${pr_url}`, `${ci_status}`, `${review_tool}`
-
-### Session naming
-
-Sessions are named `{project}:{branch}` with `/` replaced by `-`. For example, opening project `myapp` on branch `feat/login` creates session `myapp:feat-login`.
-
-## Notifications
-
-`z` has a file-based notification system that connects background processes (CI, autopilot, scripts) to the TUI.
-
-### Sending notifications
+### 3. Open directly from the shell
 
 ```bash
-# Explicit session
-z notify myapp:main "CI passed"
-
-# Infer session from $ZELLIJ_SESSION_NAME (works inside any Zellij pane)
-z notify "Deploy complete" --level warning
+z open myapp              # Open/restore the primary checkout session
+z open myapp feat/login   # Open/restore a branch worktree + session
+z switch                  # Pick another z-managed session
 ```
 
-Levels: `info` (default), `warning`, `error`.
+When a branch worktree does not exist yet, `z open <project> <branch>` creates it with `wt`, generates a Zellij layout, starts the session, then attaches to it.
 
-### Where notifications appear
+### 4. Return to `z` from Zellij
 
-- **TUI** — sessions with pending notifications show a 🔔 badge. Notifications are cleared when you open the session.
-- **macOS** — native system notifications (enable with `macos-native true` in config)
-- **Telegram** — push to a Telegram chat (configure `telegram-token` and `telegram-chat-id` in config)
+Inside a session, press `Ctrl+O`, then `D` to detach. The Zellij session keeps running in the background, and you can return with `z` or `z open <project> [branch]`.
 
-> [!TIP]
-> Inside a Zellij pane, `$ZELLIJ_SESSION_NAME` is set automatically, so `z notify "message"` just works — no need to specify the session.
+## Shortcuts
+
+### Dashboard shortcuts
+
+| Key | Action |
+|---|---|
+| `o` / `Enter` | Open/restore selected project or worktree |
+| `n` | New worktree + session |
+| `r` | Run action menu |
+| `a` | Autopilot workflows |
+| `K` | Kill active session only |
+| `d` | Delete selected worktree |
+| `D` | Run doctor diagnostics |
+| `A` / `E` / `X` | Add, edit, or delete a project |
+| `e` | Edit per-repo `.config/z.kdl` |
+| `/` | Search |
+| `?` | Help |
+
+### In `z`-managed Zellij sessions
+
+`z` injects these shortcuts into generated Zellij layouts:
+
+| Shortcut | Action |
+|---|---|
+| `Alt+k` | Open the floating `z switch` session picker |
+| `Alt+z` | Open the floating action menu |
+| `Alt+l` | Open the floating log viewer |
+
+### Useful Zellij defaults
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+O`, then `D` | Detach from the session |
+| `Ctrl+Q` | Quit the session |
+| `Ctrl+T`, then `N` | New tab |
+| `Ctrl+T`, then `1`-`9` | Switch to tab by number |
+
+## Useful commands
+
+| Command | Description |
+|---|---|
+| `z` | Launch the dashboard |
+| `z list` | List configured projects and active sessions |
+| `z open <project> [branch]` | Open/restore a checkout or branch session |
+| `z close [session]` | Detach a session without deleting it |
+| `z switch` | Pick and jump to another `z` session |
+| `z actions` | Open the action menu for the current session |
+| `z logs [-n <count>]` | Show `z` logs |
+| `z doctor [--fix]` | Diagnose or repair safe project/session issues |
+| `z session kill <project> <branch>` | Kill a Zellij session only |
+| `z worktree delete <project> <branch> [--confirm <branch>]` | Delete a worktree |
+| `z project delete <project>` | Remove a project from `projects.kdl` |
+| `z notify [session] <message>` | Add a session notification |
+| `z autopilot <subcommand>` | Manage workflow automation |
 
 ## Configuration
 
-`z` uses [KDL](https://kdl.dev) for configuration with three tiers (global < project list < per-repo):
+`z` uses [KDL](https://kdl.dev) with three main files:
 
-### Global config — `~/.config/z/config.kdl`
+| File | Purpose |
+|---|---|
+| `~/.config/z/projects.kdl` | Project registry |
+| `~/.config/z/config.kdl` | Global preferences, layout defaults, actions, notifications |
+| `<repo>/.config/z.kdl` | Per-repository layout, actions, and autopilot settings |
+
+Minimal global config:
 
 ```kdl
-default-layout {
-    tab "code" {
-        pane "editor"
-        pane "shell" size=30
-    }
-    tab "claude" {
-        pane "claude"
-    }
-}
-
-keybindings "vim"     // or "arrows" (default)
-
+keybindings "vim" // or omit for arrow-key navigation
 theme "dracula"
 
 notifications {
-    macos-native true
     tui true
+    macos-native false
 }
 ```
 
-### Per-repo config — `.config/z.kdl` (in repo root)
+Minimal per-repo layout:
 
 ```kdl
 layout {
@@ -294,88 +201,60 @@ layout {
         pane "editor"
         pane "shell" size=30
     }
-    tab "test" {
-        pane command="cargo watch -x test"
+
+    tab "agent" {
+        pane command="claude"
     }
 }
+```
 
-claude {
-    args "--resume"
-}
+## Actions and notifications
 
-autopilot {
-    auto-push true
-}
+The action menu (`r` in the dashboard, `Alt+z` in a generated Zellij session) resolves built-in, global, and per-repo actions against the current project/session context.
+
+Notifications are stored in local worktree metadata and surfaced as dashboard/switcher badges. From inside a Zellij pane, `$ZELLIJ_SESSION_NAME` lets you notify the current session without naming it:
+
+```bash
+z notify "CI finished" --level info
+z notify myapp:feat-login "Review comments arrived" --level warning
 ```
 
 ## Autopilot
 
-Autopilot workflows are KDL-defined state machines that run in the background, reacting to events and executing actions automatically.
+Autopilot workflows are KDL-defined state machines that can run commands, send notifications, ask for confirmations, and transition on success/failure.
 
-### Built-in workflows
-
-| Workflow | Trigger | Description |
-|----------|---------|-------------|
-| `pr-ci-fix` | `post-push` | Monitor CI, fix failures with Claude (max 3 retries) |
-| `pr-review-fix` | `pr-review-received` | Resolve PR review comments with Claude |
-| `pr-merge-when-ready` | `pr-approved` | Wait for CI green, squash-merge, cleanup |
-| `dependabot-auto` | `pr-opened-by-dependabot` | Auto-merge Dependabot PRs if tests pass |
-| `deploy-watch` | `post-merge-main` | Monitor deploy, rollback on failure |
-| `deploy-sync` | `new-commits-on-main` | Pull, diff, confirm, deploy |
-
-### Custom workflows
-
-Define your own in `.config/z.kdl`:
-
-```kdl
-autopilot "my-workflow" {
-    trigger "manual"
-    step "build" {
-        run "cargo build --release"
-        on-success "test"
-        on-failure "notify-fail"
-    }
-    step "test" {
-        run "cargo test"
-        on-success "done"
-        on-failure "notify-fail"
-    }
-    step "notify-fail" {
-        notify "Build failed!" level="error"
-    }
-}
+```bash
+z autopilot list
+z autopilot status
+z autopilot run <project> <workflow>
 ```
 
-**Step actions:** `run "command"`, `notify "message"`, `confirm "prompt?"`
-**Transitions:** `on-success`, `on-failure`, `on-complete`, `on-max-retries`, `on-accept`, `on-reject`
+Built-in workflows cover common PR and deploy loops such as CI fixing, review follow-up, merge-when-ready, Dependabot auto-merge, and deploy monitoring.
 
-## Architecture
+## Development
 
-`z` is a Rust workspace organized into focused crates:
+This repository is a Rust workspace:
 
-```
+```text
 z/crates/
-├── z-core       # I/O-agnostic business logic + trait definitions
-├── z-cli        # CLI commands, binary entry point, trait implementations
-├── z-tui        # ratatui TUI frontend
-├── z-autopilot  # State machine engine, KDL DSL parser, built-in workflows
-├── z-plugin     # (planned) Zellij WASM plugin
-└── z-web        # (planned) Web UI via axum + ratatui WASM
+├── z-core       # Domain types, config, actions, traits
+├── z-cli        # CLI entry point and process/filesystem adapters
+├── z-tui        # Ratatui dashboard, switcher, logs, action picker
+├── z-autopilot  # Workflow DSL and runner
+├── z-plugin     # Future Zellij WASM plugin
+└── z-web        # Future web bridge
 ```
 
-All I/O is abstracted behind traits in `z-core` (`SessionManager`, `WorktreeManager`, `ForgeClient`, `Notifier`, etc.), making the business logic fully testable without real processes or filesystem access.
+Common checks:
 
-### Key dependencies
+```bash
+npm run typecheck
+npm test
+cargo fmt --manifest-path z/Cargo.toml --all --check
+```
 
-| Crate | Purpose |
-|-------|---------|
-| [ratatui](https://ratatui.rs) | TUI rendering |
-| [crossterm](https://github.com/crossterm-rs/crossterm) | Terminal I/O |
-| [kdl](https://github.com/kdl-org/kdl-rs) | Configuration parsing |
+Further reading:
 
-## Docs
-
-- [PRD](docs/PRD.md) — problem, solution, user stories, decisions
-- [Action Menu PRD](docs/PRD-action-menu.md) — contextual action menu design
-- [Specs](docs/SPECS.md) — architecture, config format, TUI design, autopilot DSL, phasing
-- [Sandcastle](.sandcastle/README.md) — AI agent orchestration (parallel issue solving via Claude Code in Docker)
+- [`codemap.md`](codemap.md) — repository map and entry points
+- [`docs/PRD.md`](docs/PRD.md) — product requirements
+- [`docs/SPECS.md`](docs/SPECS.md) — technical specs
