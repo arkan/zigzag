@@ -10,7 +10,9 @@ pub enum TriggerEvent {
     PostMergeMain,
     NewCommitsOnMain,
     /// Manually trigger a specific workflow by name.
-    Manual { workflow_name: String },
+    Manual {
+        workflow_name: String,
+    },
 }
 
 /// Returns `true` if the workflow's trigger matches the given event.
@@ -34,7 +36,10 @@ pub fn matching_workflows<'a>(
     workflows: &'a [AutopilotWorkflow],
     event: &TriggerEvent,
 ) -> Vec<&'a AutopilotWorkflow> {
-    workflows.iter().filter(|wf| matches_trigger(wf, event)).collect()
+    workflows
+        .iter()
+        .filter(|wf| matches_trigger(wf, event))
+        .collect()
 }
 
 #[cfg(test)]
@@ -92,11 +97,15 @@ mod tests {
         let wf = make_workflow("manual");
         assert!(matches_trigger(
             &wf,
-            &TriggerEvent::Manual { workflow_name: "test-wf".into() }
+            &TriggerEvent::Manual {
+                workflow_name: "test-wf".into()
+            }
         ));
         assert!(!matches_trigger(
             &wf,
-            &TriggerEvent::Manual { workflow_name: "other-wf".into() }
+            &TriggerEvent::Manual {
+                workflow_name: "other-wf".into()
+            }
         ));
     }
 
@@ -128,7 +137,9 @@ autopilot "named" {
 
         let manual_matches = matching_workflows(
             &workflows,
-            &TriggerEvent::Manual { workflow_name: "named".into() },
+            &TriggerEvent::Manual {
+                workflow_name: "named".into(),
+            },
         );
         assert_eq!(manual_matches.len(), 1);
         assert_eq!(manual_matches[0].name, "named");

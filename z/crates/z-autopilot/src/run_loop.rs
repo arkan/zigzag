@@ -177,7 +177,9 @@ autopilot "manual-check" {
 
     impl StepExecutor for FakeExecutor {
         fn run_command(&self, _: &str) -> Result<StepResult> {
-            Ok(StepResult::Success { output: Some("ok".to_string()) })
+            Ok(StepResult::Success {
+                output: Some("ok".to_string()),
+            })
         }
 
         fn notify(&self, _: &str) -> Result<()> {
@@ -195,7 +197,9 @@ autopilot "manual-check" {
 
     impl FakeNotifier {
         fn new() -> Self {
-            Self { calls: RefCell::new(Vec::new()) }
+            Self {
+                calls: RefCell::new(Vec::new()),
+            }
         }
     }
 

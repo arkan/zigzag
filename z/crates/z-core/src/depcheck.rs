@@ -11,9 +11,18 @@ pub struct DepSpec {
 }
 
 pub const REQUIRED_DEPS: &[DepSpec] = &[
-    DepSpec { tool: "zellij", min_version: ">=0.44.0" },
-    DepSpec { tool: "wt", min_version: ">=0.34.0" },
-    DepSpec { tool: "gh", min_version: ">=2.0.0" },
+    DepSpec {
+        tool: "zellij",
+        min_version: ">=0.44.0",
+    },
+    DepSpec {
+        tool: "wt",
+        min_version: ">=0.34.0",
+    },
+    DepSpec {
+        tool: "gh",
+        min_version: ">=2.0.0",
+    },
 ];
 
 /// Abstraction over external tool version probing.
@@ -87,7 +96,10 @@ fn check_one<C: DepChecker>(checker: &C, spec: &DepSpec) -> DepCheckResult {
         Ok(None) => DepCheckStatus::Missing,
         Err(_) => DepCheckStatus::Missing,
     };
-    DepCheckResult { tool: spec.tool, status }
+    DepCheckResult {
+        tool: spec.tool,
+        status,
+    }
 }
 
 /// Format a human-readable error message for a failed dep check.
@@ -112,7 +124,9 @@ pub fn format_dep_error(result: &DepCheckResult) -> String {
 
 /// Returns `true` if all checks passed.
 pub fn all_ok(results: &[DepCheckResult]) -> bool {
-    results.iter().all(|r| matches!(r.status, DepCheckStatus::Ok { .. }))
+    results
+        .iter()
+        .all(|r| matches!(r.status, DepCheckStatus::Ok { .. }))
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +172,10 @@ mod tests {
 
     #[test]
     fn test_parse_version_multiline_output() {
-        let v = parse_version("gh version 2.45.0 (2024-01-15)\nhttps://github.com/cli/cli/releases/tag/v2.45.0").unwrap();
+        let v = parse_version(
+            "gh version 2.45.0 (2024-01-15)\nhttps://github.com/cli/cli/releases/tag/v2.45.0",
+        )
+        .unwrap();
         assert_eq!(v, Version::new(2, 45, 0));
     }
 
@@ -326,7 +343,9 @@ mod tests {
     fn test_format_dep_error_ok_is_empty() {
         let result = DepCheckResult {
             tool: "gh",
-            status: DepCheckStatus::Ok { version: Version::new(2, 45, 0) },
+            status: DepCheckStatus::Ok {
+                version: Version::new(2, 45, 0),
+            },
         };
         assert_eq!(format_dep_error(&result), "");
     }
@@ -352,7 +371,10 @@ mod tests {
         let results = check_deps(&checker);
         assert!(!all_ok(&results));
         let zellij = results.iter().find(|r| r.tool == "zellij").unwrap();
-        assert!(matches!(&zellij.status, DepCheckStatus::VersionUnparseable { .. }));
+        assert!(matches!(
+            &zellij.status,
+            DepCheckStatus::VersionUnparseable { .. }
+        ));
     }
 
     #[test]
@@ -378,7 +400,10 @@ mod tests {
         let results = check_deps(&checker);
         assert!(!all_ok(&results));
         let zellij = results.iter().find(|r| r.tool == "zellij").unwrap();
-        assert!(matches!(&zellij.status, DepCheckStatus::VersionUnparseable { .. }));
+        assert!(matches!(
+            &zellij.status,
+            DepCheckStatus::VersionUnparseable { .. }
+        ));
     }
 
     #[test]
@@ -391,7 +416,9 @@ mod tests {
         }
         let results = check_deps(&ErrorChecker);
         assert!(!all_ok(&results));
-        assert!(results.iter().all(|r| matches!(r.status, DepCheckStatus::Missing)));
+        assert!(results
+            .iter()
+            .all(|r| matches!(r.status, DepCheckStatus::Missing)));
     }
 
     #[test]
@@ -404,6 +431,8 @@ mod tests {
         let results = check_deps(&checker);
         assert!(!all_ok(&results));
         assert_eq!(results.len(), 3);
-        assert!(results.iter().all(|r| matches!(r.status, DepCheckStatus::Missing)));
+        assert!(results
+            .iter()
+            .all(|r| matches!(r.status, DepCheckStatus::Missing)));
     }
 }

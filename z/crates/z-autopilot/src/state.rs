@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::dsl::{AutopilotWorkflow, Step};
-use z_core::error::{ZError, Result};
+use serde::{Deserialize, Serialize};
+use z_core::error::{Result, ZError};
 
 /// Result of executing a step's action.
 #[derive(Debug, Clone, PartialEq)]
@@ -54,7 +54,11 @@ pub struct WorkflowRun {
 }
 
 impl WorkflowRun {
-    pub fn new(workflow_name: impl Into<String>, project: impl Into<String>, first_step: impl Into<String>) -> Self {
+    pub fn new(
+        workflow_name: impl Into<String>,
+        project: impl Into<String>,
+        first_step: impl Into<String>,
+    ) -> Self {
         WorkflowRun {
             workflow_name: workflow_name.into(),
             project: project.into(),
@@ -86,9 +90,16 @@ pub fn advance(
         None => return Ok(None),
     };
 
-    let step = workflow.steps.iter().find(|s| s.name == step_name).ok_or_else(|| {
-        ZError::ConfigParse(format!("unknown step '{step_name}' in workflow '{}'", workflow.name))
-    })?;
+    let step = workflow
+        .steps
+        .iter()
+        .find(|s| s.name == step_name)
+        .ok_or_else(|| {
+            ZError::ConfigParse(format!(
+                "unknown step '{step_name}' in workflow '{}'",
+                workflow.name
+            ))
+        })?;
 
     let succeeded = matches!(result, StepResult::Success { .. });
     let output = match &result {
@@ -96,7 +107,11 @@ pub fn advance(
     };
 
     // Record this execution.
-    let status = if succeeded { StepStatus::Succeeded } else { StepStatus::Failed };
+    let status = if succeeded {
+        StepStatus::Succeeded
+    } else {
+        StepStatus::Failed
+    };
     run.history.push(StepExecution {
         step_name: step_name.clone(),
         status: status.clone(),
@@ -171,7 +186,9 @@ pub fn advance(
 
 /// Return the step definition for the current step in the run.
 pub fn current_step<'a>(workflow: &'a AutopilotWorkflow, run: &WorkflowRun) -> Option<&'a Step> {
-    run.current_step.as_ref().and_then(|name| workflow.steps.iter().find(|s| &s.name == name))
+    run.current_step
+        .as_ref()
+        .and_then(|name| workflow.steps.iter().find(|s| &s.name == name))
 }
 
 #[cfg(test)]
@@ -285,7 +302,14 @@ autopilot "test" {
     fn test_history_records_executions() {
         let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
         let mut run = make_run("pr-ci-fix", "monitor-ci");
-        advance(&wf, &mut run, StepResult::Success { output: Some("ok".into()) }).unwrap();
+        advance(
+            &wf,
+            &mut run,
+            StepResult::Success {
+                output: Some("ok".into()),
+            },
+        )
+        .unwrap();
         assert_eq!(run.history.len(), 1);
         assert_eq!(run.history[0].step_name, "monitor-ci");
         assert_eq!(run.history[0].status, StepStatus::Succeeded);
@@ -445,7 +469,10 @@ autopilot "test" {
         let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
         assert_eq!(next.as_deref(), Some("done"));
         assert_eq!(run.retry_count, 0);
-        assert_eq!(run.history.last().unwrap().status, StepStatus::MaxRetriesExhausted);
+        assert_eq!(
+            run.history.last().unwrap().status,
+            StepStatus::MaxRetriesExhausted
+        );
     }
 
     #[test]
@@ -570,7 +597,11 @@ autopilot "test" {
         let wf = parse_autopilot_workflow(kdl).unwrap();
         let mut run = make_run("test", "ask");
         let next = advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
-        assert_eq!(next.as_deref(), Some("rejected"), "on_reject should take priority over on_failure");
+        assert_eq!(
+            next.as_deref(),
+            Some("rejected"),
+            "on_reject should take priority over on_failure"
+        );
     }
 
     #[test]
@@ -592,8 +623,7 @@ autopilot "test" {
 
     #[test]
     fn test_workflow_run_with_host_serializes() {
-        let run = WorkflowRun::new("wf", "proj", "step1")
-            .with_host("vps.example.com");
+        let run = WorkflowRun::new("wf", "proj", "step1").with_host("vps.example.com");
         assert_eq!(run.host.as_deref(), Some("vps.example.com"));
 
         let json = serde_json::to_string(&run).unwrap();
@@ -605,8 +635,8 @@ autopilot "test" {
     #[test]
     fn test_advance_works_with_host_set() {
         let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
-        let mut run = WorkflowRun::new("pr-ci-fix", "myproject", "monitor-ci")
-            .with_host("vps.example.com");
+        let mut run =
+            WorkflowRun::new("pr-ci-fix", "myproject", "monitor-ci").with_host("vps.example.com");
         let next = advance(&wf, &mut run, StepResult::Success { output: None }).unwrap();
         assert_eq!(next.as_deref(), Some("notify-done"));
         assert_eq!(run.host.as_deref(), Some("vps.example.com"));

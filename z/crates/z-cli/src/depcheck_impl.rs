@@ -13,7 +13,11 @@ impl DepChecker for ProcessDepChecker {
                 // Some tools (e.g. older gh) print to stderr.
                 let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
                 let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-                let text = if stdout.trim().is_empty() { stderr } else { stdout };
+                let text = if stdout.trim().is_empty() {
+                    stderr
+                } else {
+                    stdout
+                };
                 Ok(Some(text))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

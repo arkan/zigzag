@@ -28,12 +28,16 @@ pub fn build_git_preview_command(project_path: &str) -> String {
 pub fn parse_git_preview_output(output: &str) -> Result<GitPreviewInfo> {
     let sections: Vec<&str> = output.split(GIT_SEP).collect();
     if sections.len() < 2 {
-        return Err(ZError::Session("unexpected git preview output format".to_string()));
+        return Err(ZError::Session(
+            "unexpected git preview output format".to_string(),
+        ));
     }
 
     let branch = sections[0].trim().to_string();
     if branch.is_empty() {
-        return Err(ZError::Session("git preview: empty branch name".to_string()));
+        return Err(ZError::Session(
+            "git preview: empty branch name".to_string(),
+        ));
     }
 
     let is_dirty = sections.get(1).map_or(false, |s| !s.trim().is_empty());
@@ -69,7 +73,11 @@ pub fn fetch_remote_git_preview(ssh_host: &str, project_path: &Path) -> Result<G
     let command = build_git_preview_command(&project_path.display().to_string());
     let output = remote::build_ssh_command(ssh_host, &command)
         .output()
-        .map_err(|e| ZError::Session(format!("SSH to {ssh_host} failed while fetching git preview: {e}")))?;
+        .map_err(|e| {
+            ZError::Session(format!(
+                "SSH to {ssh_host} failed while fetching git preview: {e}"
+            ))
+        })?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_git_preview_output(&stdout)
 }
@@ -137,7 +145,10 @@ mod tests {
 
         assert_eq!(info.branch, "feat/login");
         assert!(info.is_dirty);
-        assert_eq!(info.commits, vec![("abc1234".to_string(), "fix bug".to_string())]);
+        assert_eq!(
+            info.commits,
+            vec![("abc1234".to_string(), "fix bug".to_string())]
+        );
         assert_eq!(info.ahead, 3);
         assert_eq!(info.behind, 2);
     }

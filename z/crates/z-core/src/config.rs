@@ -196,7 +196,10 @@ impl ConfigEnvironment for ProcessConfigEnvironment {
 }
 
 /// Resolve an `env:VAR` token through an injected environment.
-pub fn resolve_env_token_with_environment(value: &str, env: &impl ConfigEnvironment) -> Result<String> {
+pub fn resolve_env_token_with_environment(
+    value: &str,
+    env: &impl ConfigEnvironment,
+) -> Result<String> {
     match value.strip_prefix("env:") {
         Some(var_name) => env
             .var(var_name)
@@ -215,7 +218,10 @@ pub fn parse_projects_kdl(content: &str) -> Result<Vec<Project>> {
 }
 
 /// Parse projects through an injected environment for deterministic path expansion.
-pub fn parse_projects_kdl_with_environment(content: &str, env: &impl ConfigEnvironment) -> Result<Vec<Project>> {
+pub fn parse_projects_kdl_with_environment(
+    content: &str,
+    env: &impl ConfigEnvironment,
+) -> Result<Vec<Project>> {
     let doc: KdlDocument = content
         .parse()
         .map_err(|e| ZError::ConfigParse(format!("{}", e)))?;
@@ -393,10 +399,8 @@ pub fn parse_global_config_kdl(content: &str) -> Result<GlobalConfig> {
                     }
                 }
                 "theme" => {
-                    if let Some(name_str) = node
-                        .entries()
-                        .first()
-                        .and_then(|e| e.value().as_string())
+                    if let Some(name_str) =
+                        node.entries().first().and_then(|e| e.value().as_string())
                     {
                         config.theme = ThemeName::from_str(name_str).ok_or_else(|| {
                             ZError::ConfigParse(format!("unknown theme: {name_str:?}"))
@@ -541,7 +545,11 @@ fn parse_layout_node(node: &KdlNode) -> Result<Layout> {
             }
         }
     }
-    Ok(Layout { tabs, cwd: None, session_name_env: None })
+    Ok(Layout {
+        tabs,
+        cwd: None,
+        session_name_env: None,
+    })
 }
 
 fn parse_tab_node(node: &KdlNode) -> Result<Tab> {
@@ -616,20 +624,12 @@ fn parse_notifications_node(node: &KdlNode) -> Result<NotificationsConfig> {
                         .unwrap_or(false);
                 }
                 "telegram-token" => {
-                    if let Some(raw) = child
-                        .entries()
-                        .first()
-                        .and_then(|e| e.value().as_string())
-                    {
+                    if let Some(raw) = child.entries().first().and_then(|e| e.value().as_string()) {
                         cfg.telegram_token = resolve_env_token(raw).ok();
                     }
                 }
                 "telegram-chat-id" => {
-                    if let Some(raw) = child
-                        .entries()
-                        .first()
-                        .and_then(|e| e.value().as_string())
-                    {
+                    if let Some(raw) = child.entries().first().and_then(|e| e.value().as_string()) {
                         cfg.telegram_chat_id = resolve_env_token(raw).ok();
                     }
                 }
@@ -868,7 +868,10 @@ mod tests {
     #[test]
     fn resolve_env_token_env_prefix_set() {
         std::env::set_var("Z_TEST_TOKEN_ABC", "secret123");
-        assert_eq!(resolve_env_token("env:Z_TEST_TOKEN_ABC").unwrap(), "secret123");
+        assert_eq!(
+            resolve_env_token("env:Z_TEST_TOKEN_ABC").unwrap(),
+            "secret123"
+        );
         std::env::remove_var("Z_TEST_TOKEN_ABC");
     }
 
@@ -980,10 +983,7 @@ project "myapp" {
 }
 "#;
         let projects = parse_projects_kdl(kdl).unwrap();
-        assert_eq!(
-            projects[0].path,
-            PathBuf::from("/home/testuser/Code/myapp")
-        );
+        assert_eq!(projects[0].path, PathBuf::from("/home/testuser/Code/myapp"));
     }
 
     #[test]
@@ -1124,10 +1124,7 @@ config {
         assert_eq!(layout.tabs.len(), 2);
         assert_eq!(layout.tabs[0].name, "claude");
         assert_eq!(layout.tabs[0].panes.len(), 1);
-        assert_eq!(
-            layout.tabs[0].panes[0].command.as_deref(),
-            Some("claude")
-        );
+        assert_eq!(layout.tabs[0].panes[0].command.as_deref(), Some("claude"));
         assert_eq!(layout.tabs[1].name, "shell");
         assert_eq!(layout.tabs[1].panes.len(), 1);
         assert!(layout.tabs[1].panes[0].command.is_none());
@@ -1183,10 +1180,7 @@ config {
         let cfg = parse_global_config_kdl(kdl).unwrap();
         let layout = cfg.default_layout.unwrap();
         assert_eq!(layout.tabs[0].panes[0].args, vec!["run", "dev"]);
-        assert_eq!(
-            layout.tabs[1].panes[0].args,
-            vec!["-f", "/var/log/app.log"]
-        );
+        assert_eq!(layout.tabs[1].panes[0].args, vec!["-f", "/var/log/app.log"]);
     }
 
     // -----------------------------------------------------------------------
@@ -1202,12 +1196,18 @@ config {
     #[test]
     fn expand_tilde_with_environment_missing_home_leaves_path() {
         let env = TestEnvironment::default();
-        assert_eq!(expand_tilde_with_environment("~/Code", &env), PathBuf::from("~/Code"));
+        assert_eq!(
+            expand_tilde_with_environment("~/Code", &env),
+            PathBuf::from("~/Code")
+        );
     }
 
     #[test]
     fn expand_tilde_no_tilde() {
-        assert_eq!(expand_tilde("/absolute/path"), PathBuf::from("/absolute/path"));
+        assert_eq!(
+            expand_tilde("/absolute/path"),
+            PathBuf::from("/absolute/path")
+        );
     }
 
     #[test]
@@ -1689,7 +1689,10 @@ project "beta" {
 "#;
         let result = swap_project_nodes(kdl, 0, 1).unwrap();
         assert!(result.contains("// header"), "header comment preserved");
-        assert!(result.contains("// between projects"), "middle comment preserved");
+        assert!(
+            result.contains("// between projects"),
+            "middle comment preserved"
+        );
         assert!(result.contains("// footer"), "footer comment preserved");
         let projects = parse_projects_kdl(&result).unwrap();
         assert_eq!(projects[0].name, "beta");
@@ -1857,8 +1860,14 @@ config {
 }
 "#;
         let cfg = parse_global_config_kdl(kdl).unwrap();
-        assert_eq!(cfg.issue_prompt_template.as_deref(), Some("custom issue {number}"));
-        assert_eq!(cfg.pr_prompt_template.as_deref(), Some("custom pr {number}"));
+        assert_eq!(
+            cfg.issue_prompt_template.as_deref(),
+            Some("custom issue {number}")
+        );
+        assert_eq!(
+            cfg.pr_prompt_template.as_deref(),
+            Some("custom pr {number}")
+        );
     }
 
     #[test]
@@ -1882,8 +1891,14 @@ issue-prompt-template "repo issue {number}: {title}"
 pr-prompt-template "repo pr {number}: {title}"
 "#;
         let cfg = parse_per_repo_config_kdl(kdl).unwrap();
-        assert_eq!(cfg.issue_prompt_template.as_deref(), Some("repo issue {number}: {title}"));
-        assert_eq!(cfg.pr_prompt_template.as_deref(), Some("repo pr {number}: {title}"));
+        assert_eq!(
+            cfg.issue_prompt_template.as_deref(),
+            Some("repo issue {number}: {title}")
+        );
+        assert_eq!(
+            cfg.pr_prompt_template.as_deref(),
+            Some("repo pr {number}: {title}")
+        );
     }
 
     #[test]
@@ -1924,7 +1939,10 @@ pr-prompt-template "repo pr {number}: {title}"
             ..Default::default()
         };
         let per_repo = PerRepoConfig::default();
-        assert_eq!(effective_issue_prompt_template(&global, &per_repo), "global issue");
+        assert_eq!(
+            effective_issue_prompt_template(&global, &per_repo),
+            "global issue"
+        );
     }
 
     #[test]

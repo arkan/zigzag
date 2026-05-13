@@ -33,7 +33,10 @@ mod tests {
             ahead: 0,
             behind: 0,
             is_dirty: false,
-            commits: vec![CommitInfo { hash: "abc123".to_string(), message: "init".to_string() }],
+            commits: vec![CommitInfo {
+                hash: "abc123".to_string(),
+                message: "init".to_string(),
+            }],
             pr: None,
             ci: None,
             zellij: None,
@@ -66,7 +69,11 @@ mod tests {
                 state: PrState::Open,
             }),
             ci: CiStatus::Passing,
-            zellij: Some(ZellijInfo { tab_count: 2, pane_count: 3, uptime: "1h".to_string() }),
+            zellij: Some(ZellijInfo {
+                tab_count: 2,
+                pane_count: 3,
+                uptime: "1h".to_string(),
+            }),
             review: Some(ReviewStatus {
                 has_new_comments: true,
                 comment_count: 1,
@@ -80,7 +87,10 @@ mod tests {
                 assert_eq!(info.pr.as_ref().map(|pr| pr.number), Some(42));
                 assert_eq!(info.ci, Some(CiStatus::Passing));
                 assert_eq!(info.zellij.as_ref().map(|zellij| zellij.tab_count), Some(2));
-                assert_eq!(info.review.as_ref().map(|review| review.comment_count), Some(1));
+                assert_eq!(
+                    info.review.as_ref().map(|review| review.comment_count),
+                    Some(1)
+                );
             }
             _ => panic!("expected ready preview"),
         }

@@ -42,10 +42,7 @@ mod tests {
     fn repeated_placeholder() {
         let mut vars = HashMap::new();
         vars.insert("number", "7");
-        assert_eq!(
-            resolve_template("{number} and {number}", &vars),
-            "7 and 7"
-        );
+        assert_eq!(resolve_template("{number} and {number}", &vars), "7 and 7");
     }
 
     #[test]

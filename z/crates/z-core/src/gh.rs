@@ -30,24 +30,21 @@ fn parse_item(v: &serde_json::Value, with_branch: bool) -> Result<GhItem> {
     let number = v["number"]
         .as_u64()
         .ok_or_else(|| ZError::ConfigParse("missing number".into()))?;
-    let title = v["title"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let body = v["body"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let url = v["url"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let title = v["title"].as_str().unwrap_or("").to_string();
+    let body = v["body"].as_str().unwrap_or("").to_string();
+    let url = v["url"].as_str().unwrap_or("").to_string();
     let branch = if with_branch {
         v["headRefName"].as_str().map(|s| s.to_string())
     } else {
         None
     };
-    Ok(GhItem { number, title, body, url, branch })
+    Ok(GhItem {
+        number,
+        title,
+        body,
+        url,
+        branch,
+    })
 }
 
 /// Parse `gh pr view --json number,state,title,url` output.
@@ -117,7 +114,10 @@ fn string_field(value: &serde_json::Value, name: &str) -> String {
 }
 
 fn first_array_item_or_object(value: &serde_json::Value) -> Option<&serde_json::Value> {
-    value.as_array().and_then(|items| items.first()).or_else(|| value.as_object().map(|_| value))
+    value
+        .as_array()
+        .and_then(|items| items.first())
+        .or_else(|| value.as_object().map(|_| value))
 }
 
 fn collect_string_fields(value: &serde_json::Value, field: &str) -> Vec<String> {
@@ -214,7 +214,8 @@ mod tests {
 
     #[test]
     fn parse_pr_view_json_merged() {
-        let json = r#"{"number":7,"state":"MERGED","title":"fix: typo","url":"https://example.com/pr/7"}"#;
+        let json =
+            r#"{"number":7,"state":"MERGED","title":"fix: typo","url":"https://example.com/pr/7"}"#;
         let pr = parse_pr_view_json(json).unwrap();
         assert_eq!(pr.state, PrState::Merged);
     }
@@ -291,7 +292,10 @@ mod tests {
         let status = parse_review_status_json(json).unwrap();
         assert!(status.has_new_comments);
         assert_eq!(status.comment_count, 1);
-        assert_eq!(status.last_review_at.as_deref(), Some("2026-04-09T15:00:00Z"));
+        assert_eq!(
+            status.last_review_at.as_deref(),
+            Some("2026-04-09T15:00:00Z")
+        );
     }
 
     #[test]
@@ -337,7 +341,10 @@ mod tests {
         let status = parse_review_status_json(json).unwrap();
         assert!(status.has_new_comments);
         assert_eq!(status.comment_count, 2);
-        assert_eq!(status.last_review_at.as_deref(), Some("2026-04-09T15:00:00Z"));
+        assert_eq!(
+            status.last_review_at.as_deref(),
+            Some("2026-04-09T15:00:00Z")
+        );
     }
 
     #[test]

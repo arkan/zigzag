@@ -1,6 +1,6 @@
 use crate::dsl::{parse_autopilot_workflows_doc, AutopilotWorkflow};
-pub use z_core::config::AutopilotConfig;
 use z_core::config::parse_autopilot_config_doc;
+pub use z_core::config::AutopilotConfig;
 use z_core::error::{Result, ZError};
 
 /// Full autopilot configuration from `.config/z.kdl`: project-level settings +
@@ -281,7 +281,9 @@ autopilot "simple" {
             poll_interval: None,
             steps: vec![Step {
                 name: "s".into(),
-                action: StepAction::Run { command: "cmd".into() },
+                action: StepAction::Run {
+                    command: "cmd".into(),
+                },
                 max_retries: None,
                 timeout: None,
                 on_success: None,
@@ -298,7 +300,10 @@ autopilot "simple" {
 
     #[test]
     fn test_resolve_config_no_override_uses_project() {
-        let project = AutopilotConfig { auto_push: true, review: false };
+        let project = AutopilotConfig {
+            auto_push: true,
+            review: false,
+        };
         let wf = make_workflow(None, None);
         let resolved = resolve_config(&project, &wf);
         assert_eq!(resolved.auto_push, true);
@@ -307,7 +312,10 @@ autopilot "simple" {
 
     #[test]
     fn test_resolve_config_workflow_overrides_project() {
-        let project = AutopilotConfig { auto_push: true, review: false };
+        let project = AutopilotConfig {
+            auto_push: true,
+            review: false,
+        };
         let wf = make_workflow(Some(false), Some(true));
         let resolved = resolve_config(&project, &wf);
         assert_eq!(resolved.auto_push, false);
@@ -316,20 +324,26 @@ autopilot "simple" {
 
     #[test]
     fn test_resolve_config_partial_override() {
-        let project = AutopilotConfig { auto_push: true, review: false };
+        let project = AutopilotConfig {
+            auto_push: true,
+            review: false,
+        };
         let wf = make_workflow(None, Some(true));
         let resolved = resolve_config(&project, &wf);
         assert_eq!(resolved.auto_push, true); // from project
-        assert_eq!(resolved.review, true);    // from workflow
+        assert_eq!(resolved.review, true); // from workflow
     }
 
     #[test]
     fn test_resolve_config_workflow_overrides_auto_push_only() {
-        let project = AutopilotConfig { auto_push: true, review: true };
+        let project = AutopilotConfig {
+            auto_push: true,
+            review: true,
+        };
         let wf = make_workflow(Some(false), None);
         let resolved = resolve_config(&project, &wf);
         assert_eq!(resolved.auto_push, false); // from workflow
-        assert_eq!(resolved.review, true);     // from project
+        assert_eq!(resolved.review, true); // from project
     }
 
     // ---------------------------------------------------------------------------
@@ -338,26 +352,38 @@ autopilot "simple" {
 
     #[test]
     fn test_push_decision_full_auto() {
-        let cfg = AutopilotConfig { auto_push: true, review: false };
+        let cfg = AutopilotConfig {
+            auto_push: true,
+            review: false,
+        };
         assert_eq!(push_decision(&cfg), PushDecision::Push);
     }
 
     #[test]
     fn test_push_decision_auto_push_false_queues_for_review() {
-        let cfg = AutopilotConfig { auto_push: false, review: false };
+        let cfg = AutopilotConfig {
+            auto_push: false,
+            review: false,
+        };
         assert_eq!(push_decision(&cfg), PushDecision::QueueForReview);
     }
 
     #[test]
     fn test_push_decision_review_true_waits_for_approval() {
-        let cfg = AutopilotConfig { auto_push: true, review: true };
+        let cfg = AutopilotConfig {
+            auto_push: true,
+            review: true,
+        };
         assert_eq!(push_decision(&cfg), PushDecision::WaitForApproval);
     }
 
     #[test]
     fn test_push_decision_auto_push_false_takes_priority_over_review() {
         // If auto_push is false, we never push — QueueForReview even if review is also set.
-        let cfg = AutopilotConfig { auto_push: false, review: true };
+        let cfg = AutopilotConfig {
+            auto_push: false,
+            review: true,
+        };
         assert_eq!(push_decision(&cfg), PushDecision::QueueForReview);
     }
 
@@ -550,7 +576,10 @@ autopilot {
 
     #[test]
     fn test_resolve_config_both_overrides_same_as_project() {
-        let project = AutopilotConfig { auto_push: false, review: true };
+        let project = AutopilotConfig {
+            auto_push: false,
+            review: true,
+        };
         let wf = make_workflow(Some(false), Some(true));
         let resolved = resolve_config(&project, &wf);
         assert_eq!(resolved.auto_push, false);
@@ -559,7 +588,10 @@ autopilot {
 
     #[test]
     fn test_resolve_config_workflow_flips_both() {
-        let project = AutopilotConfig { auto_push: false, review: true };
+        let project = AutopilotConfig {
+            auto_push: false,
+            review: true,
+        };
         let wf = make_workflow(Some(true), Some(false));
         let resolved = resolve_config(&project, &wf);
         assert_eq!(resolved.auto_push, true);

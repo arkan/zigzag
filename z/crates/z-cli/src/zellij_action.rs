@@ -82,7 +82,16 @@ mod tests {
 
         assert_eq!(
             action_args(&req),
-            vec!["-s", "myapp:main", "action", "new-tab", "--", "sh", "-c", "cargo test"]
+            vec![
+                "-s",
+                "myapp:main",
+                "action",
+                "new-tab",
+                "--",
+                "sh",
+                "-c",
+                "cargo test"
+            ]
         );
     }
 
@@ -93,7 +102,16 @@ mod tests {
 
         assert_eq!(
             action_args(&req),
-            vec!["action", "new-tab", "-n", "test", "--", "sh", "-c", "cargo test"]
+            vec![
+                "action",
+                "new-tab",
+                "-n",
+                "test",
+                "--",
+                "sh",
+                "-c",
+                "cargo test"
+            ]
         );
     }
 
@@ -101,7 +119,17 @@ mod tests {
     fn builds_float_action_args() {
         assert_eq!(
             action_args(&request(PaneType::Float)),
-            vec!["-s", "myapp:main", "run", "--floating", "-c", "--", "sh", "-c", "cargo test"]
+            vec![
+                "-s",
+                "myapp:main",
+                "run",
+                "--floating",
+                "-c",
+                "--",
+                "sh",
+                "-c",
+                "cargo test"
+            ]
         );
     }
 
@@ -110,8 +138,19 @@ mod tests {
         assert_eq!(
             action_args(&request(PaneType::FloatFullscreen)),
             vec![
-                "-s", "myapp:main", "run", "--floating", "-c", "--width", "100%", "--height", "100%",
-                "--", "sh", "-c", "cargo test"
+                "-s",
+                "myapp:main",
+                "run",
+                "--floating",
+                "-c",
+                "--width",
+                "100%",
+                "--height",
+                "100%",
+                "--",
+                "sh",
+                "-c",
+                "cargo test"
             ]
         );
     }
@@ -120,7 +159,16 @@ mod tests {
     fn builds_split_action_args() {
         assert_eq!(
             action_args(&request(PaneType::Split)),
-            vec!["-s", "myapp:main", "run", "-c", "--", "sh", "-c", "cargo test"]
+            vec![
+                "-s",
+                "myapp:main",
+                "run",
+                "-c",
+                "--",
+                "sh",
+                "-c",
+                "cargo test"
+            ]
         );
     }
 }
