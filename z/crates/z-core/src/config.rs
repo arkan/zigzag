@@ -116,11 +116,11 @@ impl Default for SwitcherConfig {
 
 pub fn default_switcher_priority() -> Vec<SwitcherPriorityCriterion> {
     vec![
+        SwitcherPriorityCriterion::Recent,
         SwitcherPriorityCriterion::Waiting,
         SwitcherPriorityCriterion::Error,
         SwitcherPriorityCriterion::Working,
         SwitcherPriorityCriterion::Notifications,
-        SwitcherPriorityCriterion::Recent,
     ]
 }
 
@@ -1060,6 +1060,14 @@ config {
             ]
         );
         assert!(cfg.switcher.invalid_priorities.is_empty());
+    }
+
+    #[test]
+    fn default_switcher_priority_starts_with_recent() {
+        let priority = default_switcher_priority();
+        assert_eq!(priority[0], SwitcherPriorityCriterion::Recent);
+        assert!(priority.contains(&SwitcherPriorityCriterion::Waiting));
+        assert!(priority.contains(&SwitcherPriorityCriterion::Error));
     }
 
     #[test]

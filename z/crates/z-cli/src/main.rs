@@ -1787,14 +1787,13 @@ fn cmd_switch() -> z_core::error::Result<()> {
     let metadata = worktree_metadata_store::LocalWorktreeMetadataStore::default()
         .read_metadata()
         .ok();
-    let mut sessions = list_all_z_sessions_with_ages();
+    let sessions = list_all_z_sessions_with_ages();
     log_switch_event(
         &format!("listed {} active z session(s)", sessions.len()),
         LogLevel::Info,
     );
-    z_core::activity::sort_by_recent_attach(&mut sessions, &activity, |s| s.0.as_str());
     let mut switch_entries =
-        build_switch_entries(sessions, metadata.as_ref(), &discovered, &global);
+        build_switch_entries(sessions, metadata.as_ref(), &discovered, &global, &activity);
     z_tui::sort_switch_entries(&mut switch_entries, &global.switcher.priority);
     log_switch_event(
         &format!("built {} switch entrie(s)", switch_entries.len()),
@@ -1849,6 +1848,7 @@ fn build_switch_entries(
     metadata: Option<&z_core::domain::WorktreeMetadataFile>,
     discovered: &[z_core::domain::DiscoveredWorktree],
     global: &GlobalConfig,
+    session_activity: &z_core::activity::SessionActivity,
 ) -> Vec<z_tui::SwitchSessionEntry> {
     let now_ms = unix_now_ms();
     let ttl_ms = global.llm.working_ttl_seconds.saturating_mul(1000);
@@ -1920,11 +1920,12 @@ fn build_switch_entries(
             }
 
             z_tui::SwitchSessionEntry {
-                session_name,
+                session_name: session_name.clone(),
                 age,
                 notification_count,
                 notifications,
                 activity,
+                last_attach: session_activity.get(&session_name).copied(),
             }
         })
         .collect()
@@ -2629,6 +2630,7 @@ mod tests {
             Some(&metadata),
             &[test_discovered_worktree(&project_name)],
             &global,
+            &z_core::activity::SessionActivity::new(),
         );
 
         assert_eq!(entries.len(), 1);
@@ -2670,6 +2672,7 @@ mod tests {
             Some(&metadata),
             &[test_discovered_worktree(&project_name)],
             &global,
+            &z_core::activity::SessionActivity::new(),
         );
 
         assert!(entries[0].activity.is_none());
@@ -2701,6 +2704,7 @@ mod tests {
             Some(&metadata),
             &[test_discovered_worktree(&project_name)],
             &GlobalConfig::default(),
+            &z_core::activity::SessionActivity::new(),
         );
 
         assert_eq!(entries[0].notification_count, 1);
@@ -2708,6 +2712,39 @@ mod tests {
             .notifications
             .iter()
             .any(|notification| notification.message == "build finished"));
+    }
+
+    #[test]
+    fn build_switch_entries_propagates_activity_last_attach() {
+        let project_name = test_project_name("activity-ts");
+        let session_name = format!("{project_name}:main");
+        let metadata = z_core::domain::WorktreeMetadataFile {
+            version: 2,
+            worktrees: vec![],
+            notifications: vec![],
+            unattached_notifications: vec![],
+            unattached_activity: vec![],
+            migration_diagnostics: vec![],
+            llm_status: vec![],
+            migrated_legacy_ids: std::collections::HashSet::new(),
+        };
+        let mut activity = z_core::activity::SessionActivity::new();
+        activity.insert(session_name.clone(), 172800);
+
+        let entries = build_switch_entries(
+            vec![(session_name.clone(), None)],
+            Some(&metadata),
+            &[test_discovered_worktree(&project_name)],
+            &GlobalConfig::default(),
+            &activity,
+        );
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].last_attach,
+            Some(172800),
+            "last_attach should be populated from session activity"
+        );
     }
 
     #[test]
