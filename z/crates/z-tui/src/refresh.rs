@@ -28,7 +28,11 @@ pub struct MergeResult {
 }
 
 /// Decide whether an async refresh may still mutate the current TUI state.
-pub fn should_apply_refresh(current_revision: u64, refresh_revision: u64, modal_open: bool) -> bool {
+pub fn should_apply_refresh(
+    current_revision: u64,
+    refresh_revision: u64,
+    modal_open: bool,
+) -> bool {
     current_revision == refresh_revision && !modal_open
 }
 
@@ -45,12 +49,13 @@ pub fn merge_refresh(
     let sel_project_name = entries
         .get(selected_project)
         .map(|e| e.project.name.clone());
-    let sel_worktree_identity: Option<WorktreeIdentity> = sel_project_name.as_ref().and_then(|_| {
-        entries
-            .get(selected_project)
-            .and_then(|e| e.worktrees.get(selected_session))
-            .map(|w| w.discovered.identity.clone())
-    });
+    let sel_worktree_identity: Option<WorktreeIdentity> =
+        sel_project_name.as_ref().and_then(|_| {
+            entries
+                .get(selected_project)
+                .and_then(|e| e.worktrees.get(selected_session))
+                .map(|w| w.discovered.identity.clone())
+        });
     let sel_session_name = sel_project_name.as_ref().and_then(|_| {
         entries
             .get(selected_project)
@@ -67,7 +72,10 @@ pub fn merge_refresh(
                 .map(|session| (session.name.clone(), session.clone()))
                 .collect();
             for worktree in &mut entry.worktrees {
-                if matches!(worktree.status, WorktreeStatus::Conflict | WorktreeStatus::Unsupported) {
+                if matches!(
+                    worktree.status,
+                    WorktreeStatus::Conflict | WorktreeStatus::Unsupported
+                ) {
                     continue;
                 }
                 let Some(branch) = worktree.discovered.branch.as_deref() else {
@@ -99,9 +107,12 @@ pub fn merge_refresh(
         .get(new_project_idx)
         .and_then(|entry| {
             if !entry.worktrees.is_empty() {
-                sel_worktree_identity
-                    .as_ref()
-                    .and_then(|identity| entry.worktrees.iter().position(|w| &w.discovered.identity == identity))
+                sel_worktree_identity.as_ref().and_then(|identity| {
+                    entry
+                        .worktrees
+                        .iter()
+                        .position(|w| &w.discovered.identity == identity)
+                })
             } else {
                 sel_session_name
                     .as_ref()
@@ -109,13 +120,16 @@ pub fn merge_refresh(
             }
         })
         .unwrap_or_else(|| {
-            let max = entries.get(new_project_idx).map(|e| {
-                if !e.worktrees.is_empty() {
-                    e.worktrees.len().saturating_sub(1)
-                } else {
-                    e.sessions.len().saturating_sub(1)
-                }
-            }).unwrap_or(0);
+            let max = entries
+                .get(new_project_idx)
+                .map(|e| {
+                    if !e.worktrees.is_empty() {
+                        e.worktrees.len().saturating_sub(1)
+                    } else {
+                        e.sessions.len().saturating_sub(1)
+                    }
+                })
+                .unwrap_or(0);
             selected_session.min(max)
         });
 
@@ -128,8 +142,8 @@ pub fn merge_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use z_core::domain::Project;
     use std::path::PathBuf;
+    use z_core::domain::Project;
 
     fn make_project(name: &str) -> Project {
         Project {
@@ -144,10 +158,7 @@ mod tests {
         ProjectEntry {
             project: make_project(name),
             worktrees: vec![],
-            sessions: sessions
-                .iter()
-                .map(|b| Session::new(name, b))
-                .collect(),
+            sessions: sessions.iter().map(|b| Session::new(name, b)).collect(),
             workflows: vec![],
             repo_actions: vec![],
         }
@@ -158,10 +169,7 @@ mod tests {
             sessions: sessions
                 .into_iter()
                 .map(|(proj, branches)| {
-                    let ss = branches
-                        .iter()
-                        .map(|b| Session::new(proj, b))
-                        .collect();
+                    let ss = branches.iter().map(|b| Session::new(proj, b)).collect();
                     (proj.to_string(), ss)
                 })
                 .collect(),
@@ -172,13 +180,9 @@ mod tests {
 
     #[test]
     fn all_sessions_removed_resets_session_index() {
-        let mut entries = vec![
-            make_entry("alpha", &["main", "dev"]),
-        ];
+        let mut entries = vec![make_entry("alpha", &["main", "dev"])];
         let mut notifications = HashSet::new();
-        let data = make_refresh(vec![
-            ("alpha", vec![]),
-        ]);
+        let data = make_refresh(vec![("alpha", vec![])]);
 
         let result = merge_refresh(&mut entries, &mut notifications, data, 0, 1);
 
@@ -207,9 +211,7 @@ mod tests {
         ];
         let mut notifications = HashSet::new();
         // Only alpha in refresh data; beta should be untouched
-        let data = make_refresh(vec![
-            ("alpha", vec!["main", "dev", "feat"]),
-        ]);
+        let data = make_refresh(vec![("alpha", vec!["main", "dev", "feat"])]);
 
         merge_refresh(&mut entries, &mut notifications, data, 1, 0);
 
@@ -220,14 +222,9 @@ mod tests {
 
     #[test]
     fn notifications_replaced() {
-        let mut entries = vec![
-            make_entry("alpha", &["main", "dev"]),
-        ];
-        let mut notifications: HashSet<String> =
-            ["alpha:main".to_string()].into_iter().collect();
-        let mut data = make_refresh(vec![
-            ("alpha", vec!["main", "dev"]),
-        ]);
+        let mut entries = vec![make_entry("alpha", &["main", "dev"])];
+        let mut notifications: HashSet<String> = ["alpha:main".to_string()].into_iter().collect();
+        let mut data = make_refresh(vec![("alpha", vec!["main", "dev"])]);
         data.notifications = ["alpha:dev".to_string()].into_iter().collect();
 
         merge_refresh(&mut entries, &mut notifications, data, 0, 0);
@@ -253,14 +250,10 @@ mod tests {
 
     #[test]
     fn selected_session_removed_clamps_cursor() {
-        let mut entries = vec![
-            make_entry("alpha", &["main", "dev", "feat"]),
-        ];
+        let mut entries = vec![make_entry("alpha", &["main", "dev", "feat"])];
         let mut notifications = HashSet::new();
         // Cursor on "feat" (index 2), which gets removed
-        let data = make_refresh(vec![
-            ("alpha", vec!["main", "dev"]),
-        ]);
+        let data = make_refresh(vec![("alpha", vec!["main", "dev"])]);
 
         let result = merge_refresh(&mut entries, &mut notifications, data, 0, 2);
 
@@ -271,14 +264,10 @@ mod tests {
 
     #[test]
     fn other_session_removed_cursor_follows_by_name() {
-        let mut entries = vec![
-            make_entry("alpha", &["main", "dev", "feat"]),
-        ];
+        let mut entries = vec![make_entry("alpha", &["main", "dev", "feat"])];
         let mut notifications = HashSet::new();
         // "dev" removed; cursor was on "feat" (index 2)
-        let data = make_refresh(vec![
-            ("alpha", vec!["main", "feat"]),
-        ]);
+        let data = make_refresh(vec![("alpha", vec!["main", "feat"])]);
 
         let result = merge_refresh(&mut entries, &mut notifications, data, 0, 2);
 
@@ -302,19 +291,19 @@ mod tests {
 
         merge_refresh(&mut entries, &mut notifications, data, 0, 0);
 
-        let names: Vec<&str> = entries[0].sessions.iter().map(|s| s.name.as_str()).collect();
+        let names: Vec<&str> = entries[0]
+            .sessions
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
         assert_eq!(names, vec!["alpha:new", "alpha:mid", "alpha:old"]);
     }
 
     #[test]
     fn session_added_preserves_cursor() {
-        let mut entries = vec![
-            make_entry("alpha", &["main"]),
-        ];
+        let mut entries = vec![make_entry("alpha", &["main"])];
         let mut notifications = HashSet::new();
-        let data = make_refresh(vec![
-            ("alpha", vec!["main", "dev"]),
-        ]);
+        let data = make_refresh(vec![("alpha", vec!["main", "dev"])]);
 
         let result = merge_refresh(&mut entries, &mut notifications, data, 0, 0);
 
@@ -331,10 +320,7 @@ mod tests {
             make_entry("beta", &["main"]),
         ];
         let mut notifications = HashSet::new();
-        let data = make_refresh(vec![
-            ("alpha", vec!["main", "dev"]),
-            ("beta", vec!["main"]),
-        ]);
+        let data = make_refresh(vec![("alpha", vec!["main", "dev"]), ("beta", vec!["main"])]);
 
         let result = merge_refresh(&mut entries, &mut notifications, data, 1, 0);
 

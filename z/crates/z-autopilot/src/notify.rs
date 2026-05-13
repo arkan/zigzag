@@ -196,14 +196,19 @@ mod tests {
     impl MockNotifier {
         fn new() -> (Self, Arc<Mutex<Vec<(String, NotifyLevel)>>>) {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let n = Self { calls: Arc::clone(&calls) };
+            let n = Self {
+                calls: Arc::clone(&calls),
+            };
             (n, calls)
         }
     }
 
     impl Notifier for MockNotifier {
         fn notify(&self, message: &str, level: NotifyLevel) -> Result<()> {
-            self.calls.lock().unwrap().push((message.to_string(), level));
+            self.calls
+                .lock()
+                .unwrap()
+                .push((message.to_string(), level));
             Ok(())
         }
     }
@@ -606,7 +611,8 @@ autopilot "test" {
         run.status = WorkflowStatus::Stuck;
         run.current_step = None;
 
-        let event = event_from_advance(&run).expect("should produce Stuck event even with empty history");
+        let event =
+            event_from_advance(&run).expect("should produce Stuck event even with empty history");
         assert_eq!(
             event,
             AutopilotEvent::Stuck {
@@ -660,7 +666,10 @@ autopilot "test" {
             final_step: String::new(),
         };
         let msg = build_message(&event);
-        assert!(msg.contains("\"\""), "empty names should appear as quoted empty strings");
+        assert!(
+            msg.contains("\"\""),
+            "empty names should appear as quoted empty strings"
+        );
     }
 
     #[test]
@@ -735,7 +744,10 @@ autopilot "test" {
         // First advance: max retries exhausted → transitions to notify-stuck.
         advance(&wf, &mut run, StepResult::Failure { output: None }).unwrap();
         let event = event_from_advance(&run);
-        assert!(matches!(event, Some(AutopilotEvent::MaxRetriesExhausted { .. })));
+        assert!(matches!(
+            event,
+            Some(AutopilotEvent::MaxRetriesExhausted { .. })
+        ));
 
         // Second advance: notify-stuck completes → workflow Completed.
         advance(&wf, &mut run, StepResult::Success { output: None }).unwrap();

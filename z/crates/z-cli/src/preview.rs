@@ -43,11 +43,7 @@ impl PreviewDataSource for CliPreviewDataSource {
     }
 
     fn load_extra_preview(&self, context: &PreviewContext) -> Result<PreviewExtraData, String> {
-        let forge = load_forge_preview(
-            &*self.forge_client,
-            &context.project_name,
-            &context.branch,
-        );
+        let forge = load_forge_preview(&*self.forge_client, &context.project_name, &context.branch);
         Ok(PreviewExtraData {
             pr: forge.pr,
             ci: forge.ci,
@@ -75,7 +71,10 @@ fn load_forge_preview(
 
         ForgePreviewSnapshot {
             pr: pr.join().unwrap_or(Ok(None)).ok().flatten(),
-            ci: ci.join().unwrap_or(Ok(CiStatus::Unknown)).unwrap_or(CiStatus::Unknown),
+            ci: ci
+                .join()
+                .unwrap_or(Ok(CiStatus::Unknown))
+                .unwrap_or(CiStatus::Unknown),
             review: review.join().unwrap_or(Ok(None)).ok().flatten(),
         }
     })
@@ -119,7 +118,10 @@ fn fetch_zellij_info(session_name: &str) -> Option<ZellijInfo> {
         }
     }
 
-    let out = Command::new("zellij").args(["list-sessions"]).output().ok()?;
+    let out = Command::new("zellij")
+        .args(["list-sessions"])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

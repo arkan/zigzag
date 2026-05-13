@@ -1,5 +1,5 @@
 use kdl::{KdlDocument, KdlNode};
-use z_core::error::{ZError, Result};
+use z_core::error::{Result, ZError};
 
 /// Trigger events that can start a workflow.
 #[derive(Debug, Clone, PartialEq)]
@@ -92,7 +92,9 @@ pub(crate) fn require_bool_arg(node: &KdlNode, context: &str) -> Result<Option<b
         Some(e) => match e.value().as_bool() {
             Some(b) => Ok(Some(b)),
             None => Err(ZError::ConfigParse(format!(
-                "{context}: '{}' expects a boolean (true/false), got {}", node.name().value(), e.value()
+                "{context}: '{}' expects a boolean (true/false), got {}",
+                node.name().value(),
+                e.value()
             ))),
         },
     }
@@ -113,9 +115,9 @@ fn parse_step(node: &KdlNode) -> Result<Step> {
         .ok_or_else(|| ZError::ConfigParse("step missing name".into()))?
         .to_string();
 
-    let children = node.children().ok_or_else(|| {
-        ZError::ConfigParse(format!("step '{name}' has no body"))
-    })?;
+    let children = node
+        .children()
+        .ok_or_else(|| ZError::ConfigParse(format!("step '{name}' has no body")))?;
 
     let mut action: Option<StepAction> = None;
     let mut max_retries: Option<u32> = None;
@@ -133,27 +135,41 @@ fn parse_step(node: &KdlNode) -> Result<Step> {
                 let cmd = first_string_arg(child).ok_or_else(|| {
                     ZError::ConfigParse(format!("step '{name}': run missing command"))
                 })?;
-                action = Some(StepAction::Run { command: cmd.to_string() });
+                action = Some(StepAction::Run {
+                    command: cmd.to_string(),
+                });
             }
             "notify" => {
                 let msg = first_string_arg(child).ok_or_else(|| {
                     ZError::ConfigParse(format!("step '{name}': notify missing message"))
                 })?;
-                action = Some(StepAction::Notify { message: msg.to_string() });
+                action = Some(StepAction::Notify {
+                    message: msg.to_string(),
+                });
             }
             "confirm" => {
                 let prompt = first_string_arg(child).ok_or_else(|| {
                     ZError::ConfigParse(format!("step '{name}': confirm missing prompt"))
                 })?;
-                action = Some(StepAction::Confirm { prompt: prompt.to_string() });
+                action = Some(StepAction::Confirm {
+                    prompt: prompt.to_string(),
+                });
             }
             "max-retries" => {
-                let v = child.entries().iter()
+                let v = child
+                    .entries()
+                    .iter()
                     .find(|e| e.name().is_none())
                     .and_then(|e| e.value().as_i64())
-                    .ok_or_else(|| ZError::ConfigParse(format!("step '{name}': max-retries must be an integer")))?;
+                    .ok_or_else(|| {
+                        ZError::ConfigParse(format!(
+                            "step '{name}': max-retries must be an integer"
+                        ))
+                    })?;
                 if v < 0 {
-                    return Err(ZError::ConfigParse(format!("step '{name}': max-retries must be non-negative, got {v}")));
+                    return Err(ZError::ConfigParse(format!(
+                        "step '{name}': max-retries must be non-negative, got {v}"
+                    )));
                 }
                 max_retries = Some(v as u32);
             }
@@ -208,9 +224,9 @@ fn parse_autopilot_node(node: &KdlNode) -> Result<AutopilotWorkflow> {
         .ok_or_else(|| ZError::ConfigParse("autopilot missing name".into()))?
         .to_string();
 
-    let children = node.children().ok_or_else(|| {
-        ZError::ConfigParse(format!("autopilot '{name}' has no body"))
-    })?;
+    let children = node
+        .children()
+        .ok_or_else(|| ZError::ConfigParse(format!("autopilot '{name}' has no body")))?;
 
     let mut description: Option<String> = None;
     let mut trigger: Option<Trigger> = None;
@@ -248,18 +264,25 @@ fn parse_autopilot_node(node: &KdlNode) -> Result<AutopilotWorkflow> {
         }
     }
 
-    let trigger = trigger.ok_or_else(|| {
-        ZError::ConfigParse(format!("autopilot '{name}' missing trigger"))
-    })?;
+    let trigger = trigger
+        .ok_or_else(|| ZError::ConfigParse(format!("autopilot '{name}' missing trigger")))?;
 
-    Ok(AutopilotWorkflow { name, description, trigger, poll_interval, steps, auto_push, review })
+    Ok(AutopilotWorkflow {
+        name,
+        description,
+        trigger,
+        poll_interval,
+        steps,
+        auto_push,
+        review,
+    })
 }
 
 /// Parse all `autopilot` nodes from a KDL document string.
 pub fn parse_autopilot_workflows(content: &str) -> Result<Vec<AutopilotWorkflow>> {
-    let doc: KdlDocument = content.parse().map_err(|e| {
-        ZError::ConfigParse(format!("KDL parse error: {e}"))
-    })?;
+    let doc: KdlDocument = content
+        .parse()
+        .map_err(|e| ZError::ConfigParse(format!("KDL parse error: {e}")))?;
 
     parse_autopilot_workflows_doc(&doc)
 }
@@ -427,7 +450,10 @@ autopilot "pr-ci-fix" {
     fn test_parse_pr_ci_fix() {
         let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
         assert_eq!(wf.name, "pr-ci-fix");
-        assert_eq!(wf.description.as_deref(), Some("Monitor CI, fix failures with Claude, retry"));
+        assert_eq!(
+            wf.description.as_deref(),
+            Some("Monitor CI, fix failures with Claude, retry")
+        );
         assert_eq!(wf.trigger, Trigger::PostPush);
         assert_eq!(wf.steps.len(), 4);
     }
@@ -437,7 +463,12 @@ autopilot "pr-ci-fix" {
         let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
         let monitor = &wf.steps[0];
         assert_eq!(monitor.name, "monitor-ci");
-        assert_eq!(monitor.action, StepAction::Run { command: "gh run watch --exit-status".into() });
+        assert_eq!(
+            monitor.action,
+            StepAction::Run {
+                command: "gh run watch --exit-status".into()
+            }
+        );
         assert_eq!(monitor.on_failure.as_deref(), Some("fix-ci"));
         assert_eq!(monitor.on_success.as_deref(), Some("notify-done"));
         assert!(monitor.on_complete.is_none());
@@ -458,7 +489,12 @@ autopilot "pr-ci-fix" {
         let wf = parse_autopilot_workflow(PR_CI_FIX_KDL).unwrap();
         let notify = &wf.steps[2];
         assert_eq!(notify.name, "notify-done");
-        assert_eq!(notify.action, StepAction::Notify { message: "PR CI passing ✅".into() });
+        assert_eq!(
+            notify.action,
+            StepAction::Notify {
+                message: "PR CI passing ✅".into()
+            }
+        );
     }
 
     #[test]
@@ -492,14 +528,21 @@ autopilot "deploy-sync" {
         assert_eq!(wf.trigger, Trigger::NewCommitsOnMain);
         assert_eq!(wf.poll_interval.as_deref(), Some("5m"));
         let confirm_step = &wf.steps[1];
-        assert_eq!(confirm_step.action, StepAction::Confirm { prompt: "Deploy these changes?".into() });
+        assert_eq!(
+            confirm_step.action,
+            StepAction::Confirm {
+                prompt: "Deploy these changes?".into()
+            }
+        );
         assert_eq!(confirm_step.on_accept.as_deref(), Some("notify-done"));
         assert_eq!(confirm_step.on_reject.as_deref(), Some("notify-skipped"));
     }
 
     #[test]
     fn test_parse_multiple_workflows() {
-        let kdl = format!("{PR_CI_FIX_KDL}\n{}", r#"
+        let kdl = format!(
+            "{PR_CI_FIX_KDL}\n{}",
+            r#"
 autopilot "manual-test" {
     trigger "manual"
     step "do-stuff" {
@@ -510,7 +553,8 @@ autopilot "manual-test" {
         notify "Done ✅"
     }
 }
-"#);
+"#
+        );
         let workflows = parse_autopilot_workflows(&kdl).unwrap();
         assert_eq!(workflows.len(), 2);
         assert_eq!(workflows[0].name, "pr-ci-fix");

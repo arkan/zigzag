@@ -42,8 +42,7 @@ pub fn assemble_worktree_entries(
     let mut entries: Vec<WorktreeEntry> = discovered_worktrees
         .into_iter()
         .map(|wt| {
-            let (status, session_link, diagnostics) =
-                compute_basic_status(&wt, &session_map);
+            let (status, session_link, diagnostics) = compute_basic_status(&wt, &session_map);
             let safety = safety_map.get(&wt.identity).cloned();
             let metadata = metadata_map.get(&wt.identity).cloned();
             WorktreeEntry {
@@ -130,7 +129,9 @@ fn apply_collision_diagnostics(entries: &mut [WorktreeEntry]) {
             entry.session_link = SessionLink::Collision(colliding.clone());
             entry
                 .diagnostics
-                .push(WorktreeDiagnostic::SessionNameCollision(branch_names.clone()));
+                .push(WorktreeDiagnostic::SessionNameCollision(
+                    branch_names.clone(),
+                ));
         }
     }
 }
@@ -166,16 +167,8 @@ pub fn sort_worktree_entries(entries: &mut Vec<WorktreeEntry>) {
         }
 
         // Both inactive: with recent activity first
-        let a_has_activity = a
-            .metadata
-            .as_ref()
-            .and_then(|m| m.last_opened_at)
-            .is_some();
-        let b_has_activity = b
-            .metadata
-            .as_ref()
-            .and_then(|m| m.last_opened_at)
-            .is_some();
+        let a_has_activity = a.metadata.as_ref().and_then(|m| m.last_opened_at).is_some();
+        let b_has_activity = b.metadata.as_ref().and_then(|m| m.last_opened_at).is_some();
         if a_has_activity != b_has_activity {
             return b_has_activity.cmp(&a_has_activity);
         }
@@ -298,8 +291,7 @@ mod tests {
         let metadata = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, WorktreeStatus::Active);
         assert!(matches!(entries[0].session_link, SessionLink::Active(_)));
@@ -322,8 +314,7 @@ mod tests {
         let metadata = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, WorktreeStatus::Active);
     }
@@ -344,8 +335,7 @@ mod tests {
         let metadata = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, WorktreeStatus::Inactive);
         assert_eq!(entries[0].session_link, SessionLink::None);
@@ -377,8 +367,7 @@ mod tests {
         let metadata = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 2);
         for entry in &entries {
             assert_eq!(
@@ -428,8 +417,7 @@ mod tests {
         let metadata = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 2);
         for entry in &entries {
             assert_eq!(entry.status, WorktreeStatus::Conflict);
@@ -459,8 +447,7 @@ mod tests {
         let metadata = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 2);
         for entry in &entries {
             assert_eq!(entry.status, WorktreeStatus::Inactive);
@@ -483,8 +470,7 @@ mod tests {
         let metadata = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, WorktreeStatus::Unsupported);
         assert!(entries[0]
@@ -507,8 +493,7 @@ mod tests {
         let metadata = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, WorktreeStatus::Inactive);
         assert!(entries[0].discovered.is_primary_checkout);
@@ -520,19 +505,12 @@ mod tests {
     fn metadata_attached_by_identity() {
         let project = make_project("myapp", "/repo");
         let wt_path = "/repo/.worktrees/feat-x";
-        let worktrees = vec![make_wt(
-            "myapp",
-            "/repo",
-            wt_path,
-            Some("feat/x"),
-            false,
-        )];
+        let worktrees = vec![make_wt("myapp", "/repo", wt_path, Some("feat/x"), false)];
         let metadata = vec![make_meta("myapp", "/repo", wt_path, Some(1_710_000_000))];
         let sessions = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].metadata.as_ref().unwrap().last_opened_at,
@@ -560,8 +538,7 @@ mod tests {
         let sessions = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].metadata.is_none());
     }
@@ -581,8 +558,7 @@ mod tests {
         let metadata = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].status, WorktreeStatus::Active);
         assert_eq!(entries[1].status, WorktreeStatus::Inactive);
@@ -592,20 +568,8 @@ mod tests {
     fn sort_active_by_recent_activity() {
         let project = make_project("myapp", "/repo");
         let worktrees = vec![
-            make_wt(
-                "myapp",
-                "/repo",
-                "/repo/.worktrees/old",
-                Some("old"),
-                false,
-            ),
-            make_wt(
-                "myapp",
-                "/repo",
-                "/repo/.worktrees/new",
-                Some("new"),
-                false,
-            ),
+            make_wt("myapp", "/repo", "/repo/.worktrees/old", Some("old"), false),
+            make_wt("myapp", "/repo", "/repo/.worktrees/new", Some("new"), false),
         ];
         let sessions = vec![Session::new("myapp", "old"), Session::new("myapp", "new")];
         let metadata = vec![
@@ -614,8 +578,7 @@ mod tests {
         ];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 2);
         // newest activity first
         assert_eq!(entries[0].discovered.branch.as_deref(), Some("new"));
@@ -650,17 +613,13 @@ mod tests {
         )];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 2);
         assert_eq!(
             entries[0].discovered.branch.as_deref(),
             Some("has-activity")
         );
-        assert_eq!(
-            entries[1].discovered.branch.as_deref(),
-            Some("no-activity")
-        );
+        assert_eq!(entries[1].discovered.branch.as_deref(), Some("no-activity"));
     }
 
     #[test]
@@ -680,8 +639,7 @@ mod tests {
         let metadata = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 2);
         assert!(entries[0].discovered.is_primary_checkout);
         assert!(!entries[1].discovered.is_primary_checkout);
@@ -691,27 +649,14 @@ mod tests {
     fn sort_inactive_by_branch_alpha() {
         let project = make_project("myapp", "/repo");
         let worktrees = vec![
-            make_wt(
-                "myapp",
-                "/repo",
-                "/repo/.worktrees/zzz",
-                Some("zzz"),
-                false,
-            ),
-            make_wt(
-                "myapp",
-                "/repo",
-                "/repo/.worktrees/aaa",
-                Some("aaa"),
-                false,
-            ),
+            make_wt("myapp", "/repo", "/repo/.worktrees/zzz", Some("zzz"), false),
+            make_wt("myapp", "/repo", "/repo/.worktrees/aaa", Some("aaa"), false),
         ];
         let sessions = vec![];
         let metadata = vec![];
         let safety = HashMap::new();
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].discovered.branch.as_deref(), Some("aaa"));
         assert_eq!(entries[1].discovered.branch.as_deref(), Some("zzz"));
@@ -722,13 +667,7 @@ mod tests {
     #[test]
     fn find_orphan_sessions_detects_orphans() {
         let sessions = vec![Session::new("myapp", "orphaned-branch")];
-        let worktrees = vec![make_wt(
-            "myapp",
-            "/repo",
-            "/repo",
-            Some("main"),
-            true,
-        )];
+        let worktrees = vec![make_wt("myapp", "/repo", "/repo", Some("main"), true)];
 
         let orphans = find_orphan_sessions(&sessions, &worktrees);
         assert_eq!(orphans.len(), 1);
@@ -738,13 +677,7 @@ mod tests {
     #[test]
     fn find_orphan_sessions_no_orphans() {
         let sessions = vec![Session::new("myapp", "main")];
-        let worktrees = vec![make_wt(
-            "myapp",
-            "/repo",
-            "/repo",
-            Some("main"),
-            true,
-        )];
+        let worktrees = vec![make_wt("myapp", "/repo", "/repo", Some("main"), true)];
 
         let orphans = find_orphan_sessions(&sessions, &worktrees);
         assert!(orphans.is_empty());
@@ -779,20 +712,21 @@ mod tests {
             Some("feat/x"),
             false,
         )];
-        let safety: HashMap<WorktreeIdentity, GitSafetyStatus> =
-            [(id.clone(), GitSafetyStatus {
+        let safety: HashMap<WorktreeIdentity, GitSafetyStatus> = [(
+            id.clone(),
+            GitSafetyStatus {
                 dirty: true,
                 ahead: 3,
                 behind: 1,
                 has_upstream: true,
-            })]
-            .into_iter()
-            .collect();
+            },
+        )]
+        .into_iter()
+        .collect();
         let sessions = vec![];
         let metadata = vec![];
 
-        let entries =
-            assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
+        let entries = assemble_worktree_entries(&project, worktrees, &sessions, &metadata, safety);
         assert_eq!(entries.len(), 1);
         let s = entries[0].safety.as_ref().unwrap();
         assert!(s.dirty);

@@ -86,9 +86,12 @@ pub fn read_remote_z_config_file(ssh_host: &str, filename: &str) -> Result<Optio
         "dir=\"${{XDG_CONFIG_HOME:-$HOME/.config}}/z\"; file=\"$dir/{}\"; if [ -f \"$file\" ]; then cat \"$file\"; else exit 3; fi",
         filename.replace('"', "")
     );
-    let output = build_ssh_command(ssh_host, &cmd)
-        .output()
-        .map_err(|e| ZError::Io(format!("SSH to {} failed while reading config: {}", ssh_host, e)))?;
+    let output = build_ssh_command(ssh_host, &cmd).output().map_err(|e| {
+        ZError::Io(format!(
+            "SSH to {} failed while reading config: {}",
+            ssh_host, e
+        ))
+    })?;
     if output.status.success() {
         return Ok(Some(String::from_utf8_lossy(&output.stdout).to_string()));
     }
@@ -102,7 +105,11 @@ pub fn read_remote_z_config_file(ssh_host: &str, filename: &str) -> Result<Optio
 }
 
 /// Atomically write a file under the remote `~/.config/z/` directory with a mkdir lock.
-pub fn write_remote_z_config_file_atomic(ssh_host: &str, filename: &str, bytes: &[u8]) -> Result<()> {
+pub fn write_remote_z_config_file_atomic(
+    ssh_host: &str,
+    filename: &str,
+    bytes: &[u8],
+) -> Result<()> {
     let safe_filename = filename.replace('"', "");
     let cmd = format!(
         "set -e; dir=\"${{XDG_CONFIG_HOME:-$HOME/.config}}/z\"; mkdir -p \"$dir\"; file=\"$dir/{0}\"; lock=\"$dir/{0}.lock\"; tmp=\"$dir/{0}.tmp.$$\"; i=0; while ! mkdir \"$lock\" 2>/dev/null; do i=$((i+1)); if [ $i -ge 10 ]; then echo 'metadata lock unavailable' >&2; exit 4; fi; sleep 0.05; done; trap 'rm -rf \"$lock\" \"$tmp\"' EXIT; cat > \"$tmp\"; mv \"$tmp\" \"$file\"; rm -rf \"$lock\"; trap - EXIT",
@@ -111,7 +118,12 @@ pub fn write_remote_z_config_file_atomic(ssh_host: &str, filename: &str, bytes: 
     let mut child = build_ssh_command(ssh_host, &cmd)
         .stdin(Stdio::piped())
         .spawn()
-        .map_err(|e| ZError::Io(format!("SSH to {} failed while writing config: {}", ssh_host, e)))?;
+        .map_err(|e| {
+            ZError::Io(format!(
+                "SSH to {} failed while writing config: {}",
+                ssh_host, e
+            ))
+        })?;
     if let Some(stdin) = child.stdin.as_mut() {
         stdin
             .write_all(bytes)
@@ -157,9 +169,16 @@ mod tests {
         let args: Vec<&OsStr> = cmd.get_args().collect();
         assert!(args.contains(&OsStr::new("vps.example.com")));
         // Command is wrapped in login shell: bash -l -c '...'
-        let joined: String = args.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ");
+        let joined: String = args
+            .iter()
+            .map(|a| a.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(joined.contains("bash -l -c"), "should wrap in login shell");
-        assert!(joined.contains("ls -la"), "should contain the original command");
+        assert!(
+            joined.contains("ls -la"),
+            "should contain the original command"
+        );
     }
 
     // --- shell_quote ---
@@ -204,5 +223,4 @@ mod tests {
     fn shell_quote_with_newline() {
         assert_eq!(shell_quote("a\nb"), "'a\nb'");
     }
-
 }

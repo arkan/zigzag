@@ -1712,7 +1712,9 @@ fn check_switch_deps() -> z_core::error::Result<()> {
     let output = std::process::Command::new("zellij")
         .arg("--version")
         .output()
-        .map_err(|e| z_core::error::ZError::Session(format!("zellij is required for z switch: {e}")))?;
+        .map_err(|e| {
+            z_core::error::ZError::Session(format!("zellij is required for z switch: {e}"))
+        })?;
     if output.status.success() {
         return Ok(());
     }
@@ -1747,7 +1749,11 @@ fn parent_process_id() -> u32 {
     {
         fs::read_to_string("/proc/self/stat")
             .ok()
-            .and_then(|stat| stat.split_whitespace().nth(3).and_then(|ppid| ppid.parse().ok()))
+            .and_then(|stat| {
+                stat.split_whitespace()
+                    .nth(3)
+                    .and_then(|ppid| ppid.parse().ok())
+            })
             .unwrap_or(0)
     }
     #[cfg(not(target_os = "linux"))]
@@ -1768,7 +1774,10 @@ fn log_switch_event(message: &str, level: LogLevel) {
 /// selects a session runs `zellij action switch-session <name>`.
 fn cmd_switch() -> z_core::error::Result<()> {
     let current_session = resolve_required_session_env("switch")?;
-    log_switch_event(&format!("start current_session={current_session}"), LogLevel::Info);
+    log_switch_event(
+        &format!("start current_session={current_session}"),
+        LogLevel::Info,
+    );
 
     // Prevent multiple switch pickers from opening simultaneously, while
     // allowing stale lock files from crashed/interrupted panes to self-heal.
@@ -1800,7 +1809,10 @@ fn cmd_switch() -> z_core::error::Result<()> {
         LogLevel::Info,
     );
     if switch_entries.is_empty() {
-        log_switch_event("no active z sessions found; showing diagnostic", LogLevel::Warning);
+        log_switch_event(
+            "no active z sessions found; showing diagnostic",
+            LogLevel::Warning,
+        );
         eprintln!("z switch: no active z sessions found");
         std::thread::sleep(Duration::from_secs(2));
         return Ok(());
@@ -1822,7 +1834,11 @@ fn cmd_switch() -> z_core::error::Result<()> {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             log_switch_event(
-                &format!("zellij switch-session failed: status={} stderr={}", output.status, stderr.trim()),
+                &format!(
+                    "zellij switch-session failed: status={} stderr={}",
+                    output.status,
+                    stderr.trim()
+                ),
                 LogLevel::Error,
             );
             return Err(z_core::error::ZError::Session(format!(
@@ -1830,7 +1846,10 @@ fn cmd_switch() -> z_core::error::Result<()> {
                 stderr.trim()
             )));
         }
-        log_switch_event(&format!("zellij switched to {session_name}"), LogLevel::Info);
+        log_switch_event(
+            &format!("zellij switched to {session_name}"),
+            LogLevel::Info,
+        );
         z_core::session_entry::record_session_attach(
             &activity_store::FileActivityStore::default(),
             &session_name,
@@ -2818,10 +2837,7 @@ mod tests {
             now - SWITCH_LOCK_MAX_AGE + Duration::from_millis(1),
             now,
         ));
-        assert!(switch_lock_is_expired(
-            now - SWITCH_LOCK_MAX_AGE,
-            now,
-        ));
+        assert!(switch_lock_is_expired(now - SWITCH_LOCK_MAX_AGE, now,));
     }
 
     #[test]

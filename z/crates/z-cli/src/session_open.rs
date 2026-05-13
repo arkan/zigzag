@@ -8,7 +8,11 @@ pub struct OpenSessionPlan {
 }
 
 /// Decide whether opening a Project branch should attach an existing Session or create one.
-pub fn plan_open_session(project: &Project, branch: &str, live_sessions: &[Session]) -> OpenSessionPlan {
+pub fn plan_open_session(
+    project: &Project,
+    branch: &str,
+    live_sessions: &[Session],
+) -> OpenSessionPlan {
     let target_session = Session::new(&project.name, branch);
     let existing_session = live_sessions
         .iter()

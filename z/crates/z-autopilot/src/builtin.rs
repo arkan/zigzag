@@ -351,10 +351,7 @@ mod tests {
         let step = &wf.steps[1];
         assert_eq!(step.name, "merge");
         if let StepAction::Run { command } = &step.action {
-            assert!(
-                command.contains("--squash"),
-                "merge must use squash"
-            );
+            assert!(command.contains("--squash"), "merge must use squash");
             assert!(
                 command.contains("--delete-branch"),
                 "merge must delete branch"

@@ -101,17 +101,17 @@ impl Theme {
 
     fn dracula() -> Theme {
         // Dracula palette
-        let bg = Rgb(40, 42, 54);         // #282a36
-        let fg = Rgb(248, 248, 242);      // #f8f8f2
-        let current = Rgb(68, 71, 90);    // #44475a
-        let comment = Rgb(98, 114, 164);  // #6272a4
-        let cyan = Rgb(139, 233, 253);    // #8be9fd
-        let green = Rgb(80, 250, 123);    // #50fa7b
-        let orange = Rgb(255, 184, 108);  // #ffb86c
-        let pink = Rgb(255, 121, 198);    // #ff79c6
-        let purple = Rgb(189, 147, 249);  // #bd93f9
-        let red = Rgb(255, 85, 85);       // #ff5555
-        let yellow = Rgb(241, 250, 140);  // #f1fa8c
+        let bg = Rgb(40, 42, 54); // #282a36
+        let fg = Rgb(248, 248, 242); // #f8f8f2
+        let current = Rgb(68, 71, 90); // #44475a
+        let comment = Rgb(98, 114, 164); // #6272a4
+        let cyan = Rgb(139, 233, 253); // #8be9fd
+        let green = Rgb(80, 250, 123); // #50fa7b
+        let orange = Rgb(255, 184, 108); // #ffb86c
+        let pink = Rgb(255, 121, 198); // #ff79c6
+        let purple = Rgb(189, 147, 249); // #bd93f9
+        let red = Rgb(255, 85, 85); // #ff5555
+        let yellow = Rgb(241, 250, 140); // #f1fa8c
 
         let s = |fg_c: Option<Rgb>, bg_c: Option<Rgb>, bold: bool, dim: bool| ThemeStyle {
             fg: fg_c,
@@ -156,11 +156,11 @@ impl Theme {
             text_dim: s(Some(comment), None, false, true),
             text_highlight: s(Some(orange), None, true, false),
 
-            terminal_black: Rgb(33, 34, 44),      // #21222c
+            terminal_black: Rgb(33, 34, 44), // #21222c
             terminal_red: red,
             terminal_green: green,
             terminal_yellow: yellow,
-            terminal_blue: purple,                 // Dracula uses purple for "blue" slot
+            terminal_blue: purple, // Dracula uses purple for "blue" slot
             terminal_magenta: pink,
             terminal_cyan: cyan,
             terminal_white: fg,
@@ -379,7 +379,10 @@ mod tests {
         let t = Theme::from_name(ThemeName::Dracula);
         let kdl = t.to_zellij_kdl();
         assert!(kdl.contains("themes {"), "should contain themes block");
-        assert!(kdl.contains("dracula {"), "should contain dracula sub-block");
+        assert!(
+            kdl.contains("dracula {"),
+            "should contain dracula sub-block"
+        );
         assert!(kdl.contains("theme \"dracula\""), "should set active theme");
     }
 
@@ -388,14 +391,32 @@ mod tests {
         let t = Theme::from_name(ThemeName::Dracula);
         let kdl = t.to_zellij_kdl();
         // Modern Zellij theme format uses structured blocks
-        assert!(kdl.contains("ribbon_selected {"), "should have ribbon_selected");
-        assert!(kdl.contains("ribbon_unselected {"), "should have ribbon_unselected");
+        assert!(
+            kdl.contains("ribbon_selected {"),
+            "should have ribbon_selected"
+        );
+        assert!(
+            kdl.contains("ribbon_unselected {"),
+            "should have ribbon_unselected"
+        );
         assert!(kdl.contains("text_selected {"), "should have text_selected");
-        assert!(kdl.contains("text_unselected {"), "should have text_unselected");
-        assert!(kdl.contains("frame_selected {"), "should have frame_selected");
-        assert!(kdl.contains("exit_code_success {"), "should have exit_code_success");
+        assert!(
+            kdl.contains("text_unselected {"),
+            "should have text_unselected"
+        );
+        assert!(
+            kdl.contains("frame_selected {"),
+            "should have frame_selected"
+        );
+        assert!(
+            kdl.contains("exit_code_success {"),
+            "should have exit_code_success"
+        );
         // Uses RGB values, not hex strings
         assert!(kdl.contains("base 80 250 123"), "should use RGB for green");
-        assert!(kdl.contains("background 40 42 54"), "should use Dracula bg RGB");
+        assert!(
+            kdl.contains("background 40 42 54"),
+            "should use Dracula bg RGB"
+        );
     }
 }

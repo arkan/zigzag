@@ -179,9 +179,9 @@ fn parse_action_node(node: &KdlNode) -> Result<ActionDef> {
         .ok_or_else(|| ZError::ConfigParse("action missing name".into()))?
         .to_string();
 
-    let children = node.children().ok_or_else(|| {
-        ZError::ConfigParse(format!("action '{name}' has no body"))
-    })?;
+    let children = node
+        .children()
+        .ok_or_else(|| ZError::ConfigParse(format!("action '{name}' has no body")))?;
 
     let mut action: Option<ActionType> = None;
     let mut condition = ActionCondition::Always;
@@ -196,13 +196,17 @@ fn parse_action_node(node: &KdlNode) -> Result<ActionDef> {
                 let cmd = first_string_arg(child).ok_or_else(|| {
                     ZError::ConfigParse(format!("action '{name}': run missing command"))
                 })?;
-                action = Some(ActionType::Run { command: cmd.to_string() });
+                action = Some(ActionType::Run {
+                    command: cmd.to_string(),
+                });
             }
             "open-url" => {
                 let url = first_string_arg(child).ok_or_else(|| {
                     ZError::ConfigParse(format!("action '{name}': open-url missing URL"))
                 })?;
-                action = Some(ActionType::OpenUrl { url: url.to_string() });
+                action = Some(ActionType::OpenUrl {
+                    url: url.to_string(),
+                });
             }
             "when" => {
                 let raw = first_string_arg(child).ok_or_else(|| {
@@ -428,12 +432,12 @@ pub fn resolve_actions(actions: &[ActionDef], env: &ActionEnv) -> Result<Vec<Res
         }
 
         let resolved_action = match &action.action {
-            ActionType::Run { command } => {
-                ActionType::Run { command: interpolate(command, env)? }
-            }
-            ActionType::OpenUrl { url } => {
-                ActionType::OpenUrl { url: interpolate(url, env)? }
-            }
+            ActionType::Run { command } => ActionType::Run {
+                command: interpolate(command, env)?,
+            },
+            ActionType::OpenUrl { url } => ActionType::OpenUrl {
+                url: interpolate(url, env)?,
+            },
         };
 
         resolved.push(ResolvedAction {
@@ -470,9 +474,7 @@ fn interpolate(template: &str, env: &ActionEnv) -> Result<String> {
                         Some('}') => break,
                         Some(c) => var_name.push(c),
                         None => {
-                            return Err(ZError::ConfigParse(
-                                "unterminated ${...} variable".into(),
-                            ));
+                            return Err(ZError::ConfigParse("unterminated ${...} variable".into()));
                         }
                     }
                 }
@@ -500,18 +502,15 @@ fn resolve_var(name: &str, env: &ActionEnv) -> Result<String> {
             .repo
             .clone()
             .ok_or_else(|| ZError::ConfigParse("${repo} is not available (no git remote)".into())),
-        "branch" => env
-            .branch
-            .clone()
-            .ok_or_else(|| ZError::ConfigParse("${branch} is not available (no session selected)".into())),
-        "session" => env
-            .session
-            .clone()
-            .ok_or_else(|| ZError::ConfigParse("${session} is not available (no session selected)".into())),
-        "pr_number" => env
-            .pr_number
-            .map(|n| n.to_string())
-            .ok_or_else(|| ZError::ConfigParse("${pr_number} is not available (no PR found)".into())),
+        "branch" => env.branch.clone().ok_or_else(|| {
+            ZError::ConfigParse("${branch} is not available (no session selected)".into())
+        }),
+        "session" => env.session.clone().ok_or_else(|| {
+            ZError::ConfigParse("${session} is not available (no session selected)".into())
+        }),
+        "pr_number" => env.pr_number.map(|n| n.to_string()).ok_or_else(|| {
+            ZError::ConfigParse("${pr_number} is not available (no PR found)".into())
+        }),
         "pr_url" => env
             .pr_url
             .clone()
@@ -523,7 +522,9 @@ fn resolve_var(name: &str, env: &ActionEnv) -> Result<String> {
             Some(CiStatus::Unknown) | None => "unknown".into(),
         }),
         "review_tool" => Ok(env.review_tool.clone()),
-        _ => Err(ZError::ConfigParse(format!("unknown variable '${{{name}}}'"))),
+        _ => Err(ZError::ConfigParse(format!(
+            "unknown variable '${{{name}}}'"
+        ))),
     }
 }
 
@@ -557,7 +558,9 @@ action "Review PR (Codex)" {
         assert_eq!(a.name, "Review PR (Codex)");
         assert_eq!(
             a.action,
-            ActionType::Run { command: "codex -q 'Review PR #${pr_number}'".into() }
+            ActionType::Run {
+                command: "codex -q 'Review PR #${pr_number}'".into()
+            }
         );
         assert_eq!(a.condition, ActionCondition::HasPr);
         assert_eq!(a.context, ActionContext::Session);
@@ -595,7 +598,12 @@ action "Open PR" {
 "#;
         let actions = parse_actions_kdl(kdl).unwrap();
         let a = &actions[0];
-        assert_eq!(a.action, ActionType::OpenUrl { url: "${pr_url}".into() });
+        assert_eq!(
+            a.action,
+            ActionType::OpenUrl {
+                url: "${pr_url}".into()
+            }
+        );
         assert_eq!(a.condition, ActionCondition::HasPr);
     }
 
@@ -636,7 +644,12 @@ action "Open PR" {
 
     #[test]
     fn pane_type_roundtrip() {
-        let types = [PaneType::Float, PaneType::FloatFullscreen, PaneType::Split, PaneType::Tab];
+        let types = [
+            PaneType::Float,
+            PaneType::FloatFullscreen,
+            PaneType::Split,
+            PaneType::Tab,
+        ];
         for t in &types {
             assert_eq!(PaneType::from_str(t.as_str()).as_ref(), Some(t));
         }
@@ -817,7 +830,10 @@ action "Bad" {
     #[test]
     fn builtin_address_comments_condition() {
         let builtins = builtin_actions();
-        let addr = builtins.iter().find(|a| a.name == "Address review comments").unwrap();
+        let addr = builtins
+            .iter()
+            .find(|a| a.name == "Address review comments")
+            .unwrap();
         assert_eq!(addr.condition, ActionCondition::HasNewComments);
     }
 
@@ -829,7 +845,9 @@ action "Bad" {
     fn merge_override_by_name() {
         let builtin = vec![ActionDef {
             name: "Open PR".into(),
-            action: ActionType::Run { command: "original".into() },
+            action: ActionType::Run {
+                command: "original".into(),
+            },
             condition: ActionCondition::HasPr,
             context: ActionContext::Session,
             pane: PaneType::Float,
@@ -838,7 +856,9 @@ action "Bad" {
         }];
         let user = vec![ActionDef {
             name: "Open PR".into(),
-            action: ActionType::Run { command: "override".into() },
+            action: ActionType::Run {
+                command: "override".into(),
+            },
             condition: ActionCondition::HasPr,
             context: ActionContext::Session,
             pane: PaneType::Tab,
@@ -849,7 +869,9 @@ action "Bad" {
         assert_eq!(merged.len(), 1);
         assert_eq!(
             merged[0].action,
-            ActionType::Run { command: "override".into() }
+            ActionType::Run {
+                command: "override".into()
+            }
         );
         assert_eq!(merged[0].pane, PaneType::Tab);
     }
@@ -858,7 +880,9 @@ action "Bad" {
     fn merge_disabled_removes_action() {
         let builtin = vec![ActionDef {
             name: "Open PR".into(),
-            action: ActionType::Run { command: "cmd".into() },
+            action: ActionType::Run {
+                command: "cmd".into(),
+            },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
             pane: PaneType::Float,
@@ -867,7 +891,9 @@ action "Bad" {
         }];
         let user = vec![ActionDef {
             name: "Open PR".into(),
-            action: ActionType::Run { command: "cmd".into() },
+            action: ActionType::Run {
+                command: "cmd".into(),
+            },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
             pane: PaneType::Float,
@@ -883,7 +909,9 @@ action "Bad" {
         let builtin = vec![
             ActionDef {
                 name: "A".into(),
-                action: ActionType::Run { command: "a".into() },
+                action: ActionType::Run {
+                    command: "a".into(),
+                },
                 condition: ActionCondition::Always,
                 context: ActionContext::Session,
                 pane: PaneType::Float,
@@ -892,7 +920,9 @@ action "Bad" {
             },
             ActionDef {
                 name: "B".into(),
-                action: ActionType::Run { command: "b".into() },
+                action: ActionType::Run {
+                    command: "b".into(),
+                },
                 condition: ActionCondition::Always,
                 context: ActionContext::Session,
                 pane: PaneType::Float,
@@ -902,7 +932,9 @@ action "Bad" {
         ];
         let user = vec![ActionDef {
             name: "C".into(),
-            action: ActionType::Run { command: "c".into() },
+            action: ActionType::Run {
+                command: "c".into(),
+            },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
             pane: PaneType::Float,
@@ -920,7 +952,9 @@ action "Bad" {
     fn merge_three_layers() {
         let builtin = vec![ActionDef {
             name: "X".into(),
-            action: ActionType::Run { command: "v1".into() },
+            action: ActionType::Run {
+                command: "v1".into(),
+            },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
             pane: PaneType::Float,
@@ -929,7 +963,9 @@ action "Bad" {
         }];
         let global = vec![ActionDef {
             name: "X".into(),
-            action: ActionType::Run { command: "v2".into() },
+            action: ActionType::Run {
+                command: "v2".into(),
+            },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
             pane: PaneType::Float,
@@ -938,7 +974,9 @@ action "Bad" {
         }];
         let repo = vec![ActionDef {
             name: "X".into(),
-            action: ActionType::Run { command: "v3".into() },
+            action: ActionType::Run {
+                command: "v3".into(),
+            },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
             pane: PaneType::Float,
@@ -949,7 +987,9 @@ action "Bad" {
         assert_eq!(merged.len(), 1);
         assert_eq!(
             merged[0].action,
-            ActionType::Run { command: "v3".into() }
+            ActionType::Run {
+                command: "v3".into()
+            }
         );
     }
 
@@ -999,11 +1039,8 @@ action "Bad" {
             last_review_at: Some("2026-05-10T09:00:00Z".to_string()),
         };
 
-        let preview = ActionPreview::from_forge_data(
-            Some(&pr),
-            Some(CiStatus::Failing),
-            Some(&review),
-        );
+        let preview =
+            ActionPreview::from_forge_data(Some(&pr), Some(CiStatus::Failing), Some(&review));
 
         assert_eq!(preview.pr_number, Some(42));
         assert_eq!(preview.pr_url.as_deref(), Some("https://example.com/pr/42"));
@@ -1037,7 +1074,9 @@ action "Bad" {
     fn make_action(name: &str, condition: ActionCondition, context: ActionContext) -> ActionDef {
         ActionDef {
             name: name.into(),
-            action: ActionType::Run { command: "echo test".into() },
+            action: ActionType::Run {
+                command: "echo test".into(),
+            },
             condition,
             context,
             pane: PaneType::Float,
@@ -1049,9 +1088,11 @@ action "Bad" {
     #[test]
     fn resolve_filters_by_has_pr() {
         let env = make_env();
-        let actions = vec![
-            make_action("A", ActionCondition::HasPr, ActionContext::Session),
-        ];
+        let actions = vec![make_action(
+            "A",
+            ActionCondition::HasPr,
+            ActionContext::Session,
+        )];
         let resolved = resolve_actions(&actions, &env).unwrap();
         assert_eq!(resolved.len(), 1);
 
@@ -1066,9 +1107,11 @@ action "Bad" {
     fn resolve_filters_by_has_ci_failure() {
         let mut env = make_env();
         env.ci_status = Some(CiStatus::Failing);
-        let actions = vec![
-            make_action("Fix", ActionCondition::HasCiFailure, ActionContext::Session),
-        ];
+        let actions = vec![make_action(
+            "Fix",
+            ActionCondition::HasCiFailure,
+            ActionContext::Session,
+        )];
         let resolved = resolve_actions(&actions, &env).unwrap();
         assert_eq!(resolved.len(), 1);
 
@@ -1081,9 +1124,11 @@ action "Bad" {
     fn resolve_filters_by_has_new_comments() {
         let mut env = make_env();
         env.has_new_comments = true;
-        let actions = vec![
-            make_action("Review", ActionCondition::HasNewComments, ActionContext::Session),
-        ];
+        let actions = vec![make_action(
+            "Review",
+            ActionCondition::HasNewComments,
+            ActionContext::Session,
+        )];
         let resolved = resolve_actions(&actions, &env).unwrap();
         assert_eq!(resolved.len(), 1);
 
@@ -1095,9 +1140,11 @@ action "Bad" {
     #[test]
     fn resolve_always_condition_always_passes() {
         let env = make_env();
-        let actions = vec![
-            make_action("Always", ActionCondition::Always, ActionContext::Session),
-        ];
+        let actions = vec![make_action(
+            "Always",
+            ActionCondition::Always,
+            ActionContext::Session,
+        )];
         let resolved = resolve_actions(&actions, &env).unwrap();
         assert_eq!(resolved.len(), 1);
     }
@@ -1107,9 +1154,11 @@ action "Bad" {
         let mut env = make_env();
         env.branch = None;
         env.session = None;
-        let actions = vec![
-            make_action("SessionOnly", ActionCondition::Always, ActionContext::Session),
-        ];
+        let actions = vec![make_action(
+            "SessionOnly",
+            ActionCondition::Always,
+            ActionContext::Session,
+        )];
         let resolved = resolve_actions(&actions, &env).unwrap();
         assert!(resolved.is_empty());
     }
@@ -1119,9 +1168,11 @@ action "Bad" {
         let mut env = make_env();
         env.branch = None;
         env.session = None;
-        let actions = vec![
-            make_action("ProjectWide", ActionCondition::Always, ActionContext::Project),
-        ];
+        let actions = vec![make_action(
+            "ProjectWide",
+            ActionCondition::Always,
+            ActionContext::Project,
+        )];
         let resolved = resolve_actions(&actions, &env).unwrap();
         assert_eq!(resolved.len(), 1);
     }
@@ -1161,7 +1212,9 @@ action "Bad" {
         env.pr_number = None;
         let actions = vec![ActionDef {
             name: "test".into(),
-            action: ActionType::Run { command: "echo ${pr_number}".into() },
+            action: ActionType::Run {
+                command: "echo ${pr_number}".into(),
+            },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
             pane: PaneType::Float,
@@ -1178,7 +1231,9 @@ action "Bad" {
         let env = make_env();
         let actions = vec![ActionDef {
             name: "test".into(),
-            action: ActionType::Run { command: "echo ${nonexistent}".into() },
+            action: ActionType::Run {
+                command: "echo ${nonexistent}".into(),
+            },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
             pane: PaneType::Float,
@@ -1231,7 +1286,9 @@ action "Bad" {
         let env = make_env();
         let actions = vec![ActionDef {
             name: "test".into(),
-            action: ActionType::OpenUrl { url: "${pr_url}".into() },
+            action: ActionType::OpenUrl {
+                url: "${pr_url}".into(),
+            },
             condition: ActionCondition::Always,
             context: ActionContext::Session,
             pane: PaneType::Float,

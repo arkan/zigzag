@@ -17,7 +17,10 @@ pub fn parse_repo_config_projection(content: &str) -> Result<RepoConfigProjectio
     let per_repo = parse_per_repo_config_doc(&doc)?;
     let workflows = parse_autopilot_workflows_doc(&doc)?;
 
-    Ok(RepoConfigProjection { per_repo, workflows })
+    Ok(RepoConfigProjection {
+        per_repo,
+        workflows,
+    })
 }
 
 #[cfg(test)]

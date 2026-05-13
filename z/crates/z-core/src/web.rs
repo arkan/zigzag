@@ -84,7 +84,12 @@ pub fn zellij_session_url(host: &str, port: u16, session: &str) -> String {
     } else {
         host.to_string()
     };
-    format!("http://{}:{}/session/{}", host_part, port, percent_encode(session))
+    format!(
+        "http://{}:{}/session/{}",
+        host_part,
+        port,
+        percent_encode(session)
+    )
 }
 
 /// Percent-encode every byte that is not an RFC 3986 "unreserved" character
@@ -198,10 +203,7 @@ mod tests {
     #[test]
     fn session_without_matching_project_is_excluded() {
         let projects = vec![local_project("app")];
-        let sessions = vec![
-            Session::new("app", "main"),
-            Session::new("orphan", "main"),
-        ];
+        let sessions = vec![Session::new("app", "main"), Session::new("orphan", "main")];
         let groups = dashboard_groups(&sessions, &projects, &HashMap::new(), &HashMap::new());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].sessions.len(), 1);

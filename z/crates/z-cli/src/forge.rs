@@ -30,7 +30,10 @@ impl ForgeClient for GhForgeClient {
         }
         let out = Command::new("gh")
             .args([
-                "pr", "view", branch, "--json",
+                "pr",
+                "view",
+                branch,
+                "--json",
                 "reviews,latestReviews,commits",
             ])
             .output()
@@ -48,7 +51,13 @@ impl ForgeClient for GhForgeClient {
         }
         let out = Command::new("gh")
             .args([
-                "run", "list", "--branch", branch, "--limit", "1", "--json",
+                "run",
+                "list",
+                "--branch",
+                branch,
+                "--limit",
+                "1",
+                "--json",
                 "conclusion,status",
             ])
             .output()

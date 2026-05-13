@@ -51,17 +51,17 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
-pub mod refresh;
 mod preview_state;
+pub mod refresh;
 
 use z_core::action::{ActionDef, ActionType, PaneType, ResolvedAction};
-use z_core::domain::{
-    CiStatus, NotifyLevel, PrState, PullRequest, Project, Session, SessionLink,
-    WorktreeDiagnostic, WorktreeEntry, WorktreeStatus,
-};
 use z_core::config::SwitcherPriorityCriterion;
-use z_core::traits::SessionRefresher;
+use z_core::domain::{
+    CiStatus, NotifyLevel, PrState, Project, PullRequest, Session, SessionLink, WorktreeDiagnostic,
+    WorktreeEntry, WorktreeStatus,
+};
 use z_core::theme::{Rgb, ThemeStyle};
+use z_core::traits::SessionRefresher;
 
 // ---------------------------------------------------------------------------
 // Theme → ratatui style conversion
@@ -150,9 +150,19 @@ pub enum TuiAction {
     /// User pressed `n` — create a new session for the selected project on a named branch.
     New { project: String, branch: String },
     /// User selected an issue from the GhPicker — create worktree + session with prompt.
-    NewFromIssue { project: String, number: u64, title: String, slug: String },
+    NewFromIssue {
+        project: String,
+        number: u64,
+        title: String,
+        slug: String,
+    },
     /// User selected a PR from the GhPicker — checkout branch + session with prompt.
-    NewFromPr { project: String, number: u64, title: String, branch: String },
+    NewFromPr {
+        project: String,
+        number: u64,
+        title: String,
+        branch: String,
+    },
     /// User pressed `e` — open per-repo config in $EDITOR.
     EditPerRepoConfig { project_path: std::path::PathBuf },
     /// User selected an action from the action menu (Alt+r).
@@ -285,7 +295,9 @@ pub enum Modal {
         selected: usize,
     },
     /// Confirmation dialog shown before deleting a session.
-    DeleteSessionConfirm { session: String },
+    DeleteSessionConfirm {
+        session: String,
+    },
     /// Confirmation dialog shown before deleting a worktree.
     DeleteWorktreeConfirm {
         project: String,
@@ -302,9 +314,15 @@ pub enum Modal {
     /// Full-screen help overlay showing all keybindings (opened with '?').
     Help,
     /// Branch name input shown when the user presses 'n' (new session).
-    BranchInput { project: String, input: String },
+    BranchInput {
+        project: String,
+        input: String,
+    },
     /// Three-choice menu: Blank / From Issue / From PR.
-    NewSessionMenu { project: String, selected: usize },
+    NewSessionMenu {
+        project: String,
+        selected: usize,
+    },
     /// Fuzzy-searchable list of GitHub issues or PRs.
     GhPicker {
         project: String,
@@ -315,9 +333,15 @@ pub enum Modal {
         loading: bool,
     },
     /// Scrollable log viewer opened with 'l'.
-    LogViewer { lines: Vec<String>, scroll_offset: usize },
+    LogViewer {
+        lines: Vec<String>,
+        scroll_offset: usize,
+    },
     /// Action menu shown when the user presses Alt+r.
-    ActionMenu { actions: Vec<ResolvedAction>, selected: usize },
+    ActionMenu {
+        actions: Vec<ResolvedAction>,
+        selected: usize,
+    },
 }
 
 /// Outcome of processing one keypress inside a modal.
@@ -337,21 +361,51 @@ enum ModalOutcome {
         host: Option<String>,
         transport: Option<String>,
     },
-    DeleteConfirmed { project: String },
-    SessionDeleteConfirmed { session: String },
-    WorkflowSelected { project: String, workflow: String },
-    NewBranch { project: String, branch: String },
-    ActionSelected { action: ResolvedAction },
+    DeleteConfirmed {
+        project: String,
+    },
+    SessionDeleteConfirmed {
+        session: String,
+    },
+    WorkflowSelected {
+        project: String,
+        workflow: String,
+    },
+    NewBranch {
+        project: String,
+        branch: String,
+    },
+    ActionSelected {
+        action: ResolvedAction,
+    },
     /// User selected "Blank" in the NewSessionMenu — transition to BranchInput.
-    OpenBranchInput { project: String },
+    OpenBranchInput {
+        project: String,
+    },
     /// User selected "From Issue" or "From PR" — open GhPicker.
-    OpenGhPicker { project: String, kind: GhPickerKind },
+    OpenGhPicker {
+        project: String,
+        kind: GhPickerKind,
+    },
     /// User selected an issue from the GhPicker.
-    GhIssueSelected { project: String, number: u64, title: String },
+    GhIssueSelected {
+        project: String,
+        number: u64,
+        title: String,
+    },
     /// User selected a PR from the GhPicker.
-    GhPrSelected { project: String, number: u64, title: String, branch: String },
+    GhPrSelected {
+        project: String,
+        number: u64,
+        title: String,
+        branch: String,
+    },
     /// User confirmed worktree deletion.
-    WorktreeDeleteConfirmed { project: String, branch: String, force: bool },
+    WorktreeDeleteConfirmed {
+        project: String,
+        branch: String,
+        force: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -444,7 +498,11 @@ impl z_core::traits::ForgeClient for NoopForgeClient {
         Ok(CiStatus::Unknown)
     }
 
-    fn get_review_status(&self, _: &str, _: &str) -> z_core::error::Result<Option<z_core::domain::ReviewStatus>> {
+    fn get_review_status(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> z_core::error::Result<Option<z_core::domain::ReviewStatus>> {
         Ok(None)
     }
 }
@@ -557,7 +615,11 @@ impl TuiState {
         }
     }
 
-    fn apply_reloaded_entries(&mut self, entries: Vec<ProjectEntry>, notifications: HashSet<String>) {
+    fn apply_reloaded_entries(
+        &mut self,
+        entries: Vec<ProjectEntry>,
+        notifications: HashSet<String>,
+    ) {
         self.entries = entries;
         self.notifications = notifications;
         self.refresh_rx = None;
@@ -608,9 +670,7 @@ impl TuiState {
             .map(|e| {
                 e.worktrees
                     .iter()
-                    .filter(|wt| {
-                        q.is_empty() || worktree_matches_query(wt, q)
-                    })
+                    .filter(|wt| q.is_empty() || worktree_matches_query(wt, q))
                     .collect()
             })
             .unwrap_or_default()
@@ -845,7 +905,13 @@ impl TuiState {
             None => return,
         };
         if let Some(json) = json {
-            if let Some(Modal::GhPicker { kind, items, loading, .. }) = &mut self.modal {
+            if let Some(Modal::GhPicker {
+                kind,
+                items,
+                loading,
+                ..
+            }) = &mut self.modal
+            {
                 let parsed = match kind {
                     GhPickerKind::Issue => z_core::gh::parse_gh_issues(&json),
                     GhPickerKind::Pr => z_core::gh::parse_gh_prs(&json),
@@ -1089,7 +1155,11 @@ fn tab_advance_with_completion(form: &mut ProjectForm) {
 /// Returns `Some(s)` if the trimmed string is non-empty, else `None`.
 fn non_empty_opt(s: &str) -> Option<String> {
     let t = s.trim();
-    if t.is_empty() { None } else { Some(t.to_string()) }
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
 }
 
 /// List matching directory entries for tab-completion on a partial path.
@@ -1173,8 +1243,7 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
 
             KeyCode::BackTab => {
                 let was_path = form.active_field == 0;
-                form.active_field =
-                    (form.active_field + form.fields.len() - 1) % form.fields.len();
+                form.active_field = (form.active_field + form.fields.len() - 1) % form.fields.len();
                 if was_path {
                     validate_path_field(form);
                 }
@@ -1192,12 +1261,8 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
                 }
                 // Validate transport field value.
                 let transport_raw = form.fields[3].value.trim().to_lowercase();
-                if !transport_raw.is_empty()
-                    && transport_raw != "ssh"
-                    && transport_raw != "mosh"
-                {
-                    form.fields[3].warning =
-                        Some("Must be \"ssh\" or \"mosh\"".to_string());
+                if !transport_raw.is_empty() && transport_raw != "ssh" && transport_raw != "mosh" {
+                    form.fields[3].warning = Some("Must be \"ssh\" or \"mosh\"".to_string());
                     valid = false;
                 }
                 if valid {
@@ -1205,7 +1270,12 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
                     let name = form.fields[1].value.trim().to_string();
                     let host = non_empty_opt(&form.fields[2].value);
                     let transport = non_empty_opt(&form.fields[3].value);
-                    ModalOutcome::Submit { path, name, host, transport }
+                    ModalOutcome::Submit {
+                        path,
+                        name,
+                        host,
+                        transport,
+                    }
                 } else {
                     ModalOutcome::Continue
                 }
@@ -1250,8 +1320,7 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
 
             KeyCode::BackTab => {
                 let was_path = form.active_field == 0;
-                form.active_field =
-                    (form.active_field + form.fields.len() - 1) % form.fields.len();
+                form.active_field = (form.active_field + form.fields.len() - 1) % form.fields.len();
                 if was_path {
                     validate_path_field(form);
                 }
@@ -1268,12 +1337,8 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
                 }
                 // Validate transport field value.
                 let transport_raw = form.fields[3].value.trim().to_lowercase();
-                if !transport_raw.is_empty()
-                    && transport_raw != "ssh"
-                    && transport_raw != "mosh"
-                {
-                    form.fields[3].warning =
-                        Some("Must be \"ssh\" or \"mosh\"".to_string());
+                if !transport_raw.is_empty() && transport_raw != "ssh" && transport_raw != "mosh" {
+                    form.fields[3].warning = Some("Must be \"ssh\" or \"mosh\"".to_string());
                     valid = false;
                 }
                 if valid {
@@ -1335,7 +1400,9 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
         Modal::DeleteConfirm { project_name, .. } => match code {
             KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => ModalOutcome::Close,
             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
-                ModalOutcome::DeleteConfirmed { project: project_name.clone() }
+                ModalOutcome::DeleteConfirmed {
+                    project: project_name.clone(),
+                }
             }
             _ => ModalOutcome::Continue,
         },
@@ -1343,12 +1410,18 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
         Modal::DeleteSessionConfirm { session } => match code {
             KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => ModalOutcome::Close,
             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
-                ModalOutcome::SessionDeleteConfirmed { session: session.clone() }
+                ModalOutcome::SessionDeleteConfirmed {
+                    session: session.clone(),
+                }
             }
             _ => ModalOutcome::Continue,
         },
 
-        Modal::WorkflowSelector { project, workflows, selected } => match code {
+        Modal::WorkflowSelector {
+            project,
+            workflows,
+            selected,
+        } => match code {
             KeyCode::Esc => ModalOutcome::Close,
             KeyCode::Up | KeyCode::Char('k') => {
                 if *selected > 0 {
@@ -1433,7 +1506,10 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
                 if branch.is_empty() {
                     ModalOutcome::Continue
                 } else {
-                    ModalOutcome::NewBranch { project: project.clone(), branch }
+                    ModalOutcome::NewBranch {
+                        project: project.clone(),
+                        branch,
+                    }
                 }
             }
             KeyCode::Backspace => {
@@ -1462,19 +1538,36 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
                     ModalOutcome::Continue
                 }
                 KeyCode::Enter => match *selected {
-                    0 => ModalOutcome::OpenBranchInput { project: project.clone() },
-                    1 => ModalOutcome::OpenGhPicker { project: project.clone(), kind: GhPickerKind::Issue },
-                    2 => ModalOutcome::OpenGhPicker { project: project.clone(), kind: GhPickerKind::Pr },
+                    0 => ModalOutcome::OpenBranchInput {
+                        project: project.clone(),
+                    },
+                    1 => ModalOutcome::OpenGhPicker {
+                        project: project.clone(),
+                        kind: GhPickerKind::Issue,
+                    },
+                    2 => ModalOutcome::OpenGhPicker {
+                        project: project.clone(),
+                        kind: GhPickerKind::Pr,
+                    },
                     _ => ModalOutcome::Continue,
                 },
                 _ => ModalOutcome::Continue,
             }
         }
 
-        Modal::GhPicker { project, kind, items, query, selected, loading } => match code {
+        Modal::GhPicker {
+            project,
+            kind,
+            items,
+            query,
+            selected,
+            loading,
+        } => match code {
             KeyCode::Esc => ModalOutcome::Close,
             KeyCode::Enter => {
-                if *loading { return ModalOutcome::Continue; }
+                if *loading {
+                    return ModalOutcome::Continue;
+                }
                 let filtered: Vec<&GhPickerItem> = items
                     .iter()
                     .filter(|item| {
@@ -1490,9 +1583,10 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
                             title: item.title.clone(),
                         },
                         GhPickerKind::Pr => {
-                            let branch = item.branch.clone().unwrap_or_else(|| {
-                                format!("pr-{}", item.number)
-                            });
+                            let branch = item
+                                .branch
+                                .clone()
+                                .unwrap_or_else(|| format!("pr-{}", item.number));
                             ModalOutcome::GhPrSelected {
                                 project: project.clone(),
                                 number: item.number,
@@ -1535,7 +1629,10 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             _ => ModalOutcome::Continue,
         },
 
-        Modal::LogViewer { lines, scroll_offset } => match code {
+        Modal::LogViewer {
+            lines,
+            scroll_offset,
+        } => match code {
             KeyCode::Esc | KeyCode::Char('q') => ModalOutcome::Close,
             KeyCode::Up | KeyCode::Char('k') => {
                 *scroll_offset = scroll_offset.saturating_sub(1);
@@ -1574,7 +1671,9 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             }
             KeyCode::Enter => {
                 if let Some(action) = actions.get(*selected) {
-                    ModalOutcome::ActionSelected { action: action.clone() }
+                    ModalOutcome::ActionSelected {
+                        action: action.clone(),
+                    }
                 } else {
                     ModalOutcome::Close
                 }
@@ -1710,31 +1809,33 @@ fn event_loop<B: Backend>(
                                 selected: 0,
                             });
                         } else {
-                            state.status_message = Some("No actions available in this context.".to_string());
+                            state.status_message =
+                                Some("No actions available in this context.".to_string());
                         }
                     }
-                    KeyCode::Char('l') => {
-                        match (cb.log_fn)(200) {
-                            Ok(lines) => {
-                                state.modal = Some(Modal::LogViewer {
-                                    lines,
-                                    scroll_offset: 0,
-                                });
-                            }
-                            Err(e) => {
-                                state.status_message = Some(format!("Failed to load logs: {e}"));
-                            }
+                    KeyCode::Char('l') => match (cb.log_fn)(200) {
+                        Ok(lines) => {
+                            state.modal = Some(Modal::LogViewer {
+                                lines,
+                                scroll_offset: 0,
+                            });
                         }
-                    }
+                        Err(e) => {
+                            state.status_message = Some(format!("Failed to load logs: {e}"));
+                        }
+                    },
                     // 'g' removed from leader — lazygit is now in the action menu
                     KeyCode::Esc => {
                         // Cancel leader
                     }
                     _ => {
-                        state.status_message = Some(format!("Unknown leader combo: Alt+z {}", match key.code {
-                            KeyCode::Char(c) => format!("{c}"),
-                            _ => "?".to_string(),
-                        }));
+                        state.status_message = Some(format!(
+                            "Unknown leader combo: Alt+z {}",
+                            match key.code {
+                                KeyCode::Char(c) => format!("{c}"),
+                                _ => "?".to_string(),
+                            }
+                        ));
                     }
                 }
                 state.trigger_preview_load();
@@ -1748,45 +1849,49 @@ fn event_loop<B: Backend>(
                     ModalOutcome::Close => {
                         state.modal = None;
                     }
-                    ModalOutcome::Submit { path, name, host, transport } => {
+                    ModalOutcome::Submit {
+                        path,
+                        name,
+                        host,
+                        transport,
+                    } => {
                         state.modal = None;
                         apply_add_project(
                             state,
                             cb.add_project_fn,
                             cb.reload_fn,
-                            &path, &name,
+                            &path,
+                            &name,
                             host.as_deref(),
                             transport.as_deref(),
                         );
                     }
-                    ModalOutcome::SubmitEdit { original_name, path, name, host, transport } => {
+                    ModalOutcome::SubmitEdit {
+                        original_name,
+                        path,
+                        name,
+                        host,
+                        transport,
+                    } => {
                         state.modal = None;
                         apply_edit_project(
                             state,
                             cb.edit_project_fn,
                             cb.reload_fn,
-                            &original_name, &path, &name,
+                            &original_name,
+                            &path,
+                            &name,
                             host.as_deref(),
                             transport.as_deref(),
                         );
                     }
                     ModalOutcome::DeleteConfirmed { project } => {
                         state.modal = None;
-                        apply_delete_project(
-                            state,
-                            cb.delete_project_fn,
-                            cb.reload_fn,
-                            &project,
-                        );
+                        apply_delete_project(state, cb.delete_project_fn, cb.reload_fn, &project);
                     }
                     ModalOutcome::SessionDeleteConfirmed { session } => {
                         state.modal = None;
-                        apply_delete_session(
-                            state,
-                            cb.kill_session_fn,
-                            cb.reload_fn,
-                            &session,
-                        );
+                        apply_delete_session(state, cb.kill_session_fn, cb.reload_fn, &session);
                     }
                     ModalOutcome::WorkflowSelected { project, workflow } => {
                         state.modal = None;
@@ -1798,18 +1903,20 @@ fn event_loop<B: Backend>(
                             ActionType::Run { ref command } => {
                                 // Determine the target session name
                                 let session_name = if state.focused_panel == Panel::Worktrees {
-                                    state.filtered_worktrees()
+                                    state
+                                        .filtered_worktrees()
                                         .get(state.selected_session)
                                         .and_then(|wt| match &wt.session_link {
                                             SessionLink::Active(s) => Some(s.name.clone()),
                                             _ => None,
                                         })
                                 } else {
-                                    state.selected_entry()
-                                        .and_then(|e| e.worktrees.iter().find_map(|wt| match &wt.session_link {
+                                    state.selected_entry().and_then(|e| {
+                                        e.worktrees.iter().find_map(|wt| match &wt.session_link {
                                             SessionLink::Active(s) => Some(s.name.clone()),
                                             _ => None,
-                                        }))
+                                        })
+                                    })
                                 };
                                 if let Some(session) = session_name {
                                     return Ok(TuiAction::RunAction {
@@ -1818,7 +1925,8 @@ fn event_loop<B: Backend>(
                                         pane_type: action.pane.clone(),
                                     });
                                 } else {
-                                    state.status_message = Some("No active session to run action in.".to_string());
+                                    state.status_message =
+                                        Some("No active session to run action in.".to_string());
                                 }
                             }
                             ActionType::OpenUrl { ref url } => {
@@ -1840,7 +1948,9 @@ fn event_loop<B: Backend>(
                     ModalOutcome::OpenGhPicker { project, kind } => {
                         // Spawn background gh fetch
                         let kind_clone = kind.clone();
-                        let entry_info = state.entries.iter()
+                        let entry_info = state
+                            .entries
+                            .iter()
                             .find(|e| e.project.name == project)
                             .map(|e| (e.project.path.clone(), e.project.host.clone()));
                         let tx = state.gh_tx.clone();
@@ -1853,13 +1963,21 @@ fn event_loop<B: Backend>(
                                 };
                                 let output = if let Some(ssh_host) = host {
                                     let path_str = path.to_string_lossy();
-                                    let remote_cmd = format!("cd '{}' && {}", path_str.replace('\'', "'\\''"), gh_args);
-                                    let wrapped = format!("bash -l -c '{}'", remote_cmd.replace('\'', "'\\''"));
+                                    let remote_cmd = format!(
+                                        "cd '{}' && {}",
+                                        path_str.replace('\'', "'\\''"),
+                                        gh_args
+                                    );
+                                    let wrapped = format!(
+                                        "bash -l -c '{}'",
+                                        remote_cmd.replace('\'', "'\\''")
+                                    );
                                     std::process::Command::new("ssh")
                                         .args(["-o", "ConnectTimeout=10", &ssh_host, &wrapped])
                                         .output()
                                 } else {
-                                    let args: Vec<&str> = gh_args.split_whitespace().skip(1).collect();
+                                    let args: Vec<&str> =
+                                        gh_args.split_whitespace().skip(1).collect();
                                     std::process::Command::new("gh")
                                         .args(&args)
                                         .current_dir(&path)
@@ -1880,16 +1998,39 @@ fn event_loop<B: Backend>(
                             loading: true,
                         });
                     }
-                    ModalOutcome::GhIssueSelected { project, number, title } => {
+                    ModalOutcome::GhIssueSelected {
+                        project,
+                        number,
+                        title,
+                    } => {
                         state.modal = None;
                         let slug = z_core::domain::slugify(&title);
-                        return Ok(TuiAction::NewFromIssue { project, number, title, slug });
+                        return Ok(TuiAction::NewFromIssue {
+                            project,
+                            number,
+                            title,
+                            slug,
+                        });
                     }
-                    ModalOutcome::GhPrSelected { project, number, title, branch } => {
+                    ModalOutcome::GhPrSelected {
+                        project,
+                        number,
+                        title,
+                        branch,
+                    } => {
                         state.modal = None;
-                        return Ok(TuiAction::NewFromPr { project, number, title, branch });
+                        return Ok(TuiAction::NewFromPr {
+                            project,
+                            number,
+                            title,
+                            branch,
+                        });
                     }
-                    ModalOutcome::WorktreeDeleteConfirmed { project, branch, force } => {
+                    ModalOutcome::WorktreeDeleteConfirmed {
+                        project,
+                        branch,
+                        force,
+                    } => {
                         state.modal = None;
                         let result = (cb.delete_worktree_fn)(&project, &branch, force);
                         match result {
@@ -1900,8 +2041,7 @@ fn event_loop<B: Backend>(
                                 }
                             }
                             Err(e) => {
-                                state.status_message =
-                                    Some(format!("Delete worktree failed: {e}"));
+                                state.status_message = Some(format!("Delete worktree failed: {e}"));
                             }
                         }
                     }
@@ -1945,8 +2085,8 @@ fn event_loop<B: Backend>(
             // ── Normal mode ────────────────────────────────────────────────
             let vim = state.navigation == Navigation::Vim;
 
-            let is_up = matches!(key.code, KeyCode::Up)
-                || (vim && matches!(key.code, KeyCode::Char('k')));
+            let is_up =
+                matches!(key.code, KeyCode::Up) || (vim && matches!(key.code, KeyCode::Char('k')));
             let is_down = matches!(key.code, KeyCode::Down)
                 || (vim && matches!(key.code, KeyCode::Char('j')));
             let is_left = matches!(key.code, KeyCode::Left)
@@ -1968,25 +2108,25 @@ fn event_loop<B: Backend>(
 
                     KeyCode::Char('q') | KeyCode::Char('Q') => return Ok(TuiAction::Quit),
 
-                    KeyCode::Char('c')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         return Ok(TuiAction::Quit);
                     }
 
                     KeyCode::Char('o') | KeyCode::Enter => {
-                        let project_name =
-                            state.selected_entry().map(|e| e.project.name.clone());
+                        let project_name = state.selected_entry().map(|e| e.project.name.clone());
                         if let Some(project) = project_name {
                             let branch = if state.focused_panel == Panel::Worktrees {
                                 match state.filtered_worktrees().get(state.selected_session) {
                                     Some(wt) if matches!(wt.status, WorktreeStatus::Conflict) => {
                                         state.status_message = Some(
-                                            "Worktree has a session-name conflict. Run z doctor.".to_string(),
+                                            "Worktree has a session-name conflict. Run z doctor."
+                                                .to_string(),
                                         );
                                         None
                                     }
-                                    Some(wt) if matches!(wt.status, WorktreeStatus::Unsupported) => {
+                                    Some(wt)
+                                        if matches!(wt.status, WorktreeStatus::Unsupported) =>
+                                    {
                                         state.status_message = Some(
                                             "Detached/no-branch worktree cannot be restored automatically.".to_string(),
                                         );
@@ -2016,9 +2156,7 @@ fn event_loop<B: Backend>(
                     KeyCode::Char('d') => {
                         if state.focused_panel == Panel::Worktrees {
                             // Delete worktree
-                            if let Some(wt) = state
-                                .filtered_worktrees()
-                                .get(state.selected_session)
+                            if let Some(wt) = state.filtered_worktrees().get(state.selected_session)
                             {
                                 let project = state
                                     .selected_entry()
@@ -2042,7 +2180,8 @@ fn event_loop<B: Backend>(
                                         reasons
                                     })
                                     .unwrap_or_default();
-                                let has_active_session = matches!(wt.status, WorktreeStatus::Active);
+                                let has_active_session =
+                                    matches!(wt.status, WorktreeStatus::Active);
                                 let requires_strong_confirmation =
                                     !wt.discovered.is_primary_checkout
                                         && (has_active_session || !safety_reasons.is_empty());
@@ -2085,12 +2224,10 @@ fn event_loop<B: Backend>(
                                     _ => None,
                                 });
                             if let Some(session) = session_name {
-                                state.modal =
-                                    Some(Modal::DeleteSessionConfirm { session });
+                                state.modal = Some(Modal::DeleteSessionConfirm { session });
                             } else {
-                                state.status_message = Some(
-                                    "No active session to kill.".to_string(),
-                                );
+                                state.status_message =
+                                    Some("No active session to kill.".to_string());
                             }
                         }
                     }
@@ -2120,7 +2257,8 @@ fn event_loop<B: Backend>(
                                 selected: 0,
                             });
                         } else {
-                            state.status_message = Some("No actions available in this context.".to_string());
+                            state.status_message =
+                                Some("No actions available in this context.".to_string());
                         }
                     }
 
@@ -2137,9 +2275,7 @@ fn event_loop<B: Backend>(
                             Ok(msg) => {
                                 let diagnostics: Vec<String> =
                                     msg.lines().map(String::from).collect();
-                                state.modal = Some(Modal::Doctor {
-                                    diagnostics,
-                                });
+                                state.modal = Some(Modal::Doctor { diagnostics });
                             }
                             Err(e) => {
                                 state.status_message = Some(format!("Doctor failed: {e}"));
@@ -2165,11 +2301,9 @@ fn event_loop<B: Backend>(
                             if let Some(entry) = state.selected_entry() {
                                 let project = &entry.project;
                                 let mut form = ProjectForm::new();
-                                form.fields[0].value =
-                                    project.path.to_string_lossy().to_string();
+                                form.fields[0].value = project.path.to_string_lossy().to_string();
                                 form.fields[1].value = project.name.clone();
-                                form.fields[2].value =
-                                    project.host.clone().unwrap_or_default();
+                                form.fields[2].value = project.host.clone().unwrap_or_default();
                                 form.fields[3].value = match &project.transport {
                                     Some(z_core::domain::Transport::Mosh) => "mosh".to_string(),
                                     Some(z_core::domain::Transport::Ssh) => "ssh".to_string(),
@@ -2178,8 +2312,7 @@ fn event_loop<B: Backend>(
                                 // Suppress path-basename autofill: name is already set.
                                 form.name_was_modified = true;
                                 let original_name = project.name.clone();
-                                state.modal =
-                                    Some(Modal::EditProject(form, original_name));
+                                state.modal = Some(Modal::EditProject(form, original_name));
                             }
                         }
                     }
@@ -2365,18 +2498,19 @@ fn build_action_menu(state: &TuiState) -> Vec<ResolvedAction> {
                 _ => None,
             })
     } else {
-        entry.worktrees.iter().find_map(|wt| match &wt.session_link {
-            SessionLink::Active(s) => Some(s.clone()),
-            _ => None,
-        })
+        entry
+            .worktrees
+            .iter()
+            .find_map(|wt| match &wt.session_link {
+                SessionLink::Active(s) => Some(s.clone()),
+                _ => None,
+            })
     };
 
     let preview = match &state.preview_data {
-        PreviewData::Ready(ref info) => ActionPreview::from_forge_data(
-            info.pr.as_ref(),
-            info.ci.clone(),
-            info.review.as_ref(),
-        ),
+        PreviewData::Ready(ref info) => {
+            ActionPreview::from_forge_data(info.pr.as_ref(), info.ci.clone(), info.review.as_ref())
+        }
         _ => ActionPreview::default(),
     };
     let env = if let Some(session) = selected_session {
@@ -2447,9 +2581,9 @@ pub fn render(f: &mut Frame, state: &TuiState) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),     // main panels (takes all remaining space)
-            Constraint::Length(8),  // preview pane (fixed 8 lines)
-            Constraint::Length(4),  // status bar (2 content rows: project info + key hints)
+            Constraint::Min(1),    // main panels (takes all remaining space)
+            Constraint::Length(8), // preview pane (fixed 8 lines)
+            Constraint::Length(4), // status bar (2 content rows: project info + key hints)
         ])
         .split(area);
 
@@ -2488,18 +2622,28 @@ fn render_projects(f: &mut Frame, area: Rect, state: &TuiState) {
             } else {
                 String::new()
             };
-            let remote = if entry.project.host.is_some() { " \u{1f310}" } else { "" };
+            let remote = if entry.project.host.is_some() {
+                " \u{1f310}"
+            } else {
+                ""
+            };
             let notif_count: usize = entry
                 .worktrees
                 .iter()
-                .filter(|wt| worktree_notification_alias(wt).is_some_and(|name| state.notifications.contains(&name)))
+                .filter(|wt| {
+                    worktree_notification_alias(wt)
+                        .is_some_and(|name| state.notifications.contains(&name))
+                })
                 .count();
             let notif_badge = if notif_count > 0 {
                 format!(" \u{1f514} {}", notif_count)
             } else {
                 String::new()
             };
-            ListItem::new(format!("{}{}{}{}", entry.project.name, active, remote, notif_badge))
+            ListItem::new(format!(
+                "{}{}{}{}",
+                entry.project.name, active, remote, notif_badge
+            ))
         })
         .collect();
 
@@ -2550,15 +2694,24 @@ fn render_worktrees(f: &mut Frame, area: Rect, state: &TuiState) {
         .iter()
         .map(|wt| {
             let status_symbol = match wt.status {
-                WorktreeStatus::Active => "\u{25cf} ",      // ● active
-                WorktreeStatus::Inactive => "\u{25cb} ",    // ○ inactive/restorable
-                WorktreeStatus::Conflict => "\u{26a0} ",    // ⚠ conflict
-                WorktreeStatus::Unsupported => "? ",        // unsupported/diagnostic
+                WorktreeStatus::Active => "\u{25cf} ",   // ● active
+                WorktreeStatus::Inactive => "\u{25cb} ", // ○ inactive/restorable
+                WorktreeStatus::Conflict => "\u{26a0} ", // ⚠ conflict
+                WorktreeStatus::Unsupported => "? ",     // unsupported/diagnostic
             };
-            let branch = if wt.diagnostics.contains(&WorktreeDiagnostic::RemoteUnavailable) {
+            let branch = if wt
+                .diagnostics
+                .contains(&WorktreeDiagnostic::RemoteUnavailable)
+            {
                 "remote unavailable"
-            } else if wt.diagnostics.contains(&WorktreeDiagnostic::MetadataUnavailable) {
-                wt.discovered.branch.as_deref().unwrap_or("metadata degraded")
+            } else if wt
+                .diagnostics
+                .contains(&WorktreeDiagnostic::MetadataUnavailable)
+            {
+                wt.discovered
+                    .branch
+                    .as_deref()
+                    .unwrap_or("metadata degraded")
             } else {
                 wt.discovered.branch.as_deref().unwrap_or("unsupported")
             };
@@ -2572,11 +2725,11 @@ fn render_worktrees(f: &mut Frame, area: Rect, state: &TuiState) {
                 }
                 parts.join(" ")
             });
-            let safety_str = safety
-                .map(|s| format!(" {}", s))
-                .unwrap_or_default();
+            let safety_str = safety.map(|s| format!(" {}", s)).unwrap_or_default();
 
-            let badge = if worktree_notification_alias(wt).is_some_and(|name| state.notifications.contains(&name)) {
+            let badge = if worktree_notification_alias(wt)
+                .is_some_and(|name| state.notifications.contains(&name))
+            {
                 " \u{1f514}"
             } else {
                 ""
@@ -2635,10 +2788,12 @@ fn render_preview(f: &mut Frame, area: Rect, state: &TuiState) {
             } else {
                 String::new()
             };
-            let dirt = if info.is_dirty { "\u{25cf} dirty" } else { "\u{25cf} clean" };
-            let mut lines = vec![
-                format!(" branch: {}{} {}", info.branch, tracking, dirt),
-            ];
+            let dirt = if info.is_dirty {
+                "\u{25cf} dirty"
+            } else {
+                "\u{25cf} clean"
+            };
+            let mut lines = vec![format!(" branch: {}{} {}", info.branch, tracking, dirt)];
 
             // PR and CI status line
             let pr_str = match &info.pr {
@@ -2694,7 +2849,10 @@ fn render_preview(f: &mut Frame, area: Rect, state: &TuiState) {
                 } else {
                     String::new()
                 };
-                lines.push(format!(" session: {}{}up {}", tab_str, pane_str, zellij.uptime));
+                lines.push(format!(
+                    " session: {}{}up {}",
+                    tab_str, pane_str, zellij.uptime
+                ));
             }
 
             if !info.commits.is_empty() {
@@ -2729,14 +2887,21 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
         state
             .selected_entry()
             .map(|e| {
-                let locality = if e.project.host.is_some() { "remote" } else { "local" };
+                let locality = if e.project.host.is_some() {
+                    "remote"
+                } else {
+                    "local"
+                };
                 let wt_count = e.worktrees.len();
                 let active_count = e
                     .worktrees
                     .iter()
                     .filter(|wt| matches!(wt.status, WorktreeStatus::Active))
                     .count();
-                format!(" {} | {} | worktrees: {} ({} active) ", e.project.name, locality, wt_count, active_count)
+                format!(
+                    " {} | {} | worktrees: {} ({} active) ",
+                    e.project.name, locality, wt_count, active_count
+                )
             })
             .unwrap_or_else(|| " No projects — add to ~/.config/z/projects.kdl ".to_string())
     };
@@ -2786,8 +2951,16 @@ fn render_delete_confirm_modal(
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    let session_word = if session_count == 1 { "session" } else { "sessions" };
-    let worktree_word = if worktree_count == 1 { "worktree" } else { "worktrees" };
+    let session_word = if session_count == 1 {
+        "session"
+    } else {
+        "sessions"
+    };
+    let worktree_word = if worktree_count == 1 {
+        "worktree"
+    } else {
+        "worktrees"
+    };
 
     let modal_fg = theme_style_to_style(&theme.item_normal);
     let mut lines: Vec<Line> = vec![
@@ -2863,7 +3036,11 @@ fn render_delete_worktree_confirm_modal(
 ) {
     let area = f.area();
     let modal_width = 62u16;
-    let modal_height = if protection_reason.is_some() || requires_strong_confirmation { 10u16 } else { 9u16 };
+    let modal_height = if protection_reason.is_some() || requires_strong_confirmation {
+        10u16
+    } else {
+        9u16
+    };
     let rect = modal_rect(modal_width, modal_height, area);
 
     f.render_widget(Clear, rect);
@@ -2881,10 +3058,7 @@ fn render_delete_worktree_confirm_modal(
             format!(" Delete worktree: {} / {}", project, branch),
             theme_style_to_style(&theme.text_highlight),
         )),
-        Line::from(Span::styled(
-            format!(" Status: {}", status),
-            modal_fg,
-        )),
+        Line::from(Span::styled(format!(" Status: {}", status), modal_fg)),
         Line::from(""),
     ];
 
@@ -2896,10 +3070,7 @@ fn render_delete_worktree_confirm_modal(
             format!(" \u{26a0} {}", reason),
             theme_style_to_style(&theme.indicator_warning),
         )));
-        lines.push(Line::from(Span::styled(
-            " Esc: cancel",
-            dim,
-        )));
+        lines.push(Line::from(Span::styled(" Esc: cancel", dim)));
     } else if requires_strong_confirmation {
         lines.push(Line::from(Span::styled(
             format!(" \u{26a0} This will delete protected work. Type branch to confirm: {confirmation_input}"),
@@ -2910,10 +3081,7 @@ fn render_delete_worktree_confirm_modal(
             dim,
         )));
     } else {
-        lines.push(Line::from(Span::styled(
-            "\u{2500}".repeat(sep_width),
-            dim,
-        )));
+        lines.push(Line::from(Span::styled("\u{2500}".repeat(sep_width), dim)));
         lines.push(Line::from(Span::styled(
             " Enter/y: delete worktree + clean metadata  Esc/n: cancel",
             dim,
@@ -2925,11 +3093,7 @@ fn render_delete_worktree_confirm_modal(
     f.render_widget(paragraph, inner);
 }
 
-fn render_doctor_modal(
-    f: &mut Frame,
-    diagnostics: &[String],
-    theme: &z_core::theme::Theme,
-) {
+fn render_doctor_modal(f: &mut Frame, diagnostics: &[String], theme: &z_core::theme::Theme) {
     let area = f.area();
     let modal_height = (diagnostics.len() as u16 + 4).max(7).min(area.height);
     let modal_width = 72u16;
@@ -2959,14 +3123,8 @@ fn render_doctor_modal(
 
     let dim = theme_style_to_style(&theme.text_dim);
     let sep_width = inner.width.saturating_sub(1) as usize;
-    lines.push(Line::from(Span::styled(
-        "\u{2500}".repeat(sep_width),
-        dim,
-    )));
-    lines.push(Line::from(Span::styled(
-        " Esc: close",
-        dim,
-    )));
+    lines.push(Line::from(Span::styled("\u{2500}".repeat(sep_width), dim)));
+    lines.push(Line::from(Span::styled(" Esc: close", dim)));
 
     let paragraph = Paragraph::new(Text::from(lines))
         .style(Style::default().bg(rgb_to_color(theme.modal_background)));
@@ -3099,31 +3257,67 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
 
     let lines: Vec<Line> = vec![
         Line::from(Span::styled(" Navigation", heading)),
-        Line::from(Span::styled("   \u{2191}/\u{2193} or k/j    Navigate list", normal)),
-        Line::from(Span::styled("   \u{2190}/\u{2192} or h/l    Switch panel", normal)),
+        Line::from(Span::styled(
+            "   \u{2191}/\u{2193} or k/j    Navigate list",
+            normal,
+        )),
+        Line::from(Span::styled(
+            "   \u{2190}/\u{2192} or h/l    Switch panel",
+            normal,
+        )),
         Line::from(Span::styled("   Tab              Switch panel", normal)),
         Line::from(Span::styled("   /                Fuzzy search", normal)),
         Line::from(Span::styled("   Esc              Back / cancel", normal)),
         Line::from(""),
         Line::from(Span::styled(" Worktree Actions", heading)),
-        Line::from(Span::styled("   o / Enter        Open/restore worktree", normal)),
-        Line::from(Span::styled("   n                New worktree + session", normal)),
-        Line::from(Span::styled("   K                Kill active session only", normal)),
+        Line::from(Span::styled(
+            "   o / Enter        Open/restore worktree",
+            normal,
+        )),
+        Line::from(Span::styled(
+            "   n                New worktree + session",
+            normal,
+        )),
+        Line::from(Span::styled(
+            "   K                Kill active session only",
+            normal,
+        )),
         Line::from(Span::styled("   d                Delete worktree", normal)),
-        Line::from(Span::styled("   D                Doctor diagnostics", normal)),
+        Line::from(Span::styled(
+            "   D                Doctor diagnostics",
+            normal,
+        )),
         Line::from(""),
         Line::from(Span::styled(" Project Actions", heading)),
         Line::from(Span::styled("   A Add   E Edit   X Delete project", normal)),
         Line::from(Span::styled("   Alt+z r          Run action", normal)),
         Line::from(Span::styled("   Alt+z l          View logs", normal)),
-        Line::from(Span::styled("   a                Autopilot workflows", normal)),
-        Line::from(Span::styled("   e                Edit per-repo config", normal)),
+        Line::from(Span::styled(
+            "   a                Autopilot workflows",
+            normal,
+        )),
+        Line::from(Span::styled(
+            "   e                Edit per-repo config",
+            normal,
+        )),
         Line::from(""),
         Line::from(Span::styled(" Session", heading)),
-        Line::from(Span::styled("   Ctrl+O \u{2192} D      Detach (return to z)", normal)),
-        Line::from(Span::styled("   Ctrl+Q           Quit session (return to z)", normal)),
-        Line::from(Span::styled(" \u{2500}".repeat((inner.width.saturating_sub(1) / 2) as usize), dim)),
-        Line::from(Span::styled("   Alt+z: r actions  l logs   ?  help  q  quit", dim)),
+        Line::from(Span::styled(
+            "   Ctrl+O \u{2192} D      Detach (return to z)",
+            normal,
+        )),
+        Line::from(Span::styled(
+            "   Ctrl+Q           Quit session (return to z)",
+            normal,
+        )),
+        Line::from(Span::styled(
+            " \u{2500}".repeat((inner.width.saturating_sub(1) / 2) as usize),
+            dim,
+        )),
+        Line::from(Span::styled(
+            "   Alt+z: r actions  l logs   ?  help  q  quit",
+            dim,
+        )),
     ];
 
     let paragraph = Paragraph::new(Text::from(lines))
@@ -3135,7 +3329,11 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
     let theme = &state.theme;
     let (form, title) = match &state.modal {
         None => return,
-        Some(Modal::DeleteConfirm { project_name, session_count, worktree_count }) => {
+        Some(Modal::DeleteConfirm {
+            project_name,
+            session_count,
+            worktree_count,
+        }) => {
             render_delete_confirm_modal(f, project_name, *session_count, *worktree_count, theme);
             return;
         }
@@ -3143,7 +3341,11 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
             render_delete_session_confirm_modal(f, session, theme);
             return;
         }
-        Some(Modal::WorkflowSelector { project, workflows, selected }) => {
+        Some(Modal::WorkflowSelector {
+            project,
+            workflows,
+            selected,
+        }) => {
             render_workflow_selector_modal(f, project, workflows, *selected, theme);
             return;
         }
@@ -3187,11 +3389,21 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
             render_new_session_menu_modal(f, project, *selected, theme);
             return;
         }
-        Some(Modal::GhPicker { project, kind, items, query, selected, loading }) => {
+        Some(Modal::GhPicker {
+            project,
+            kind,
+            items,
+            query,
+            selected,
+            loading,
+        }) => {
             render_gh_picker_modal(f, project, kind, items, query, *selected, *loading, theme);
             return;
         }
-        Some(Modal::LogViewer { lines, scroll_offset }) => {
+        Some(Modal::LogViewer {
+            lines,
+            scroll_offset,
+        }) => {
             render_log_viewer_modal(f, lines, *scroll_offset, theme);
             return;
         }
@@ -3263,7 +3475,12 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
     f.render_widget(paragraph, inner);
 }
 
-fn render_branch_input_modal(f: &mut Frame, project: &str, input: &str, theme: &z_core::theme::Theme) {
+fn render_branch_input_modal(
+    f: &mut Frame,
+    project: &str,
+    input: &str,
+    theme: &z_core::theme::Theme,
+) {
     let area = f.area();
     let rect = modal_rect(52, 7, area);
 
@@ -3280,7 +3497,10 @@ fn render_branch_input_modal(f: &mut Frame, project: &str, input: &str, theme: &
     let dim = theme_style_to_style(&theme.text_dim);
     let sep_width = inner.width.saturating_sub(1) as usize;
     let lines = vec![
-        Line::from(Span::styled(" Branch name:", theme_style_to_style(&theme.text_highlight))),
+        Line::from(Span::styled(
+            " Branch name:",
+            theme_style_to_style(&theme.text_highlight),
+        )),
         Line::from(Span::styled(
             format!(" \u{25b6} {}\u{2588}", input),
             theme_style_to_style(&theme.item_selected_focused),
@@ -3295,7 +3515,12 @@ fn render_branch_input_modal(f: &mut Frame, project: &str, input: &str, theme: &
     f.render_widget(paragraph, inner);
 }
 
-fn render_new_session_menu_modal(f: &mut Frame, project: &str, selected: usize, theme: &z_core::theme::Theme) {
+fn render_new_session_menu_modal(
+    f: &mut Frame,
+    project: &str,
+    selected: usize,
+    theme: &z_core::theme::Theme,
+) {
     let area = f.area();
     let rect = modal_rect(40, 9, area);
 
@@ -3319,7 +3544,10 @@ fn render_new_session_menu_modal(f: &mut Frame, project: &str, selected: usize, 
             Style::default().fg(rgb_to_color(theme.foreground))
         };
         let prefix = if i == selected { " \u{25b6}" } else { "  " };
-        lines_vec.push(Line::from(Span::styled(format!("{}{}", prefix, label), style)));
+        lines_vec.push(Line::from(Span::styled(
+            format!("{}{}", prefix, label),
+            style,
+        )));
     }
     let sep_width = inner.width.saturating_sub(1) as usize;
     lines_vec.push(Line::from(""));
@@ -3395,7 +3623,12 @@ fn render_gh_picker_modal(
             0
         };
 
-        for (i, item) in filtered.iter().enumerate().skip(scroll_offset).take(visible_height) {
+        for (i, item) in filtered
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(visible_height)
+        {
             let style = if i == selected {
                 theme_style_to_style(&theme.item_selected_focused)
             } else {
@@ -3424,7 +3657,12 @@ fn render_gh_picker_modal(
     f.render_widget(paragraph, inner);
 }
 
-fn render_log_viewer_modal(f: &mut Frame, lines: &[String], scroll_offset: usize, theme: &z_core::theme::Theme) {
+fn render_log_viewer_modal(
+    f: &mut Frame,
+    lines: &[String],
+    scroll_offset: usize,
+    theme: &z_core::theme::Theme,
+) {
     let area = f.area();
     let modal_width = area.width.saturating_sub(4).min(120);
     let modal_height = area.height.saturating_sub(4).min(40);
@@ -3442,9 +3680,10 @@ fn render_log_viewer_modal(f: &mut Frame, lines: &[String], scroll_offset: usize
         let title = " Logs (0) \u{2014} Esc close ";
         let block = block_template.title(title);
         f.render_widget(block, rect);
-        let paragraph = Paragraph::new(Text::from(vec![
-            Line::from(Span::styled(" No logs yet.", theme_style_to_style(&theme.text_dim))),
-        ]))
+        let paragraph = Paragraph::new(Text::from(vec![Line::from(Span::styled(
+            " No logs yet.",
+            theme_style_to_style(&theme.text_dim),
+        ))]))
         .style(Style::default().bg(rgb_to_color(theme.modal_background)));
         f.render_widget(paragraph, inner);
         return;
@@ -3535,7 +3774,14 @@ impl SwitchPickerState {
                 last_attach: None,
             })
             .collect();
-        Self { sessions, ages, notification_counts, entries, selected, current_session }
+        Self {
+            sessions,
+            ages,
+            notification_counts,
+            entries,
+            selected,
+            current_session,
+        }
     }
 
     /// Create state with per-session age strings (notification counts default to 0).
@@ -3564,7 +3810,14 @@ impl SwitchPickerState {
                 last_attach: None,
             })
             .collect();
-        Self { sessions, ages, notification_counts, entries, selected, current_session }
+        Self {
+            sessions,
+            ages,
+            notification_counts,
+            entries,
+            selected,
+            current_session,
+        }
     }
 
     /// Create state with per-session age strings and notification counts.
@@ -3598,18 +3851,38 @@ impl SwitchPickerState {
                 last_attach: None,
             })
             .collect();
-        Self { sessions, ages, notification_counts, entries, selected, current_session }
+        Self {
+            sessions,
+            ages,
+            notification_counts,
+            entries,
+            selected,
+            current_session,
+        }
     }
 
     pub fn with_entries(entries: Vec<SwitchSessionEntry>, current_session: String) -> Self {
-        let sessions = entries.iter().map(|entry| entry.session_name.clone()).collect::<Vec<_>>();
-        let ages = entries.iter().map(|entry| entry.age.clone()).collect::<Vec<_>>();
+        let sessions = entries
+            .iter()
+            .map(|entry| entry.session_name.clone())
+            .collect::<Vec<_>>();
+        let ages = entries
+            .iter()
+            .map(|entry| entry.age.clone())
+            .collect::<Vec<_>>();
         let notification_counts = entries
             .iter()
             .map(|entry| entry.notification_count)
             .collect::<Vec<_>>();
         let selected = Self::initial_selection(&sessions, &current_session);
-        Self { sessions, ages, notification_counts, entries, selected, current_session }
+        Self {
+            sessions,
+            ages,
+            notification_counts,
+            entries,
+            selected,
+            current_session,
+        }
     }
 
     pub fn move_up(&mut self) {
@@ -3713,16 +3986,42 @@ pub fn sort_switch_entries(
 fn switch_priority_score(entry: &SwitchSessionEntry, criterion: SwitcherPriorityCriterion) -> u64 {
     match criterion {
         SwitcherPriorityCriterion::Waiting => {
-            if matches!(entry.activity.as_ref().map(|a| a.state), Some(SwitchAgentActivityState::Waiting)) { 0 } else { 1 }
+            if matches!(
+                entry.activity.as_ref().map(|a| a.state),
+                Some(SwitchAgentActivityState::Waiting)
+            ) {
+                0
+            } else {
+                1
+            }
         }
         SwitcherPriorityCriterion::Error => {
-            if entry.notifications.iter().any(|n| n.level == NotifyLevel::Error) { 0 } else { 1 }
+            if entry
+                .notifications
+                .iter()
+                .any(|n| n.level == NotifyLevel::Error)
+            {
+                0
+            } else {
+                1
+            }
         }
         SwitcherPriorityCriterion::Working => {
-            if matches!(entry.activity.as_ref().map(|a| a.state), Some(SwitchAgentActivityState::Working)) { 0 } else { 1 }
+            if matches!(
+                entry.activity.as_ref().map(|a| a.state),
+                Some(SwitchAgentActivityState::Working)
+            ) {
+                0
+            } else {
+                1
+            }
         }
         SwitcherPriorityCriterion::Notifications => {
-            if entry.notification_count > 0 { 0 } else { 1 }
+            if entry.notification_count > 0 {
+                0
+            } else {
+                1
+            }
         }
         SwitcherPriorityCriterion::Recent => 0,
     }
@@ -3787,7 +4086,11 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
         4
     };
     let constraints = if show_detail {
-        vec![Constraint::Min(1), Constraint::Length(detail_height), Constraint::Length(1)]
+        vec![
+            Constraint::Min(1),
+            Constraint::Length(detail_height),
+            Constraint::Length(1),
+        ]
     } else {
         vec![Constraint::Min(1), Constraint::Length(1)]
     };
@@ -3828,7 +4131,11 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
     }
 
     let footer = Paragraph::new(Line::from(Span::styled(
-        if compact { " j/k · Enter switch · Esc close" } else { " j/k navigate  Enter switch  Esc close" },
+        if compact {
+            " j/k · Enter switch · Esc close"
+        } else {
+            " j/k navigate  Enter switch  Esc close"
+        },
         theme_style_to_style(&theme.text_dim),
     )));
     f.render_widget(footer, chunks[chunks.len() - 1]);
@@ -3918,7 +4225,10 @@ fn switch_row_label(
 
     if right.is_empty() {
         let name_width = row_width.saturating_sub(marker_len);
-        return format!("{marker}{}", compact_session_name(&entry.session_name, name_width));
+        return format!(
+            "{marker}{}",
+            compact_session_name(&entry.session_name, name_width)
+        );
     }
 
     let right_len = display_width(&right);
@@ -3978,13 +4288,19 @@ fn compact_session_name(session: &str, max_chars: usize) -> String {
     }
 
     let Some((project, branch)) = session.split_once(':') else {
-        return format!("{}…", session.chars().take(max_chars - 1).collect::<String>());
+        return format!(
+            "{}…",
+            session.chars().take(max_chars - 1).collect::<String>()
+        );
     };
 
     let prefix = format!("{project}:");
     let prefix_len = prefix.chars().count();
     if prefix_len + 2 >= max_chars {
-        return format!("{}…", session.chars().take(max_chars - 1).collect::<String>());
+        return format!(
+            "{}…",
+            session.chars().take(max_chars - 1).collect::<String>()
+        );
     }
 
     let suffix_len = max_chars - prefix_len - 1;
@@ -4208,7 +4524,8 @@ pub fn run_switch_picker(
         ages.push(a);
         notification_counts.push(n);
     }
-    let state = SwitchPickerState::with_notifications(sessions, ages, notification_counts, current_session);
+    let state =
+        SwitchPickerState::with_notifications(sessions, ages, notification_counts, current_session);
     run_switch_picker_state(state)
 }
 
@@ -4259,12 +4576,19 @@ pub fn run_log_viewer(lines: Vec<String>) -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let scroll_offset = lines.len().saturating_sub(1);
-    let mut modal = Modal::LogViewer { lines, scroll_offset };
+    let mut modal = Modal::LogViewer {
+        lines,
+        scroll_offset,
+    };
 
     let result = loop {
         let theme = z_core::theme::Theme::default();
         terminal.draw(|f| {
-            if let Modal::LogViewer { ref lines, scroll_offset } = modal {
+            if let Modal::LogViewer {
+                ref lines,
+                scroll_offset,
+            } = modal
+            {
                 render_log_viewer_modal(f, lines, scroll_offset, &theme);
             }
         })?;
@@ -4316,7 +4640,11 @@ pub fn run_action_picker(actions: Vec<ResolvedAction>) -> io::Result<Option<Reso
 
     let result = loop {
         terminal.draw(|f| {
-            if let Modal::ActionMenu { ref actions, selected } = modal {
+            if let Modal::ActionMenu {
+                ref actions,
+                selected,
+            } = modal
+            {
                 render_action_menu_modal(f, actions, selected, &theme);
             }
         })?;
@@ -4366,7 +4694,11 @@ mod tests {
         fn get_ci_status(&self, _: &str, _: &str) -> z_core::error::Result<CiStatus> {
             Ok(CiStatus::Unknown)
         }
-        fn get_review_status(&self, _: &str, _: &str) -> z_core::error::Result<Option<z_core::domain::ReviewStatus>> {
+        fn get_review_status(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> z_core::error::Result<Option<z_core::domain::ReviewStatus>> {
             Ok(None)
         }
     }
@@ -4419,17 +4751,28 @@ mod tests {
                     worktree_path: if branch == "main" {
                         project.path.clone()
                     } else {
-                        project.path.join(".worktrees").join(z_core::domain::sanitize_branch_name(branch))
+                        project
+                            .path
+                            .join(".worktrees")
+                            .join(z_core::domain::sanitize_branch_name(branch))
                     },
                 },
                 project_name: project.name.clone(),
                 branch: Some(branch.to_string()),
                 is_primary_checkout: branch == "main",
             },
-            status: if active { WorktreeStatus::Active } else { WorktreeStatus::Inactive },
+            status: if active {
+                WorktreeStatus::Active
+            } else {
+                WorktreeStatus::Inactive
+            },
             diagnostics: Vec::new(),
             safety: None,
-            session_link: if active { SessionLink::Active(session) } else { SessionLink::None },
+            session_link: if active {
+                SessionLink::Active(session)
+            } else {
+                SessionLink::None
+            },
             metadata: None,
         }
     }
@@ -4530,15 +4873,33 @@ mod tests {
 
     #[test]
     fn renders_projects_panel_header() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 80, 24);
-        assert!(out.contains("PROJECTS"), "should render PROJECTS panel header");
-        assert!(out.contains("WORKTREES"), "should render WORKTREES panel header");
+        assert!(
+            out.contains("PROJECTS"),
+            "should render PROJECTS panel header"
+        );
+        assert!(
+            out.contains("WORKTREES"),
+            "should render WORKTREES panel header"
+        );
     }
 
     #[test]
     fn renders_all_project_names() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 80, 24);
         assert!(out.contains("myapp"), "should show 'myapp'");
         assert!(out.contains("hermes"), "should show 'hermes'");
@@ -4547,7 +4908,13 @@ mod tests {
 
     #[test]
     fn renders_active_project_indicator() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 80, 24);
         // myapp has a project entry → should render the project name
         assert!(out.contains("myapp"), "should show 'myapp'");
@@ -4555,24 +4922,48 @@ mod tests {
 
     #[test]
     fn renders_remote_project_icon() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 80, 24);
         // prod-api is remote → should have 🌐 (U+1F310)
-        assert!(out.contains('\u{1f310}'), "should show remote project icon 🌐");
+        assert!(
+            out.contains('\u{1f310}'),
+            "should show remote project icon 🌐"
+        );
     }
 
     #[test]
     fn renders_worktrees_for_selected_project() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 80, 24);
         // myapp is selected; its worktrees should appear in the right panel
-        assert!(out.contains("WORKTREES"), "should show WORKTREES panel header");
+        assert!(
+            out.contains("WORKTREES"),
+            "should show WORKTREES panel header"
+        );
         // Active projects show active count; projects without worktrees show no worktrees
     }
 
     #[test]
     fn renders_status_bar_hints() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 140, 24);
         assert!(out.contains("[o]"), "should show [o] hint");
         assert!(out.contains("[q]"), "should show [q] hint");
@@ -4584,9 +4975,18 @@ mod tests {
 
     #[test]
     fn e_key_returns_edit_per_repo_config_action() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // First project is "myapp" at /home/user/myapp
-        assert!(state.selected_entry().is_some(), "should have a selected entry");
+        assert!(
+            state.selected_entry().is_some(),
+            "should have a selected entry"
+        );
         let expected_path = std::path::PathBuf::from("/home/user/myapp");
         let entry = state.selected_entry().unwrap();
         assert_eq!(entry.project.path, expected_path);
@@ -4604,62 +5004,134 @@ mod tests {
 
     #[test]
     fn e_key_no_projects_does_nothing() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // With no entries, selected_entry() returns None — no action should be emitted.
-        assert!(state.selected_entry().is_none(), "empty state should have no selected entry");
+        assert!(
+            state.selected_entry().is_none(),
+            "empty state should have no selected entry"
+        );
     }
 
     #[test]
     fn renders_status_bar_project_info() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 80, 24);
         // Status bar shows selected project name
-        assert!(out.contains("myapp"), "status bar should mention selected project");
+        assert!(
+            out.contains("myapp"),
+            "status bar should mention selected project"
+        );
         assert!(out.contains("local"), "status bar should show locality");
     }
 
     #[test]
     fn renders_empty_state_without_panic() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 80, 24);
-        assert!(out.contains("PROJECTS"), "should still render PROJECTS panel");
-        assert!(out.contains("WORKTREES"), "should still render WORKTREES panel");
+        assert!(
+            out.contains("PROJECTS"),
+            "should still render PROJECTS panel"
+        );
+        assert!(
+            out.contains("WORKTREES"),
+            "should still render WORKTREES panel"
+        );
     }
 
     #[test]
     fn renders_compact_mobile_dashboard() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.preview_data = PreviewData::Ready(make_git_info());
 
         let out = render_to_string(&state, 46, 18);
 
-        assert!(out.contains("PROJECTS"), "compact layout should keep projects visible");
-        assert!(out.contains("WORKTREES"), "compact layout should keep worktrees visible");
-        assert!(out.contains("PREVIEW"), "compact layout should keep preview visible");
-        assert!(out.contains("Enter open"), "compact status should use short mobile hints");
+        assert!(
+            out.contains("PROJECTS"),
+            "compact layout should keep projects visible"
+        );
+        assert!(
+            out.contains("WORKTREES"),
+            "compact layout should keep worktrees visible"
+        );
+        assert!(
+            out.contains("PREVIEW"),
+            "compact layout should keep preview visible"
+        );
+        assert!(
+            out.contains("Enter open"),
+            "compact status should use short mobile hints"
+        );
     }
 
     #[test]
     fn renders_search_query_in_header() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_mode = true;
         state.search_query = "my".to_string();
         let out = render_to_string(&state, 80, 24);
-        assert!(out.contains("/my"), "search query should appear in PROJECTS header");
+        assert!(
+            out.contains("/my"),
+            "search query should appear in PROJECTS header"
+        );
     }
 
     // ── Preview pane snapshot tests ────────────────────────────────────────
 
     #[test]
     fn renders_preview_pane_header() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("PREVIEW"), "should render PREVIEW panel header");
+        assert!(
+            out.contains("PREVIEW"),
+            "should render PREVIEW panel header"
+        );
     }
 
     #[test]
     fn renders_preview_loading_indicator() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Initial state is Loading
         let out = render_to_string(&state, 80, 30);
         assert!(
@@ -4670,11 +5142,20 @@ mod tests {
 
     #[test]
     fn renders_preview_ready_with_branch_and_tracking() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.preview_data = PreviewData::Ready(make_git_info());
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("feat"), "should show branch name");
-        assert!(out.contains("login"), "should show branch name (login part)");
+        assert!(
+            out.contains("login"),
+            "should show branch name (login part)"
+        );
         assert!(out.contains('3'), "should show ahead count");
         assert!(out.contains('1'), "should show behind count");
         assert!(out.contains("ahead"), "should show 'ahead'");
@@ -4683,15 +5164,30 @@ mod tests {
 
     #[test]
     fn renders_preview_dirty_status() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.preview_data = PreviewData::Ready(make_git_info()); // is_dirty = true
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("dirty"), "should show dirty working tree status");
+        assert!(
+            out.contains("dirty"),
+            "should show dirty working tree status"
+        );
     }
 
     #[test]
     fn renders_preview_clean_status() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.preview_data = PreviewData::Ready(GitInfo {
             branch: "main".to_string(),
             ahead: 0,
@@ -4704,12 +5200,21 @@ mod tests {
             review: None,
         });
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("clean"), "should show clean working tree status");
+        assert!(
+            out.contains("clean"),
+            "should show clean working tree status"
+        );
     }
 
     #[test]
     fn renders_preview_commit_list() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.preview_data = PreviewData::Ready(make_git_info());
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("a1b2c3"), "should show commit hash");
@@ -4718,7 +5223,13 @@ mod tests {
 
     #[test]
     fn renders_preview_recent_commits_label() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.preview_data = PreviewData::Ready(make_git_info());
         let out = render_to_string(&state, 80, 30);
         assert!(
@@ -4729,7 +5240,13 @@ mod tests {
 
     #[test]
     fn renders_preview_error_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.preview_data = PreviewData::Error("not a git repository".to_string());
         let out = render_to_string(&state, 80, 30);
         assert!(
@@ -4740,7 +5257,13 @@ mod tests {
 
     #[test]
     fn renders_preview_no_tracking_when_zero_ahead_behind() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.preview_data = PreviewData::Ready(GitInfo {
             branch: "main".to_string(),
             ahead: 0,
@@ -4764,7 +5287,13 @@ mod tests {
 
     #[test]
     fn initial_preview_state_is_loading() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert!(
             matches!(state.preview_data, PreviewData::Loading),
             "initial preview_data should be Loading"
@@ -4773,15 +5302,30 @@ mod tests {
 
     #[test]
     fn initial_preview_key_is_empty() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert_eq!(state.preview_key, "");
     }
 
     #[test]
     fn trigger_preview_load_sets_key() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.trigger_preview_load();
-        assert!(!state.preview_key.is_empty(), "preview_key should be set after trigger");
+        assert!(
+            !state.preview_key.is_empty(),
+            "preview_key should be set after trigger"
+        );
         assert!(
             state.preview_key.contains("myapp"),
             "preview_key should reference the selected project"
@@ -4790,7 +5334,13 @@ mod tests {
 
     #[test]
     fn trigger_preview_load_sets_loading_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Overwrite with Ready so we can confirm it reverts to Loading on change
         state.preview_data = PreviewData::Ready(make_git_info());
         state.preview_key = "different:key".to_string();
@@ -4803,7 +5353,13 @@ mod tests {
 
     #[test]
     fn trigger_preview_load_noop_when_key_unchanged() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.trigger_preview_load(); // sets key + spawns thread
         let key_after_first = state.preview_key.clone();
         state.preview_data = PreviewData::Ready(make_git_info()); // simulate data arrived
@@ -4817,7 +5373,13 @@ mod tests {
 
     #[test]
     fn trigger_preview_load_noop_on_empty_entries() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.trigger_preview_load(); // should not panic
         assert_eq!(state.preview_key, "");
         assert!(matches!(state.preview_data, PreviewData::Loading));
@@ -4825,7 +5387,13 @@ mod tests {
 
     #[test]
     fn poll_preview_updates_state_from_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let (tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
         state.preview_rx = Some(rx);
         state.preview_data = PreviewData::Loading;
@@ -4838,12 +5406,21 @@ mod tests {
             matches!(state.preview_data, PreviewData::Ready(_)),
             "poll_preview should transition Loading → Ready when channel has data"
         );
-        assert!(state.preview_rx.is_none(), "preview_rx should be cleared after data received");
+        assert!(
+            state.preview_rx.is_none(),
+            "preview_rx should be cleared after data received"
+        );
     }
 
     #[test]
     fn poll_preview_handles_error_from_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let (tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
         state.preview_rx = Some(rx);
 
@@ -4858,14 +5435,26 @@ mod tests {
 
     #[test]
     fn poll_preview_noop_when_no_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.preview_rx = None;
         state.poll_preview(); // should not panic
     }
 
     #[test]
     fn poll_preview_handles_disconnected_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let (tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
         state.preview_rx = Some(rx);
         state.preview_data = PreviewData::Loading;
@@ -4883,7 +5472,13 @@ mod tests {
 
     #[test]
     fn poll_preview_noop_when_channel_empty_but_alive() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let (_tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
         state.preview_rx = Some(rx);
         state.preview_data = PreviewData::Loading;
@@ -4900,7 +5495,13 @@ mod tests {
 
     #[test]
     fn preview_key_includes_worktree_branch_when_worktrees_focused() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Worktrees;
         state.selected_session = 0;
         let key0 = state.current_preview_key().unwrap_or_default();
@@ -4914,7 +5515,13 @@ mod tests {
 
     #[test]
     fn preview_key_uses_first_worktree_when_projects_focused() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Projects;
         state.selected_session = 1; // should be ignored — uses first worktree
         let key = state.current_preview_key().unwrap_or_default();
@@ -4924,22 +5531,43 @@ mod tests {
 
     #[test]
     fn preview_key_empty_branch_for_no_worktrees() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.selected_project = 1; // hermes has no worktrees
         let key = state.current_preview_key().unwrap_or_default();
-        assert!(key.ends_with(':'), "key should end with ':' when project has no worktrees");
+        assert!(
+            key.ends_with(':'),
+            "key should end with ':' when project has no worktrees"
+        );
     }
 
     #[test]
     fn renders_preview_at_minimum_terminal_height() {
         // 8 (preview) + 3 (status) + 1 (min main) = 12 minimum
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let _out = render_to_string(&state, 80, 12); // should not panic
     }
 
     #[test]
     fn preview_key_changes_on_project_navigation() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.trigger_preview_load();
         let key1 = state.preview_key.clone();
 
@@ -4955,7 +5583,13 @@ mod tests {
 
     #[test]
     fn navigate_down_increments_selection() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert_eq!(state.selected_project, 0);
         state.move_down();
         assert_eq!(state.selected_project, 1);
@@ -4965,14 +5599,26 @@ mod tests {
 
     #[test]
     fn navigate_up_does_not_underflow() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.move_up();
         assert_eq!(state.selected_project, 0, "should stay at 0");
     }
 
     #[test]
     fn navigate_down_stops_at_last_item() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.selected_project = 2;
         state.move_down();
         assert_eq!(state.selected_project, 2, "should not go past last item");
@@ -4980,7 +5626,13 @@ mod tests {
 
     #[test]
     fn switch_panel_toggles_focus() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert_eq!(state.focused_panel, Panel::Projects);
         state.switch_panel();
         assert_eq!(state.focused_panel, Panel::Worktrees);
@@ -4990,7 +5642,13 @@ mod tests {
 
     #[test]
     fn navigate_worktrees_panel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Worktrees;
         assert_eq!(state.selected_session, 0);
         state.move_down();
@@ -5001,16 +5659,31 @@ mod tests {
 
     #[test]
     fn navigate_worktrees_does_not_overflow() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Worktrees;
         state.selected_session = 1;
         state.move_down();
-        assert_eq!(state.selected_session, 1, "should not go past last worktree");
+        assert_eq!(
+            state.selected_session, 1,
+            "should not go past last worktree"
+        );
     }
 
     #[test]
     fn navigate_worktrees_empty_project() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.selected_project = 1; // hermes has no worktrees
         state.focused_panel = Panel::Worktrees;
         state.move_down();
@@ -5019,18 +5692,33 @@ mod tests {
 
     #[test]
     fn navigate_down_resets_worktree_cursor() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Worktrees;
         // No worktrees to navigate
         // Move to another project — worktree cursor must reset to 0
         state.focused_panel = Panel::Projects;
         state.move_down();
-        assert_eq!(state.selected_session, 0, "worktree cursor should reset after project change");
+        assert_eq!(
+            state.selected_session, 0,
+            "worktree cursor should reset after project change"
+        );
     }
 
     #[test]
     fn search_filters_projects_by_name() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_query = "my".to_string();
         let filtered = state.filtered_projects();
         assert_eq!(filtered.len(), 1);
@@ -5039,7 +5727,13 @@ mod tests {
 
     #[test]
     fn search_is_case_insensitive() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_query = "MYAPP".to_string();
         let filtered = state.filtered_projects();
         assert_eq!(filtered.len(), 1);
@@ -5048,38 +5742,65 @@ mod tests {
 
     #[test]
     fn empty_search_shows_all_projects() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert_eq!(state.filtered_projects().len(), 3);
     }
 
     #[test]
     fn search_no_match_returns_empty() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_query = "zzznomatch".to_string();
         assert!(state.filtered_projects().is_empty());
     }
 
     #[test]
     fn selected_entry_returns_correct_project() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.selected_project = 1;
         assert_eq!(state.selected_entry().unwrap().project.name, "hermes");
     }
 
     #[test]
     fn selected_entry_with_filter_returns_filtered_item() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_query = "prod".to_string();
         state.selected_project = 0;
-        assert_eq!(
-            state.selected_entry().unwrap().project.name,
-            "prod-api"
-        );
+        assert_eq!(state.selected_entry().unwrap().project.name, "prod-api");
     }
 
     #[test]
     fn selected_entry_empty_list_returns_none() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert!(state.selected_entry().is_none());
     }
 
@@ -5087,7 +5808,13 @@ mod tests {
 
     #[test]
     fn search_resets_selected_worktree() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Worktrees;
         state.selected_session = 1;
 
@@ -5097,26 +5824,47 @@ mod tests {
 
         let entry = state.selected_entry().unwrap();
         assert_eq!(entry.project.name, "hermes");
-        assert_eq!(state.selected_session, 0, "worktree cursor must be 0 for project with no worktrees");
+        assert_eq!(
+            state.selected_session, 0,
+            "worktree cursor must be 0 for project with no worktrees"
+        );
     }
 
     #[test]
     fn move_down_on_empty_entries_is_noop() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.move_down();
         assert_eq!(state.selected_project, 0);
     }
 
     #[test]
     fn move_up_on_empty_entries_is_noop() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.move_up();
         assert_eq!(state.selected_project, 0);
     }
 
     #[test]
     fn switch_panel_on_empty_entries_does_not_panic() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.switch_panel();
         assert_eq!(state.focused_panel, Panel::Worktrees);
         state.move_down(); // sessions panel, no entry → noop
@@ -5125,14 +5873,26 @@ mod tests {
 
     #[test]
     fn selected_entry_with_out_of_bounds_index_returns_none() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.selected_project = 99; // way past the end
         assert!(state.selected_entry().is_none());
     }
 
     #[test]
     fn search_then_clear_restores_full_list() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_query = "prod".to_string();
         assert_eq!(state.filtered_projects().len(), 1);
         state.search_query.clear();
@@ -5148,7 +5908,13 @@ mod tests {
             workflows: vec![],
             repo_actions: vec![],
         }];
-        let mut state = TuiState::new(entries, Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            entries,
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.move_up();
         assert_eq!(state.selected_project, 0);
         state.move_down();
@@ -5160,7 +5926,13 @@ mod tests {
 
     #[test]
     fn renders_empty_search_no_match_without_panic() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_mode = true;
         state.search_query = "zzz_no_match".to_string();
         let out = render_to_string(&state, 80, 24);
@@ -5169,31 +5941,58 @@ mod tests {
 
     #[test]
     fn renders_narrow_terminal_without_panic() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Extremely narrow — columns may truncate but should not panic
         let _out = render_to_string(&state, 20, 10);
     }
 
     #[test]
     fn renders_remote_project_status_bar() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.selected_project = 2; // prod-api is remote
         let out = render_to_string(&state, 80, 24);
-        assert!(out.contains("remote"), "status bar should say 'remote' for remote project");
+        assert!(
+            out.contains("remote"),
+            "status bar should say 'remote' for remote project"
+        );
         assert!(out.contains("prod-api"), "status bar should show prod-api");
     }
 
     #[test]
     fn navigate_project_down_then_up_resets_session() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Worktrees;
         // No worktrees in test data → move_down stays at 0
         assert_eq!(state.selected_session, 0);
         state.focused_panel = Panel::Projects;
         state.move_down();
-        assert_eq!(state.selected_session, 0, "worktree cursor resets on project change");
+        assert_eq!(
+            state.selected_session, 0,
+            "worktree cursor resets on project change"
+        );
         state.move_up();
-        assert_eq!(state.selected_session, 0, "worktree cursor resets on project change");
+        assert_eq!(
+            state.selected_session, 0,
+            "worktree cursor resets on project change"
+        );
     }
 
     // ── Fuzzy match unit tests ────────────────────────────────────────────
@@ -5264,7 +6063,13 @@ mod tests {
 
     #[test]
     fn fuzzy_search_matches_project_non_contiguous() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // "mpp" → m..pp → matches "myapp"
         state.search_query = "mpp".to_string();
         let filtered = state.filtered_projects();
@@ -5274,7 +6079,13 @@ mod tests {
 
     #[test]
     fn fuzzy_search_includes_project_with_matching_worktree() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // "feat" doesn't match "myapp" or "hermes" project names directly,
         // but it matches if we had worktrees — for now test name matching
         state.search_query = "myapp".to_string();
@@ -5285,7 +6096,13 @@ mod tests {
 
     #[test]
     fn fuzzy_search_project_name_match_shows_no_sessions_when_none_match() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // "hermes" matches the project name, but hermes has no sessions
         state.search_query = "hermes".to_string();
         state.selected_project = 0;
@@ -5296,16 +6113,31 @@ mod tests {
 
     #[test]
     fn fuzzy_search_project_matched_by_name() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_query = "myapp".to_string();
         state.selected_project = 0;
         let filtered = state.filtered_projects();
-        assert!(filtered.iter().any(|(_, e)| e.project.name == "myapp"), "myapp should match by project name");
+        assert!(
+            filtered.iter().any(|(_, e)| e.project.name == "myapp"),
+            "myapp should match by project name"
+        );
     }
 
     #[test]
     fn fuzzy_search_project_name_match_via_name() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // "main" matches the project name prefix
         state.search_query = "myapp".to_string();
         let filtered = state.filtered_projects();
@@ -5316,47 +6148,86 @@ mod tests {
 
     #[test]
     fn filtered_worktrees_empty_query_returns_all() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let worktrees = state.filtered_worktrees();
         assert_eq!(worktrees.len(), 2);
     }
 
     #[test]
     fn filtered_worktrees_no_match_returns_empty() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_query = "zzznomatch".to_string();
         assert!(state.filtered_worktrees().is_empty());
     }
 
     #[test]
     fn filtered_sessions_no_match_returns_empty() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_query = "zzznomatch".to_string();
         assert!(state.filtered_sessions().is_empty());
     }
 
     #[test]
     fn filtered_sessions_empty_project_returns_empty() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.selected_project = 1; // hermes has no sessions
         assert!(state.filtered_sessions().is_empty());
     }
 
     #[test]
     fn navigate_sessions_respects_filter() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // "login" matches only 1 session → moving down is a noop
         state.search_query = "login".to_string();
         state.focused_panel = Panel::Worktrees;
         state.move_down();
-        assert_eq!(state.selected_session, 0, "only 1 filtered session, down is noop");
+        assert_eq!(
+            state.selected_session, 0,
+            "only 1 filtered session, down is noop"
+        );
     }
 
     #[test]
     fn navigate_projects_while_in_search_mode() {
         // Verifies that arrow-key navigation works while search mode is active.
         // There are 3 entries; all match an empty query.
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_mode = true;
         assert_eq!(state.selected_project, 0);
         state.move_down();
@@ -5367,18 +6238,33 @@ mod tests {
 
     #[test]
     fn delete_targets_filtered_worktree_not_unfiltered() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_query = "feat".to_string();
         let worktrees = state.filtered_worktrees();
         assert_eq!(worktrees.len(), 1);
-        assert_eq!(worktrees[0].discovered.branch.as_deref(), Some("feat/login"));
+        assert_eq!(
+            worktrees[0].discovered.branch.as_deref(),
+            Some("feat/login")
+        );
     }
 
     // ── Snapshot tests for search mode UI states ─────────────────────────
 
     #[test]
     fn renders_search_mode_filters_projects() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_mode = true;
         state.search_query = "myapp".to_string();
         let out = render_to_string(&state, 80, 24);
@@ -5388,14 +6274,17 @@ mod tests {
 
     #[test]
     fn renders_search_mode_hides_non_matching_projects() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_mode = true;
         state.search_query = "hermes".to_string();
         let out = render_to_string(&state, 80, 24);
-        assert!(
-            out.contains("hermes"),
-            "hermes should still be visible"
-        );
+        assert!(out.contains("hermes"), "hermes should still be visible");
         assert!(
             !out.contains("prod-api"),
             "prod-api should be hidden (doesn't match 'hermes')"
@@ -5404,12 +6293,21 @@ mod tests {
 
     #[test]
     fn renders_project_matched_by_name() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_mode = true;
         state.search_query = "myapp".to_string();
         let out = render_to_string(&state, 80, 24);
         // "myapp" should appear because its name matches
-        assert!(out.contains("myapp"), "myapp should appear because name matches");
+        assert!(
+            out.contains("myapp"),
+            "myapp should appear because name matches"
+        );
         // "hermes" and "prod-api" should NOT appear
         assert!(!out.contains("hermes"), "hermes should be filtered out");
         assert!(!out.contains("prod-api"), "prod-api should be filtered out");
@@ -5417,11 +6315,20 @@ mod tests {
 
     #[test]
     fn renders_fuzzy_match_non_contiguous() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.search_mode = true;
         state.search_query = "hms".to_string(); // h..m..s matches "hermes"
         let out = render_to_string(&state, 80, 24);
-        assert!(out.contains("hermes"), "hermes should match fuzzy query 'hms'");
+        assert!(
+            out.contains("hermes"),
+            "hermes should match fuzzy query 'hms'"
+        );
         assert!(!out.contains("myapp"), "myapp should not match 'hms'");
     }
 
@@ -5429,7 +6336,13 @@ mod tests {
 
     #[test]
     fn renders_bell_badge_on_session_with_notification() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // myapp:main has a pending notification
         state.notifications.insert("myapp:main".to_string());
         let out = render_to_string(&state, 80, 24);
@@ -5442,7 +6355,13 @@ mod tests {
 
     #[test]
     fn does_not_render_bell_badge_without_notification() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 80, 24);
         assert!(
             !out.contains('\u{1f514}'),
@@ -5452,7 +6371,13 @@ mod tests {
 
     #[test]
     fn renders_bell_only_on_notified_session() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Notifications still tracked via sessions set
         state.notifications.insert("myapp:feat-login".to_string());
         let out = render_to_string(&state, 80, 24);
@@ -5462,7 +6387,13 @@ mod tests {
 
     #[test]
     fn notifications_field_default_is_empty() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert!(state.notifications.is_empty());
     }
 
@@ -5470,7 +6401,13 @@ mod tests {
 
     #[test]
     fn renders_pr_number_and_open_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(42, PrState::Open));
         state.preview_data = PreviewData::Ready(info);
@@ -5482,7 +6419,13 @@ mod tests {
 
     #[test]
     fn renders_pr_merged_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(7, PrState::Merged));
         state.preview_data = PreviewData::Ready(info);
@@ -5492,7 +6435,13 @@ mod tests {
 
     #[test]
     fn renders_pr_closed_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(3, PrState::Closed));
         state.preview_data = PreviewData::Ready(info);
@@ -5502,7 +6451,13 @@ mod tests {
 
     #[test]
     fn renders_no_pr_line_when_pr_absent() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let info = make_git_info(); // pr: None
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
@@ -5511,54 +6466,96 @@ mod tests {
 
     #[test]
     fn renders_ci_passing_indicator() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(42, PrState::Open));
         info.ci = Some(CiStatus::Passing);
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("passing"), "should show 'passing' for CI passing");
+        assert!(
+            out.contains("passing"),
+            "should show 'passing' for CI passing"
+        );
         // ✅ U+2705
         assert!(out.contains('\u{2705}'), "should show ✅ for passing CI");
     }
 
     #[test]
     fn renders_ci_failing_indicator() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(1, PrState::Open));
         info.ci = Some(CiStatus::Failing);
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("failing"), "should show 'failing' for CI failing");
+        assert!(
+            out.contains("failing"),
+            "should show 'failing' for CI failing"
+        );
         // ❌ U+274C
         assert!(out.contains('\u{274c}'), "should show ❌ for failing CI");
     }
 
     #[test]
     fn renders_ci_pending_indicator() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.ci = Some(CiStatus::Pending);
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("pending"), "should show 'pending' for CI pending");
+        assert!(
+            out.contains("pending"),
+            "should show 'pending' for CI pending"
+        );
     }
 
     #[test]
     fn renders_no_ci_line_when_ci_unknown_and_no_pr() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.ci = Some(CiStatus::Unknown);
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
         // Unknown CI with no PR — no PR/CI line should appear
-        assert!(!out.contains("CI:"), "should not show CI line when unknown and no PR");
+        assert!(
+            !out.contains("CI:"),
+            "should not show CI line when unknown and no PR"
+        );
     }
 
     #[test]
     fn renders_review_new_comments() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.review = Some(z_core::domain::ReviewStatus {
             has_new_comments: true,
@@ -5567,14 +6564,23 @@ mod tests {
         });
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("3 new review comments"), "should show new comment count");
+        assert!(
+            out.contains("3 new review comments"),
+            "should show new comment count"
+        );
         // 💬 U+1F4AC
         assert!(out.contains('\u{1f4ac}'), "should show 💬 for new comments");
     }
 
     #[test]
     fn renders_review_addressed_comments() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.review = Some(z_core::domain::ReviewStatus {
             has_new_comments: false,
@@ -5583,12 +6589,21 @@ mod tests {
         });
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("2 review comments (addressed)"), "should show addressed comments");
+        assert!(
+            out.contains("2 review comments (addressed)"),
+            "should show addressed comments"
+        );
     }
 
     #[test]
     fn renders_no_review_line_when_no_comments() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.review = Some(z_core::domain::ReviewStatus {
             has_new_comments: false,
@@ -5597,12 +6612,21 @@ mod tests {
         });
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
-        assert!(!out.contains("review comment"), "should not show review line when 0 comments");
+        assert!(
+            !out.contains("review comment"),
+            "should not show review line when 0 comments"
+        );
     }
 
     #[test]
     fn renders_review_singular_comment() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.review = Some(z_core::domain::ReviewStatus {
             has_new_comments: true,
@@ -5611,13 +6635,25 @@ mod tests {
         });
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("1 new review comment"), "should show singular 'comment'");
-        assert!(!out.contains("comments"), "should not show plural 'comments'");
+        assert!(
+            out.contains("1 new review comment"),
+            "should show singular 'comment'"
+        );
+        assert!(
+            !out.contains("comments"),
+            "should not show plural 'comments'"
+        );
     }
 
     #[test]
     fn renders_zellij_session_info() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.zellij = Some(make_zellij_info());
         state.preview_data = PreviewData::Ready(info);
@@ -5630,7 +6666,13 @@ mod tests {
 
     #[test]
     fn renders_zellij_uptime_only_when_tab_pane_zero() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.zellij = Some(ZellijInfo {
             tab_count: 0,
@@ -5648,16 +6690,31 @@ mod tests {
 
     #[test]
     fn renders_no_zellij_line_when_absent() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let info = make_git_info(); // zellij: None
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
-        assert!(!out.contains("session:"), "should not show session line when no Zellij info");
+        assert!(
+            !out.contains("session:"),
+            "should not show session line when no Zellij info"
+        );
     }
 
     #[test]
     fn renders_full_preview_with_all_info() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(42, PrState::Open));
         info.ci = Some(CiStatus::Passing);
@@ -5676,7 +6733,13 @@ mod tests {
 
     #[test]
     fn poll_forge_merges_pr_into_ready_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.preview_data = PreviewData::Ready(make_git_info());
 
         let (tx, rx) = mpsc::channel::<Result<PreviewExtraData, String>>();
@@ -5701,31 +6764,52 @@ mod tests {
             }
             _ => panic!("expected Ready state"),
         }
-        assert!(state.forge_rx.is_none(), "forge_rx should be cleared after receive");
+        assert!(
+            state.forge_rx.is_none(),
+            "forge_rx should be cleared after receive"
+        );
     }
 
     #[test]
     fn poll_forge_noop_when_no_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.forge_rx = None;
         state.poll_forge(); // should not panic
     }
 
     #[test]
     fn poll_forge_noop_when_channel_empty() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.preview_data = PreviewData::Ready(make_git_info());
         let (_tx, rx) = mpsc::channel::<Result<PreviewExtraData, String>>();
         state.forge_rx = Some(rx);
         state.poll_forge(); // nothing sent yet
-        // preview_data unchanged, forge_rx still set
+                            // preview_data unchanged, forge_rx still set
         assert!(state.forge_rx.is_some());
     }
 
     #[test]
     fn poll_forge_discards_data_if_not_ready() {
         // If git info hasn't arrived yet (still Loading), forge data is discarded
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // preview_data stays Loading (git not yet received)
         let (tx, rx) = mpsc::channel::<Result<PreviewExtraData, String>>();
         state.forge_rx = Some(rx);
@@ -5739,22 +6823,40 @@ mod tests {
         state.poll_forge();
         // preview_data should still be Loading (nothing to merge into)
         assert!(matches!(state.preview_data, PreviewData::Loading));
-        assert!(state.forge_rx.is_none(), "forge_rx cleared even when data discarded");
+        assert!(
+            state.forge_rx.is_none(),
+            "forge_rx cleared even when data discarded"
+        );
     }
 
     #[test]
     fn poll_forge_handles_disconnected_channel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let (tx, rx) = mpsc::channel::<Result<PreviewExtraData, String>>();
         state.forge_rx = Some(rx);
         drop(tx); // simulate thread panic
         state.poll_forge();
-        assert!(state.forge_rx.is_none(), "forge_rx should be cleared on disconnect");
+        assert!(
+            state.forge_rx.is_none(),
+            "forge_rx should be cleared on disconnect"
+        );
     }
 
     #[test]
     fn forge_rx_default_is_none() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert!(state.forge_rx.is_none());
     }
 
@@ -5763,19 +6865,34 @@ mod tests {
     #[test]
     fn renders_ci_without_pr_no_orphaned_separator() {
         // When CI is shown but no PR exists, there should be no " | " prefix.
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.ci = Some(CiStatus::Passing);
         // pr remains None
         state.preview_data = PreviewData::Ready(info);
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("CI:"), "should show CI line");
-        assert!(!out.contains("| CI:"), "should not have orphaned '| ' before CI");
+        assert!(
+            !out.contains("| CI:"),
+            "should not have orphaned '| ' before CI"
+        );
     }
 
     #[test]
     fn renders_pr_without_ci() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut info = make_git_info();
         info.pr = Some(make_pull_request(10, PrState::Open));
         // ci remains None
@@ -5789,10 +6906,17 @@ mod tests {
     fn parse_zellij_json_multiple_sessions_picks_correct_one() {
         // The first session has 10 tabs, the target has 3 tabs.
         // Without bounded object slicing, extract_json_u64 might pick up the wrong "tabs".
-        let json = r#"[{"name":"other","tabs":10,"panes":20},{"name":"target","tabs":3,"panes":5}]"#;
+        let json =
+            r#"[{"name":"other","tabs":10,"panes":20},{"name":"target","tabs":3,"panes":5}]"#;
         let info = parse_zellij_json_for_session(json, "target").unwrap();
-        assert_eq!(info.tab_count, 3, "should pick tabs from the correct session object");
-        assert_eq!(info.pane_count, 5, "should pick panes from the correct session object");
+        assert_eq!(
+            info.tab_count, 3,
+            "should pick tabs from the correct session object"
+        );
+        assert_eq!(
+            info.pane_count, 5,
+            "should pick panes from the correct session object"
+        );
     }
 
     #[test]
@@ -5843,7 +6967,9 @@ mod tests {
         }
         let outcome = advance_modal(&mut modal, KeyCode::Tab);
         assert!(matches!(outcome, ModalOutcome::Continue));
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         assert_eq!(form.active_field, 2);
     }
 
@@ -5857,7 +6983,9 @@ mod tests {
         for _ in 0..3 {
             advance_modal(&mut modal, KeyCode::Tab);
         }
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         assert_eq!(form.active_field, 0);
     }
 
@@ -5866,8 +6994,13 @@ mod tests {
         // Tab on empty path field: no completions, so should navigate to field 1.
         let mut modal = Modal::AddProject(ProjectForm::new());
         advance_modal(&mut modal, KeyCode::Tab);
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
-        assert_eq!(form.active_field, 1, "Tab on path with no completions should navigate to field 1");
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
+        assert_eq!(
+            form.active_field, 1,
+            "Tab on path with no completions should navigate to field 1"
+        );
     }
 
     #[test]
@@ -5879,7 +7012,9 @@ mod tests {
         }
         advance_modal(&mut modal, KeyCode::Tab); // field 3
         advance_modal(&mut modal, KeyCode::BackTab); // back to field 2
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         assert_eq!(form.active_field, 2);
     }
 
@@ -5887,7 +7022,9 @@ mod tests {
     fn advance_modal_backtab_wraps_from_first_to_last() {
         let mut modal = Modal::AddProject(ProjectForm::new());
         advance_modal(&mut modal, KeyCode::BackTab); // wraps to field 3 (Transport)
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         assert_eq!(form.active_field, 3);
     }
 
@@ -5904,11 +7041,25 @@ mod tests {
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         assert!(matches!(outcome, ModalOutcome::Continue));
         // Warnings should be set on required fields
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
-        assert!(form.fields[0].warning.is_some(), "path field should have warning");
-        assert!(form.fields[1].warning.is_some(), "name field should have warning");
-        assert!(form.fields[2].warning.is_none(), "host field is optional, no warning");
-        assert!(form.fields[3].warning.is_none(), "transport field is optional, no warning");
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
+        assert!(
+            form.fields[0].warning.is_some(),
+            "path field should have warning"
+        );
+        assert!(
+            form.fields[1].warning.is_some(),
+            "name field should have warning"
+        );
+        assert!(
+            form.fields[2].warning.is_none(),
+            "host field is optional, no warning"
+        );
+        assert!(
+            form.fields[3].warning.is_none(),
+            "transport field is optional, no warning"
+        );
     }
 
     #[test]
@@ -5923,7 +7074,9 @@ mod tests {
         }
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
-            ModalOutcome::Submit { path, name, host, .. } => {
+            ModalOutcome::Submit {
+                path, name, host, ..
+            } => {
                 assert_eq!(path, "/code/myapp");
                 assert_eq!(name, "myapp");
                 assert!(host.is_none());
@@ -5945,7 +7098,9 @@ mod tests {
         }
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
-            ModalOutcome::Submit { host, transport, .. } => {
+            ModalOutcome::Submit {
+                host, transport, ..
+            } => {
                 assert_eq!(host, Some("vps".to_string()));
                 assert_eq!(transport, Some("mosh".to_string()));
             }
@@ -6016,7 +7171,9 @@ mod tests {
         }
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         assert!(matches!(outcome, ModalOutcome::Continue));
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         assert!(form.fields[3].warning.is_some());
     }
 
@@ -6026,7 +7183,9 @@ mod tests {
         advance_modal(&mut modal, KeyCode::Char('/'));
         advance_modal(&mut modal, KeyCode::Char('c'));
         advance_modal(&mut modal, KeyCode::Char('o'));
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         assert_eq!(form.fields[0].value, "/co");
     }
 
@@ -6036,7 +7195,9 @@ mod tests {
         advance_modal(&mut modal, KeyCode::Char('a'));
         advance_modal(&mut modal, KeyCode::Char('b'));
         advance_modal(&mut modal, KeyCode::Backspace);
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         assert_eq!(form.fields[0].value, "a");
     }
 
@@ -6065,13 +7226,24 @@ mod tests {
         for c in "/code/webapp".chars() {
             advance_modal(&mut modal, KeyCode::Char(c));
         }
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
-        assert_eq!(form.fields[1].value, "webapp", "name should be auto-filled from path basename");
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
+        assert_eq!(
+            form.fields[1].value, "webapp",
+            "name should be auto-filled from path basename"
+        );
     }
 
     #[test]
     fn modal_opens_on_uppercase_a_key_in_projects_panel() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert!(state.modal.is_none(), "no modal initially");
         state.focused_panel = Panel::Projects;
         // Simulate pressing 'A' by directly triggering the key handler logic
@@ -6081,19 +7253,34 @@ mod tests {
 
     #[test]
     fn render_modal_add_project_shows_fields() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::AddProject(ProjectForm::new()));
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("Add Project"), "should show modal title");
         assert!(out.contains("Path"), "should show Path field label");
         assert!(out.contains("Name"), "should show Name field label");
         assert!(out.contains("Host"), "should show Host field label");
-        assert!(out.contains("Transport"), "should show Transport field label");
+        assert!(
+            out.contains("Transport"),
+            "should show Transport field label"
+        );
     }
 
     #[test]
     fn render_modal_shows_hints_line() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::AddProject(ProjectForm::new()));
         let out = render_to_string(&state, 80, 30);
         assert!(out.contains("Tab"), "should show Tab hint");
@@ -6103,13 +7290,22 @@ mod tests {
 
     #[test]
     fn render_modal_shows_yellow_warning_on_required_field() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut form = ProjectForm::new();
         form.fields[0].warning = Some("Required".to_string());
         state.modal = Some(Modal::AddProject(form));
         // Just verify it doesn't panic and renders something
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("Required") || out.contains("Add Project"), "modal rendered");
+        assert!(
+            out.contains("Required") || out.contains("Add Project"),
+            "modal rendered"
+        );
     }
 
     // ── expand_tilde_path edge cases ──────────────────────────────────────
@@ -6177,7 +7373,9 @@ mod tests {
         // Backspace on already-empty path field
         let outcome = advance_modal(&mut modal, KeyCode::Backspace);
         assert!(matches!(outcome, ModalOutcome::Continue));
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         assert_eq!(form.fields[0].value, "");
     }
 
@@ -6189,8 +7387,13 @@ mod tests {
             form.fields[1].value = "  ".to_string();
         }
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
-        assert!(matches!(outcome, ModalOutcome::Continue), "whitespace-only should not submit");
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        assert!(
+            matches!(outcome, ModalOutcome::Continue),
+            "whitespace-only should not submit"
+        );
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         assert!(form.fields[0].warning.is_some());
         assert!(form.fields[1].warning.is_some());
     }
@@ -6205,10 +7408,15 @@ mod tests {
         }
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
-            ModalOutcome::Submit { path, name, host, .. } => {
+            ModalOutcome::Submit {
+                path, name, host, ..
+            } => {
                 assert_eq!(name, "app", "name should be trimmed");
                 assert!(!path.starts_with(' '), "path should be trimmed");
-                assert!(host.is_none(), "whitespace-only optional field should be None");
+                assert!(
+                    host.is_none(),
+                    "whitespace-only optional field should be None"
+                );
             }
             _ => panic!("expected Submit"),
         }
@@ -6310,7 +7518,10 @@ mod tests {
         // Type in field 0 (path) — name field should not show warning
         advance_modal(&mut modal, KeyCode::Char('x'));
         if let Modal::EditProject(ref form, _) = modal {
-            assert!(form.fields[1].warning.is_none(), "no rename warning when name unchanged");
+            assert!(
+                form.fields[1].warning.is_none(),
+                "no rename warning when name unchanged"
+            );
         }
     }
 
@@ -6361,7 +7572,13 @@ mod tests {
         let mut modal = make_edit_modal("myapp", "/code/myapp");
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
-            ModalOutcome::SubmitEdit { original_name, path, name, host, .. } => {
+            ModalOutcome::SubmitEdit {
+                original_name,
+                path,
+                name,
+                host,
+                ..
+            } => {
                 assert_eq!(original_name, "myapp");
                 assert_eq!(path, "/code/myapp");
                 assert_eq!(name, "myapp");
@@ -6383,7 +7600,11 @@ mod tests {
         advance_modal(&mut modal, KeyCode::BackTab);
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
-            ModalOutcome::SubmitEdit { original_name, name, .. } => {
+            ModalOutcome::SubmitEdit {
+                original_name,
+                name,
+                ..
+            } => {
                 assert_eq!(original_name, "myapp", "original_name should be preserved");
                 assert_eq!(name, "myapp-v2", "new name should reflect edits");
             }
@@ -6393,31 +7614,58 @@ mod tests {
 
     #[test]
     fn render_modal_edit_project_shows_title_and_fields() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut form = ProjectForm::new();
         form.fields[0].value = "/code/myapp".to_string();
         form.fields[1].value = "myapp".to_string();
         form.name_was_modified = true;
         state.modal = Some(Modal::EditProject(form, "myapp".to_string()));
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("Edit Project"), "should show Edit Project title");
+        assert!(
+            out.contains("Edit Project"),
+            "should show Edit Project title"
+        );
         assert!(out.contains("Path"), "should show Path field");
         assert!(out.contains("Name"), "should show Name field");
     }
 
     #[test]
     fn e_uppercase_no_projects_does_nothing() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // With no entries, selected_entry() returns None — 'E' should not open a modal.
-        assert!(state.selected_entry().is_none(), "no entries means no modal should open");
+        assert!(
+            state.selected_entry().is_none(),
+            "no entries means no modal should open"
+        );
     }
 
     #[test]
     fn render_status_bar_shows_edit_project_hint() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 100, 24);
         assert!(out.contains("[E]"), "should show [E] edit project hint");
-        assert!(out.contains("[X]del project"), "should show [X] delete project hint");
+        assert!(
+            out.contains("[X]del project"),
+            "should show [X] delete project hint"
+        );
     }
 
     #[test]
@@ -6431,7 +7679,13 @@ mod tests {
 
     #[test]
     fn x_key_on_projects_panel_with_project_opens_delete_modal() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Projects;
         assert!(state.modal.is_none());
 
@@ -6439,7 +7693,11 @@ mod tests {
 
         assert!(state.modal.is_some(), "modal should be opened");
         match &state.modal {
-            Some(Modal::DeleteConfirm { project_name, session_count, .. }) => {
+            Some(Modal::DeleteConfirm {
+                project_name,
+                session_count,
+                ..
+            }) => {
                 assert_eq!(project_name, "myapp");
                 assert_eq!(*session_count, 2);
             }
@@ -6449,7 +7707,13 @@ mod tests {
 
     #[test]
     fn x_key_with_no_projects_does_not_open_modal() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Projects;
         open_delete_project_modal(&mut state);
         assert!(state.modal.is_none(), "no modal when no projects");
@@ -6457,12 +7721,21 @@ mod tests {
 
     #[test]
     fn x_key_on_worktrees_panel_does_not_open_project_delete_modal() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Worktrees;
 
         open_delete_project_modal(&mut state);
 
-        assert!(state.modal.is_none(), "project delete is only available from Projects panel");
+        assert!(
+            state.modal.is_none(),
+            "project delete is only available from Projects panel"
+        );
     }
 
     #[test]
@@ -6521,7 +7794,10 @@ mod tests {
         // Backspace: "ab" → "a" (differs from "ab" → warning shows)
         advance_modal(&mut modal, KeyCode::Backspace);
         if let Modal::EditProject(ref form, _) = modal {
-            assert!(form.fields[1].warning.is_some(), "warning should show for partial rename");
+            assert!(
+                form.fields[1].warning.is_some(),
+                "warning should show for partial rename"
+            );
         } else {
             panic!("expected EditProject modal");
         }
@@ -6548,9 +7824,19 @@ mod tests {
         let mut modal = Modal::EditProject(form, "myapp".to_string());
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
-            ModalOutcome::SubmitEdit { host, transport, .. } => {
-                assert_eq!(host, Some("github.com".to_string()), "host should be trimmed and preserved");
-                assert_eq!(transport, Some("mosh".to_string()), "transport should be trimmed and preserved");
+            ModalOutcome::SubmitEdit {
+                host, transport, ..
+            } => {
+                assert_eq!(
+                    host,
+                    Some("github.com".to_string()),
+                    "host should be trimmed and preserved"
+                );
+                assert_eq!(
+                    transport,
+                    Some("mosh".to_string()),
+                    "transport should be trimmed and preserved"
+                );
             }
             _ => panic!("expected SubmitEdit"),
         }
@@ -6591,20 +7877,35 @@ mod tests {
 
     #[test]
     fn renders_delete_confirm_modal_shows_project_name() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::DeleteConfirm {
             project_name: "myapp".to_string(),
             session_count: 2,
             worktree_count: 0,
         });
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("Delete Project"), "should show Delete Project title");
+        assert!(
+            out.contains("Delete Project"),
+            "should show Delete Project title"
+        );
         assert!(out.contains("myapp"), "should show project name");
     }
 
     #[test]
     fn renders_delete_confirm_modal_shows_counts() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::DeleteConfirm {
             project_name: "myapp".to_string(),
             session_count: 2,
@@ -6617,9 +7918,18 @@ mod tests {
 
     #[test]
     fn status_bar_shows_doctor_hint() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 120, 30);
-        assert!(out.contains("[D]octor"), "status bar should include [D]octor hint");
+        assert!(
+            out.contains("[D]octor"),
+            "status bar should include [D]octor hint"
+        );
     }
 
     #[test]
@@ -6651,7 +7961,13 @@ mod tests {
 
     #[test]
     fn d_key_on_sessions_panel_does_not_open_delete_modal() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Worktrees;
         // Replicate the guard: project delete modal only on Projects panel.
         if state.focused_panel == Panel::Projects {
@@ -6663,12 +7979,21 @@ mod tests {
                 });
             }
         }
-        assert!(state.modal.is_none(), "D on Worktrees panel should not open delete modal");
+        assert!(
+            state.modal.is_none(),
+            "D on Worktrees panel should not open delete modal"
+        );
     }
 
     #[test]
     fn delete_confirm_modal_with_singular_counts() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::DeleteConfirm {
             project_name: "solo".to_string(),
             session_count: 1,
@@ -6676,23 +8001,47 @@ mod tests {
         });
         let out = render_to_string(&state, 80, 30);
         // The modal renders "Active session: 1" (singular) and "Git worktree: 1" (singular)
-        assert!(out.contains("Active session: 1"), "should show singular 'session' for count 1");
-        assert!(out.contains("Git worktree: 1"), "should show singular 'worktree' for count 1");
-        assert!(!out.contains("Active sessions:"), "should not use plural 'sessions' for count 1");
-        assert!(!out.contains("Git worktrees:"), "should not use plural 'worktrees' for count 1");
+        assert!(
+            out.contains("Active session: 1"),
+            "should show singular 'session' for count 1"
+        );
+        assert!(
+            out.contains("Git worktree: 1"),
+            "should show singular 'worktree' for count 1"
+        );
+        assert!(
+            !out.contains("Active sessions:"),
+            "should not use plural 'sessions' for count 1"
+        );
+        assert!(
+            !out.contains("Git worktrees:"),
+            "should not use plural 'worktrees' for count 1"
+        );
     }
 
     #[test]
     fn delete_confirm_modal_with_zero_counts() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::DeleteConfirm {
             project_name: "empty".to_string(),
             session_count: 0,
             worktree_count: 0,
         });
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("Active sessions: 0"), "should use plural 'sessions' for count 0");
-        assert!(out.contains("Git worktrees: 0"), "should use plural 'worktrees' for count 0");
+        assert!(
+            out.contains("Active sessions: 0"),
+            "should use plural 'sessions' for count 0"
+        );
+        assert!(
+            out.contains("Git worktrees: 0"),
+            "should use plural 'worktrees' for count 0"
+        );
     }
 
     #[test]
@@ -6703,8 +8052,14 @@ mod tests {
             worktree_count: 0,
         };
         // Press some random keys — modal should still hold the same project name.
-        assert!(matches!(advance_modal(&mut modal, KeyCode::Char('z')), ModalOutcome::Continue));
-        assert!(matches!(advance_modal(&mut modal, KeyCode::Left), ModalOutcome::Continue));
+        assert!(matches!(
+            advance_modal(&mut modal, KeyCode::Char('z')),
+            ModalOutcome::Continue
+        ));
+        assert!(matches!(
+            advance_modal(&mut modal, KeyCode::Left),
+            ModalOutcome::Continue
+        ));
         // Now confirm — should return the original name.
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
         match outcome {
@@ -6721,7 +8076,10 @@ mod tests {
         form.name_was_modified = true;
         let mut modal = Modal::EditProject(form, "myapp".to_string());
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
-        assert!(matches!(outcome, ModalOutcome::Continue), "should not submit with empty required fields");
+        assert!(
+            matches!(outcome, ModalOutcome::Continue),
+            "should not submit with empty required fields"
+        );
         if let Modal::EditProject(ref form, _) = modal {
             assert_eq!(form.fields[0].warning.as_deref(), Some("Required"));
             assert_eq!(form.fields[1].warning.as_deref(), Some("Required"));
@@ -6751,7 +8109,10 @@ mod tests {
         // Start on field 0. BackTab should wrap to field 3 (Transport).
         advance_modal(&mut modal, KeyCode::BackTab);
         if let Modal::EditProject(ref form, _) = modal {
-            assert_eq!(form.active_field, 3, "BackTab from field 0 should wrap to last field");
+            assert_eq!(
+                form.active_field, 3,
+                "BackTab from field 0 should wrap to last field"
+            );
         } else {
             panic!("expected EditProject modal");
         }
@@ -6759,7 +8120,13 @@ mod tests {
 
     #[test]
     fn delete_confirm_modal_renders_on_small_terminal() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::DeleteConfirm {
             project_name: "test".to_string(),
             session_count: 0,
@@ -6767,7 +8134,10 @@ mod tests {
         });
         // Render on a very small terminal — should not panic.
         let out = render_to_string(&state, 30, 10);
-        assert!(out.contains("Delete"), "modal should still render on small terminal");
+        assert!(
+            out.contains("Delete"),
+            "modal should still render on small terminal"
+        );
     }
 
     // ── complete_path ─────────────────────────────────────────────────────
@@ -6842,7 +8212,10 @@ mod tests {
 
     #[test]
     fn longest_common_prefix_single_element() {
-        assert_eq!(longest_common_prefix(&["/code/app".to_string()]), "/code/app");
+        assert_eq!(
+            longest_common_prefix(&["/code/app".to_string()]),
+            "/code/app"
+        );
     }
 
     #[test]
@@ -6884,9 +8257,14 @@ mod tests {
 
         advance_modal(&mut modal, KeyCode::Tab);
 
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         let expected = format!("{}/myproject/", base.display());
-        assert_eq!(form.fields[0].value, expected, "should complete to single match with trailing slash");
+        assert_eq!(
+            form.fields[0].value, expected,
+            "should complete to single match with trailing slash"
+        );
         assert_eq!(form.active_field, 0, "should stay on path field");
 
         let _ = std::fs::remove_dir_all(&base);
@@ -6908,10 +8286,14 @@ mod tests {
 
         advance_modal(&mut modal, KeyCode::Tab);
 
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         // Common prefix of foobar and fooble is foob
         assert!(
-            form.fields[0].value.starts_with(&format!("{}/foob", base.display())),
+            form.fields[0]
+                .value
+                .starts_with(&format!("{}/foob", base.display())),
             "should complete to longest common prefix: got {}",
             form.fields[0].value
         );
@@ -6928,9 +8310,17 @@ mod tests {
             form.fields[0].value = "/nonexistent/zzz_no_match_xyz".to_string();
         }
         advance_modal(&mut modal, KeyCode::Tab);
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
-        assert_eq!(form.fields[0].value, "/nonexistent/zzz_no_match_xyz", "value should not change");
-        assert_eq!(form.active_field, 1, "should navigate to field 1 when no completions");
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
+        assert_eq!(
+            form.fields[0].value, "/nonexistent/zzz_no_match_xyz",
+            "value should not change"
+        );
+        assert_eq!(
+            form.active_field, 1,
+            "should navigate to field 1 when no completions"
+        );
     }
 
     #[test]
@@ -6945,10 +8335,18 @@ mod tests {
 
         advance_modal(&mut modal, KeyCode::Tab);
 
-        let Modal::EditProject(ref form, _) = modal else { panic!("expected EditProject modal") };
+        let Modal::EditProject(ref form, _) = modal else {
+            panic!("expected EditProject modal")
+        };
         let expected = format!("{}/myproject/", base.display());
-        assert_eq!(form.fields[0].value, expected, "should complete to single match with trailing slash");
-        assert_eq!(form.active_field, 0, "should stay on path field after completion");
+        assert_eq!(
+            form.fields[0].value, expected,
+            "should complete to single match with trailing slash"
+        );
+        assert_eq!(
+            form.active_field, 0,
+            "should stay on path field after completion"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -6958,10 +8356,18 @@ mod tests {
         // When EditProject path has no completions, Tab should navigate forward.
         let mut modal = make_edit_modal("myapp", "/nonexistent/zzz_no_match_xyz");
         advance_modal(&mut modal, KeyCode::Tab);
-        let Modal::EditProject(ref form, _) = modal else { panic!("expected EditProject modal") };
-        assert_eq!(form.active_field, 1, "should navigate to field 1 when no completions");
+        let Modal::EditProject(ref form, _) = modal else {
+            panic!("expected EditProject modal")
+        };
+        assert_eq!(
+            form.active_field, 1,
+            "should navigate to field 1 when no completions"
+        );
         // Path validation should also run
-        assert!(form.fields[0].warning.is_some(), "path validation should run when navigating away");
+        assert!(
+            form.fields[0].warning.is_some(),
+            "path validation should run when navigating away"
+        );
     }
 
     #[test]
@@ -6979,8 +8385,13 @@ mod tests {
 
         advance_modal(&mut modal, KeyCode::Tab);
 
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
-        assert_eq!(form.fields[1].value, "webapp", "name should be auto-filled from completed basename");
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
+        assert_eq!(
+            form.fields[1].value, "webapp",
+            "name should be auto-filled from completed basename"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -6992,7 +8403,9 @@ mod tests {
             form.active_field = 2;
         }
         advance_modal(&mut modal, KeyCode::Tab);
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
         assert_eq!(form.active_field, 3);
     }
 
@@ -7000,7 +8413,13 @@ mod tests {
 
     #[test]
     fn apply_doctor_sets_status_message_no_issues() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert!(state.status_message.is_none());
         apply_doctor(&mut state, &|_| Ok("No issues found.".to_string()), false);
         assert_eq!(
@@ -7012,7 +8431,13 @@ mod tests {
 
     #[test]
     fn apply_doctor_sets_status_message_with_counts() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         apply_doctor(
             &mut state,
             &|_| Ok("Doctor: 2 issue(s), 1 safe fix applied.".to_string()),
@@ -7026,7 +8451,13 @@ mod tests {
 
     #[test]
     fn apply_doctor_result_visible_in_render() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         apply_doctor(&mut state, &|_| Ok("No issues found.".to_string()), false);
         let out = render_to_string(&state, 120, 24);
         assert!(
@@ -7037,7 +8468,13 @@ mod tests {
 
     #[test]
     fn apply_doctor_overwrites_previous_status_message() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.status_message = Some("old message".to_string());
         apply_doctor(&mut state, &|_| Ok("No issues found.".to_string()), false);
         assert_eq!(state.status_message.as_deref(), Some("No issues found."));
@@ -7045,10 +8482,18 @@ mod tests {
 
     #[test]
     fn apply_doctor_shows_error_as_status_message() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
-        apply_doctor(&mut state, &|_| {
-            Err(io::Error::new(io::ErrorKind::Other, "metadata read failed"))
-        }, false);
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
+        apply_doctor(
+            &mut state,
+            &|_| Err(io::Error::new(io::ErrorKind::Other, "metadata read failed")),
+            false,
+        );
         assert_eq!(
             state.status_message.as_deref(),
             Some("Doctor failed: metadata read failed"),
@@ -7060,7 +8505,13 @@ mod tests {
     fn status_message_persists_after_navigation() {
         // The message set by apply_doctor should survive move_down (navigation
         // doesn't clear it — only an explicit keypress-clear mechanism does).
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         apply_doctor(&mut state, &|_| Ok("No issues found.".to_string()), false);
         state.move_down();
         assert!(
@@ -7075,7 +8526,13 @@ mod tests {
 
     #[test]
     fn status_message_shown_in_status_bar_when_set() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.status_message = Some("Doctor: 1 issue found.".to_string());
         let out = render_to_string(&state, 120, 24);
         assert!(
@@ -7086,7 +8543,13 @@ mod tests {
 
     #[test]
     fn project_info_shown_when_status_message_is_none() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert!(state.status_message.is_none());
         let out = render_to_string(&state, 120, 24);
         assert!(
@@ -7097,7 +8560,13 @@ mod tests {
 
     #[test]
     fn doctor_message_shown_inline() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.status_message = Some("No issues found.".to_string());
         let out = render_to_string(&state, 120, 24);
         assert!(
@@ -7108,7 +8577,13 @@ mod tests {
 
     #[test]
     fn status_message_shown_with_empty_entries() {
-        let mut state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.status_message = Some("No issues found.".to_string());
         let out = render_to_string(&state, 120, 24);
         assert!(
@@ -7129,18 +8604,34 @@ mod tests {
             form.fields[0].value = "/nonexistent/path/that/does/not/exist".to_string();
         }
         advance_modal(&mut modal, KeyCode::BackTab);
-        let Modal::AddProject(ref form) = modal else { panic!("expected AddProject modal") };
-        assert_eq!(form.active_field, 3, "BackTab from field 0 wraps to last field");
-        assert!(form.fields[0].warning.is_some(), "path validation should run when leaving field 0 via BackTab");
+        let Modal::AddProject(ref form) = modal else {
+            panic!("expected AddProject modal")
+        };
+        assert_eq!(
+            form.active_field, 3,
+            "BackTab from field 0 wraps to last field"
+        );
+        assert!(
+            form.fields[0].warning.is_some(),
+            "path validation should run when leaving field 0 via BackTab"
+        );
     }
 
     #[test]
     fn edit_modal_backtab_from_path_field_validates_path() {
         let mut modal = make_edit_modal("myapp", "/nonexistent/path/that/does/not/exist");
         advance_modal(&mut modal, KeyCode::BackTab);
-        let Modal::EditProject(ref form, _) = modal else { panic!("expected EditProject modal") };
-        assert_eq!(form.active_field, 3, "BackTab from field 0 wraps to last field");
-        assert!(form.fields[0].warning.is_some(), "path validation should run when leaving field 0 via BackTab in EditProject");
+        let Modal::EditProject(ref form, _) = modal else {
+            panic!("expected EditProject modal")
+        };
+        assert_eq!(
+            form.active_field, 3,
+            "BackTab from field 0 wraps to last field"
+        );
+        assert!(
+            form.fields[0].warning.is_some(),
+            "path validation should run when leaving field 0 via BackTab in EditProject"
+        );
     }
 
     // ── WorkflowSelector modal ─────────────────────────────────────────────
@@ -7285,41 +8776,75 @@ mod tests {
 
     #[test]
     fn workflow_selector_renders_workflow_names() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::WorkflowSelector {
             project: "myapp".to_string(),
             workflows: make_workflows(),
             selected: 0,
         });
         let out = render_to_string(&state, 100, 30);
-        assert!(out.contains("pr-ci-fix"), "should render first workflow name");
-        assert!(out.contains("pr-review-fix"), "should render second workflow name");
-        assert!(out.contains("pr-merge-when-ready"), "should render third workflow name");
+        assert!(
+            out.contains("pr-ci-fix"),
+            "should render first workflow name"
+        );
+        assert!(
+            out.contains("pr-review-fix"),
+            "should render second workflow name"
+        );
+        assert!(
+            out.contains("pr-merge-when-ready"),
+            "should render third workflow name"
+        );
     }
 
     #[test]
     fn workflow_selector_renders_project_name_in_title() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::WorkflowSelector {
             project: "myapp".to_string(),
             workflows: make_workflows(),
             selected: 0,
         });
         let out = render_to_string(&state, 100, 30);
-        assert!(out.contains("myapp"), "modal title should include project name");
+        assert!(
+            out.contains("myapp"),
+            "modal title should include project name"
+        );
     }
 
     #[test]
     fn a_key_with_workflows_opens_workflow_selector() {
         let mut entries = make_entries();
         entries[0].workflows = make_workflows();
-        let mut state = TuiState::new(entries, Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            entries,
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Simulate the 'a' key handler from event_loop
         if let Some(entry) = state.selected_entry() {
             if !entry.workflows.is_empty() {
                 let project = entry.project.name.clone();
                 let workflows = entry.workflows.clone();
-                state.modal = Some(Modal::WorkflowSelector { project, workflows, selected: 0 });
+                state.modal = Some(Modal::WorkflowSelector {
+                    project,
+                    workflows,
+                    selected: 0,
+                });
             }
         }
         assert!(
@@ -7331,16 +8856,29 @@ mod tests {
     #[test]
     fn a_key_without_workflows_does_not_open_modal() {
         // entries have workflows: vec![] by default from make_entries()
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Simulate the 'a' key handler from event_loop
         if let Some(entry) = state.selected_entry() {
             if !entry.workflows.is_empty() {
                 let project = entry.project.name.clone();
                 let workflows = entry.workflows.clone();
-                state.modal = Some(Modal::WorkflowSelector { project, workflows, selected: 0 });
+                state.modal = Some(Modal::WorkflowSelector {
+                    project,
+                    workflows,
+                    selected: 0,
+                });
             }
         }
-        assert!(state.modal.is_none(), "'a' with no workflows should not open any modal");
+        assert!(
+            state.modal.is_none(),
+            "'a' with no workflows should not open any modal"
+        );
     }
 
     #[test]
@@ -7381,7 +8919,10 @@ mod tests {
             selected: 0,
         };
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
-        assert!(matches!(outcome, ModalOutcome::Close), "Enter on empty workflows should close");
+        assert!(
+            matches!(outcome, ModalOutcome::Close),
+            "Enter on empty workflows should close"
+        );
     }
 
     #[test]
@@ -7415,7 +8956,13 @@ mod tests {
 
     #[test]
     fn o_key_on_projects_panel_returns_open_with_no_session() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Projects panel is the default focus
         assert_eq!(state.focused_panel, Panel::Projects);
         // Simulate 'o' key logic from event_loop
@@ -7425,12 +8972,21 @@ mod tests {
         // When projects panel is focused, session is always None
         let session: Option<String> = None;
         assert_eq!(project, "myapp");
-        assert!(session.is_none(), "'o' on Projects panel should open with no session override");
+        assert!(
+            session.is_none(),
+            "'o' on Projects panel should open with no session override"
+        );
     }
 
     #[test]
     fn o_key_on_sessions_panel_returns_open_with_session() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.focused_panel = Panel::Worktrees;
         state.selected_session = 0;
         // Simulate 'o' key logic from event_loop
@@ -7447,31 +9003,61 @@ mod tests {
             None
         };
         // myapp has sessions: ["myapp:main", "myapp:feat-login"]
-        assert_eq!(session.as_deref(), Some("myapp:main"),
-            "'o' on Sessions panel should include the selected session name");
+        assert_eq!(
+            session.as_deref(),
+            Some("myapp:main"),
+            "'o' on Sessions panel should include the selected session name"
+        );
     }
 
     #[test]
     fn o_key_with_no_projects_returns_no_action() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let project_name = state.selected_entry().map(|e| e.project.name.clone());
-        assert!(project_name.is_none(), "'o' with no projects should not produce an action");
+        assert!(
+            project_name.is_none(),
+            "'o' with no projects should not produce an action"
+        );
     }
 
     #[test]
     fn n_key_returns_new_with_selected_project() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Simulate 'n' key logic from event_loop
         let action_project = state.selected_entry().map(|e| e.project.name.clone());
-        assert_eq!(action_project.as_deref(), Some("myapp"),
-            "'n' should produce TuiAction::New for the selected project");
+        assert_eq!(
+            action_project.as_deref(),
+            Some("myapp"),
+            "'n' should produce TuiAction::New for the selected project"
+        );
     }
 
     #[test]
     fn n_key_with_no_projects_returns_no_action() {
-        let state = TuiState::new(vec![], Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let action_project = state.selected_entry().map(|e| e.project.name.clone());
-        assert!(action_project.is_none(), "'n' with no projects should not produce an action");
+        assert!(
+            action_project.is_none(),
+            "'n' with no projects should not produce an action"
+        );
     }
 
     // ── Help overlay tests ────────────────────────────────────────────────────
@@ -7479,67 +9065,133 @@ mod tests {
     #[test]
     fn question_mark_opens_help_modal() {
         // Simulate pressing '?' sets modal to Help
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         assert!(state.modal.is_none(), "no modal initially");
         // Simulate the '?' key logic from event_loop
         state.modal = Some(Modal::Help);
-        assert!(matches!(state.modal, Some(Modal::Help)), "'?' should open Help modal");
+        assert!(
+            matches!(state.modal, Some(Modal::Help)),
+            "'?' should open Help modal"
+        );
     }
 
     #[test]
     fn help_modal_esc_closes() {
         let mut modal = Modal::Help;
         let outcome = advance_modal(&mut modal, KeyCode::Esc);
-        assert!(matches!(outcome, ModalOutcome::Close), "Esc should close help modal");
+        assert!(
+            matches!(outcome, ModalOutcome::Close),
+            "Esc should close help modal"
+        );
     }
 
     #[test]
     fn help_modal_question_mark_closes() {
         let mut modal = Modal::Help;
         let outcome = advance_modal(&mut modal, KeyCode::Char('?'));
-        assert!(matches!(outcome, ModalOutcome::Close), "'?' should close help modal");
+        assert!(
+            matches!(outcome, ModalOutcome::Close),
+            "'?' should close help modal"
+        );
     }
 
     #[test]
     fn help_modal_q_closes() {
         let mut modal = Modal::Help;
         let outcome = advance_modal(&mut modal, KeyCode::Char('q'));
-        assert!(matches!(outcome, ModalOutcome::Close), "'q' should close help modal");
+        assert!(
+            matches!(outcome, ModalOutcome::Close),
+            "'q' should close help modal"
+        );
     }
 
     #[test]
     fn help_modal_other_keys_continue() {
         let mut modal = Modal::Help;
         let outcome = advance_modal(&mut modal, KeyCode::Char('x'));
-        assert!(matches!(outcome, ModalOutcome::Continue), "other keys should not close help modal");
+        assert!(
+            matches!(outcome, ModalOutcome::Continue),
+            "other keys should not close help modal"
+        );
     }
 
     #[test]
     fn help_modal_renders_keybindings_section() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::Help);
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("Keybindings"), "help modal should show 'Keybindings' title");
-        assert!(out.contains("Navigation"), "help modal should show 'Navigation' section");
-        assert!(out.contains("Actions"), "help modal should show 'Actions' section");
-        assert!(out.contains("Session"), "help modal should show 'Session' section");
+        assert!(
+            out.contains("Keybindings"),
+            "help modal should show 'Keybindings' title"
+        );
+        assert!(
+            out.contains("Navigation"),
+            "help modal should show 'Navigation' section"
+        );
+        assert!(
+            out.contains("Actions"),
+            "help modal should show 'Actions' section"
+        );
+        assert!(
+            out.contains("Session"),
+            "help modal should show 'Session' section"
+        );
     }
 
     #[test]
     fn help_modal_renders_key_entries() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::Help);
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("Open/restore worktree"), "help modal should describe 'o' key");
-        assert!(out.contains("Delete worktree"), "help modal should describe 'd' key");
-        assert!(out.contains("Delete project"), "help modal should describe 'X' key");
-        assert!(out.contains("Fuzzy search"), "help modal should describe '/' key");
-        assert!(out.contains("Kill active session"), "help modal should describe 'K' key");
+        assert!(
+            out.contains("Open/restore worktree"),
+            "help modal should describe 'o' key"
+        );
+        assert!(
+            out.contains("Delete worktree"),
+            "help modal should describe 'd' key"
+        );
+        assert!(
+            out.contains("Delete project"),
+            "help modal should describe 'X' key"
+        );
+        assert!(
+            out.contains("Fuzzy search"),
+            "help modal should describe '/' key"
+        );
+        assert!(
+            out.contains("Kill active session"),
+            "help modal should describe 'K' key"
+        );
     }
 
     #[test]
     fn help_modal_renders_in_small_terminal() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::Help);
         // Should not panic even when terminal is smaller than the modal's preferred size
         let _out = render_to_string(&state, 30, 10);
@@ -7547,16 +9199,31 @@ mod tests {
 
     #[test]
     fn status_bar_hints_include_help() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let out = render_to_string(&state, 150, 24);
-        assert!(out.contains("[?]help"), "status bar should advertise '?' for help");
+        assert!(
+            out.contains("[?]help"),
+            "status bar should advertise '?' for help"
+        );
     }
 
     // ── BranchInput modal tests ──────────────────────────────────────────────
 
     #[test]
     fn n_key_opens_branch_input_modal() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Simulate 'n' key in normal mode: should open BranchInput modal
         state.modal = None;
         if let Some(entry) = state.selected_entry() {
@@ -7578,7 +9245,10 @@ mod tests {
             input: "feat".to_string(),
         };
         let outcome = advance_modal(&mut modal, KeyCode::Esc);
-        assert!(matches!(outcome, ModalOutcome::Close), "Esc should close BranchInput modal");
+        assert!(
+            matches!(outcome, ModalOutcome::Close),
+            "Esc should close BranchInput modal"
+        );
     }
 
     #[test]
@@ -7617,7 +9287,10 @@ mod tests {
             input: String::new(),
         };
         let outcome = advance_modal(&mut modal, KeyCode::Enter);
-        assert!(matches!(outcome, ModalOutcome::Continue), "Enter on empty input should not submit");
+        assert!(
+            matches!(outcome, ModalOutcome::Continue),
+            "Enter on empty input should not submit"
+        );
     }
 
     #[test]
@@ -7638,13 +9311,22 @@ mod tests {
 
     #[test]
     fn branch_input_modal_renders() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::BranchInput {
             project: "myapp".to_string(),
             input: "feat-123".to_string(),
         });
         let out = render_to_string(&state, 80, 30);
-        assert!(out.contains("New Session"), "should show 'New Session' title");
+        assert!(
+            out.contains("New Session"),
+            "should show 'New Session' title"
+        );
         assert!(out.contains("feat-123"), "should show current input");
     }
 
@@ -7709,7 +9391,13 @@ mod tests {
 
     #[test]
     fn branch_input_modal_small_terminal_no_panic() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::BranchInput {
             project: "myapp".to_string(),
             input: "feat".to_string(),
@@ -7727,7 +9415,10 @@ mod tests {
             scroll_offset: 0,
         };
         let outcome = advance_modal(&mut modal, KeyCode::Esc);
-        assert!(matches!(outcome, ModalOutcome::Close), "Esc should close LogViewer");
+        assert!(
+            matches!(outcome, ModalOutcome::Close),
+            "Esc should close LogViewer"
+        );
     }
 
     #[test]
@@ -7737,7 +9428,10 @@ mod tests {
             scroll_offset: 0,
         };
         let outcome = advance_modal(&mut modal, KeyCode::Char('q'));
-        assert!(matches!(outcome, ModalOutcome::Close), "q should close LogViewer");
+        assert!(
+            matches!(outcome, ModalOutcome::Close),
+            "q should close LogViewer"
+        );
     }
 
     #[test]
@@ -7747,13 +9441,20 @@ mod tests {
             scroll_offset: 0,
         };
         let outcome = advance_modal(&mut modal, KeyCode::Char('l'));
-        assert!(matches!(outcome, ModalOutcome::Continue), "l should not close LogViewer (Ctrl+l does)");
+        assert!(
+            matches!(outcome, ModalOutcome::Continue),
+            "l should not close LogViewer (Ctrl+l does)"
+        );
     }
 
     #[test]
     fn log_viewer_j_scrolls_down() {
         let mut modal = Modal::LogViewer {
-            lines: vec!["line1".to_string(), "line2".to_string(), "line3".to_string()],
+            lines: vec![
+                "line1".to_string(),
+                "line2".to_string(),
+                "line3".to_string(),
+            ],
             scroll_offset: 0,
         };
         advance_modal(&mut modal, KeyCode::Char('j'));
@@ -7767,7 +9468,11 @@ mod tests {
     #[test]
     fn log_viewer_k_scrolls_up() {
         let mut modal = Modal::LogViewer {
-            lines: vec!["line1".to_string(), "line2".to_string(), "line3".to_string()],
+            lines: vec![
+                "line1".to_string(),
+                "line2".to_string(),
+                "line3".to_string(),
+            ],
             scroll_offset: 2,
         };
         advance_modal(&mut modal, KeyCode::Char('k'));
@@ -7836,7 +9541,13 @@ mod tests {
 
     #[test]
     fn log_viewer_renders_log_content() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::LogViewer {
             lines: vec![
                 "[2026-04-06] [INFO] session created".to_string(),
@@ -7846,24 +9557,45 @@ mod tests {
         });
         let out = render_to_string(&state, 120, 40);
         assert!(out.contains("Logs"), "should render Logs title");
-        assert!(out.contains("session created"), "should render log line content");
+        assert!(
+            out.contains("session created"),
+            "should render log line content"
+        );
     }
 
     #[test]
     fn log_viewer_renders_empty_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::LogViewer {
             lines: vec![],
             scroll_offset: 0,
         });
         let out = render_to_string(&state, 120, 40);
-        assert!(out.contains("Logs"), "should render Logs title even when empty");
-        assert!(out.contains("No logs yet"), "should show empty state message");
+        assert!(
+            out.contains("Logs"),
+            "should render Logs title even when empty"
+        );
+        assert!(
+            out.contains("No logs yet"),
+            "should show empty state message"
+        );
     }
 
     #[test]
     fn log_viewer_small_terminal_no_panic() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::LogViewer {
             lines: vec!["test line".to_string()],
             scroll_offset: 0,
@@ -7917,7 +9649,13 @@ mod tests {
         // render should clamp it so the viewport shows a full page of lines,
         // not just the single last line.
         let lines: Vec<String> = (0..50).map(|i| format!("[INFO] line {}", i)).collect();
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::LogViewer {
             lines: lines.clone(),
             scroll_offset: 49, // last line index, as set by G or initial open
@@ -7926,19 +9664,31 @@ mod tests {
         let out = render_to_string(&state, 120, 40);
         // With clamping, we should see lines near the end, not just "line 49"
         assert!(out.contains("line 49"), "should show the last line");
-        assert!(out.contains("line 48"), "should show second-to-last line too");
+        assert!(
+            out.contains("line 48"),
+            "should show second-to-last line too"
+        );
     }
 
     #[test]
     fn log_viewer_empty_title_shows_zero() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::LogViewer {
             lines: vec![],
             scroll_offset: 0,
         });
         let out = render_to_string(&state, 120, 40);
         // Empty log should not show "1/1"
-        assert!(!out.contains("1/1"), "empty logs should not show 1/1 in title");
+        assert!(
+            !out.contains("1/1"),
+            "empty logs should not show 1/1 in title"
+        );
     }
 
     #[test]
@@ -7974,7 +9724,9 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         let theme = z_core::theme::Theme::default();
-        terminal.draw(|f| render_switch_picker(f, state, &theme)).unwrap();
+        terminal
+            .draw(|f| render_switch_picker(f, state, &theme))
+            .unwrap();
         let buf = terminal.backend().buffer().clone();
         let mut out = String::new();
         for row in 0..height {
@@ -8014,7 +9766,10 @@ mod tests {
             "myapp:main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
-        assert!(out.contains('\u{25cf}'), "should render ● marker on current session");
+        assert!(
+            out.contains('\u{25cf}'),
+            "should render ● marker on current session"
+        );
     }
 
     #[test]
@@ -8087,7 +9842,10 @@ mod tests {
             },
         ];
 
-        sort_switch_entries(&mut entries, &z_core::config::SwitcherConfig::default().priority);
+        sort_switch_entries(
+            &mut entries,
+            &z_core::config::SwitcherConfig::default().priority,
+        );
 
         assert_eq!(entries[0].session_name, "waiting:main");
     }
@@ -8129,10 +9887,16 @@ mod tests {
             },
         ];
 
-        sort_switch_entries(&mut entries, &z_core::config::SwitcherConfig::default().priority);
+        sort_switch_entries(
+            &mut entries,
+            &z_core::config::SwitcherConfig::default().priority,
+        );
 
         assert_eq!(
-            entries.iter().map(|e| e.session_name.as_str()).collect::<Vec<_>>(),
+            entries
+                .iter()
+                .map(|e| e.session_name.as_str())
+                .collect::<Vec<_>>(),
             vec!["z:newest", "z:medium", "z:oldest", "z:unknown"],
             "large last_attach first, None last"
         );
@@ -8171,16 +9935,16 @@ mod tests {
         ];
         sort_switch_entries(&mut entries, &priority);
 
-        assert_eq!(entries[0].session_name, "waiting:main",
-            "waiting entry should come first when Waiting is before Recent in priority");
+        assert_eq!(
+            entries[0].session_name, "waiting:main",
+            "waiting entry should come first when Waiting is before Recent in priority"
+        );
     }
 
     #[test]
     fn switch_picker_renders_footer_hints() {
-        let state = SwitchPickerState::new(
-            vec!["myapp:main".to_string()],
-            "myapp:main".to_string(),
-        );
+        let state =
+            SwitchPickerState::new(vec!["myapp:main".to_string()], "myapp:main".to_string());
         let out = render_switch_picker_to_string(&state, 80, 15);
         assert!(out.contains("j/k"), "should render j/k hint");
         assert!(out.contains("Enter"), "should render Enter hint");
@@ -8212,11 +9976,26 @@ mod tests {
 
         let out = render_switch_picker_to_string(&state, 36, 14);
 
-        assert!(out.contains("Switch Session"), "compact picker should render title");
-        assert!(out.contains("hermes:"), "compact picker should preserve project prefix");
-        assert!(out.contains("wait"), "compact picker should keep activity visible");
-        assert!(out.contains("Enter"), "compact footer should keep the switch action visible");
-        assert!(out.contains("Esc"), "compact footer should keep close visible");
+        assert!(
+            out.contains("Switch Session"),
+            "compact picker should render title"
+        );
+        assert!(
+            out.contains("hermes:"),
+            "compact picker should preserve project prefix"
+        );
+        assert!(
+            out.contains("wait"),
+            "compact picker should keep activity visible"
+        );
+        assert!(
+            out.contains("Enter"),
+            "compact footer should keep the switch action visible"
+        );
+        assert!(
+            out.contains("Esc"),
+            "compact footer should keep close visible"
+        );
     }
 
     #[test]
@@ -8240,7 +10019,11 @@ mod tests {
     #[test]
     fn switch_picker_initial_selection_skips_current_session() {
         let state = SwitchPickerState::new(
-            vec!["alpha:main".to_string(), "beta:dev".to_string(), "myapp:main".to_string()],
+            vec![
+                "alpha:main".to_string(),
+                "beta:dev".to_string(),
+                "myapp:main".to_string(),
+            ],
             "beta:dev".to_string(),
         );
         assert_eq!(
@@ -8254,7 +10037,11 @@ mod tests {
         // Sessions are sorted by last-attach desc, so current is typically at
         // index 0 — selecting index 1 lets Enter jump to the previous project.
         let state = SwitchPickerState::new(
-            vec!["alpha:main".to_string(), "beta:dev".to_string(), "myapp:main".to_string()],
+            vec![
+                "alpha:main".to_string(),
+                "beta:dev".to_string(),
+                "myapp:main".to_string(),
+            ],
             "alpha:main".to_string(),
         );
         assert_eq!(state.selected, 1);
@@ -8273,10 +10060,8 @@ mod tests {
 
     #[test]
     fn switch_picker_initial_selection_single_session_is_current() {
-        let state = SwitchPickerState::new(
-            vec!["alpha:main".to_string()],
-            "alpha:main".to_string(),
-        );
+        let state =
+            SwitchPickerState::new(vec!["alpha:main".to_string()], "alpha:main".to_string());
         assert_eq!(state.selected, 0);
     }
 
@@ -8312,7 +10097,11 @@ mod tests {
     #[test]
     fn switch_picker_move_down_increments() {
         let mut state = SwitchPickerState::new(
-            vec!["alpha:main".to_string(), "beta:dev".to_string(), "gamma:x".to_string()],
+            vec![
+                "alpha:main".to_string(),
+                "beta:dev".to_string(),
+                "gamma:x".to_string(),
+            ],
             "alpha:main".to_string(),
         );
         state.selected = 0;
@@ -8322,20 +10111,16 @@ mod tests {
 
     #[test]
     fn switch_picker_move_up_clamps_at_zero() {
-        let mut state = SwitchPickerState::new(
-            vec!["alpha:main".to_string()],
-            "alpha:main".to_string(),
-        );
+        let mut state =
+            SwitchPickerState::new(vec!["alpha:main".to_string()], "alpha:main".to_string());
         state.move_up();
         assert_eq!(state.selected, 0, "should not go below 0");
     }
 
     #[test]
     fn switch_picker_move_down_clamps_at_last() {
-        let mut state = SwitchPickerState::new(
-            vec!["alpha:main".to_string()],
-            "alpha:main".to_string(),
-        );
+        let mut state =
+            SwitchPickerState::new(vec!["alpha:main".to_string()], "alpha:main".to_string());
         state.move_down();
         assert_eq!(state.selected, 0, "should not go past last item");
     }
@@ -8352,19 +10137,15 @@ mod tests {
 
     #[test]
     fn switch_picker_small_terminal_no_panic() {
-        let state = SwitchPickerState::new(
-            vec!["myapp:main".to_string()],
-            "myapp:main".to_string(),
-        );
+        let state =
+            SwitchPickerState::new(vec!["myapp:main".to_string()], "myapp:main".to_string());
         let _out = render_switch_picker_to_string(&state, 20, 5);
     }
 
     #[test]
     fn switch_picker_tiny_terminal_no_panic() {
-        let state = SwitchPickerState::new(
-            vec!["myapp:main".to_string()],
-            "myapp:main".to_string(),
-        );
+        let state =
+            SwitchPickerState::new(vec!["myapp:main".to_string()], "myapp:main".to_string());
 
         let _out = render_switch_picker_to_string(&state, 12, 3);
     }
@@ -8446,14 +10227,15 @@ mod tests {
         let out = render_switch_picker_to_string(&state, 60, 15);
         // ● should appear exactly once — only on alpha:main (the current session)
         let marker_count = out.matches('\u{25cf}').count();
-        assert_eq!(marker_count, 1, "● marker should appear exactly once for the current session");
+        assert_eq!(
+            marker_count, 1,
+            "● marker should appear exactly once for the current session"
+        );
     }
 
     #[test]
     fn switch_picker_render_many_sessions_capped_at_20() {
-        let sessions: Vec<String> = (0..30)
-            .map(|i| format!("proj{}:main", i))
-            .collect();
+        let sessions: Vec<String> = (0..30).map(|i| format!("proj{}:main", i)).collect();
         let state = SwitchPickerState::new(sessions, "proj0:main".to_string());
         // Should not panic; modal height is capped via .min(20)
         let _out = render_switch_picker_to_string(&state, 80, 30);
@@ -8507,7 +10289,10 @@ mod tests {
             "myapp:main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
-        assert!(out.contains('\u{1f514}'), "should render 🔔 badge for session with notifications");
+        assert!(
+            out.contains('\u{1f514}'),
+            "should render 🔔 badge for session with notifications"
+        );
     }
 
     #[test]
@@ -8532,13 +10317,20 @@ mod tests {
             "myapp:main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
-        assert!(!out.contains('\u{1f514}'), "should not render 🔔 badge when zero notifications");
+        assert!(
+            !out.contains('\u{1f514}'),
+            "should not render 🔔 badge when zero notifications"
+        );
     }
 
     #[test]
     fn switch_picker_only_notified_sessions_show_badge() {
         let state = SwitchPickerState::with_notifications(
-            vec!["alpha:main".to_string(), "beta:dev".to_string(), "gamma:feat".to_string()],
+            vec![
+                "alpha:main".to_string(),
+                "beta:dev".to_string(),
+                "gamma:feat".to_string(),
+            ],
             vec![None, None, None],
             vec![0, 2, 0],
             "alpha:main".to_string(),
@@ -8547,7 +10339,10 @@ mod tests {
         assert!(out.contains('\u{1f514}'), "🔔 should appear for beta:dev");
         // Count occurrences of 🔔 — should be exactly 1
         let bell_count = out.matches('\u{1f514}').count();
-        assert_eq!(bell_count, 1, "🔔 should appear exactly once (only for beta:dev)");
+        assert_eq!(
+            bell_count, 1,
+            "🔔 should appear exactly once (only for beta:dev)"
+        );
     }
 
     #[test]
@@ -8570,7 +10365,10 @@ mod tests {
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains('\u{1f514}'), "should render 🔔 badge");
-        assert!(out.contains("2h"), "should render notification age '2h' alongside badge");
+        assert!(
+            out.contains("2h"),
+            "should render notification age '2h' alongside badge"
+        );
         assert!(!out.contains("3h"), "should NOT render stale session age");
     }
 
@@ -8606,9 +10404,15 @@ mod tests {
             "other-session".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
-        assert!(out.contains('\u{1f514}'), "should render 🔔 badge for large count");
+        assert!(
+            out.contains('\u{1f514}'),
+            "should render 🔔 badge for large count"
+        );
         assert!(out.contains("99"), "should render count 99");
-        assert!(out.contains("5m"), "should render notification age alongside large count");
+        assert!(
+            out.contains("5m"),
+            "should render notification age alongside large count"
+        );
         assert!(!out.contains("1h"), "should NOT render stale session age");
     }
 
@@ -8649,7 +10453,10 @@ mod tests {
         );
         // Should not panic and should render session name
         let out = render_switch_picker_to_string(&state, 60, 15);
-        assert!(out.contains("myapp:main"), "should still render session name");
+        assert!(
+            out.contains("myapp:main"),
+            "should still render session name"
+        );
     }
 
     #[test]
@@ -8671,7 +10478,11 @@ mod tests {
             vec!["myapp:main".to_string(), "hermes:dev".to_string()],
             "myapp:main".to_string(),
         );
-        assert_eq!(state.ages, vec![None, None], "new() should set all ages to None");
+        assert_eq!(
+            state.ages,
+            vec![None, None],
+            "new() should set all ages to None"
+        );
     }
 
     #[test]
@@ -8688,14 +10499,21 @@ mod tests {
     #[test]
     fn switch_picker_mixed_ages_some_and_none() {
         let state = SwitchPickerState::with_ages(
-            vec!["alpha:main".to_string(), "beta:dev".to_string(), "gamma:feat".to_string()],
+            vec![
+                "alpha:main".to_string(),
+                "beta:dev".to_string(),
+                "gamma:feat".to_string(),
+            ],
             vec![Some("1h".to_string()), None, Some("3d".to_string())],
             "alpha:main".to_string(),
         );
         let out = render_switch_picker_to_string(&state, 60, 15);
         assert!(out.contains("1h"), "should render age for alpha");
         assert!(out.contains("3d"), "should render age for gamma");
-        assert!(out.contains("beta:dev"), "should render beta name without age");
+        assert!(
+            out.contains("beta:dev"),
+            "should render beta name without age"
+        );
     }
 
     #[test]
@@ -8753,7 +10571,10 @@ mod tests {
         };
         let label = switch_row_label(&entry, "  ", 40, true, 120_000);
 
-        assert!(label.contains("1m"), "compact label should contain notification age: {label:?}");
+        assert!(
+            label.contains("1m"),
+            "compact label should contain notification age: {label:?}"
+        );
         assert!(
             !label.contains("1h"),
             "compact label should not contain session age: {label:?}"
@@ -8782,8 +10603,15 @@ mod tests {
 
         let label = switch_row_label(&entry, "  ", 42, true, 3_600_000);
 
-        assert_eq!(display_width(&label), 42, "label should fill row width: {label:?}");
-        assert!(label.ends_with("wait \u{1f514}2 58m"), "metadata should be right-aligned: {label:?}");
+        assert_eq!(
+            display_width(&label),
+            42,
+            "label should fill row width: {label:?}"
+        );
+        assert!(
+            label.ends_with("wait \u{1f514}2 58m"),
+            "metadata should be right-aligned: {label:?}"
+        );
     }
 
     #[test]
@@ -8808,7 +10636,11 @@ mod tests {
 
         let label = switch_row_label(&entry, "  ", 64, false, 3_600_000);
 
-        assert_eq!(display_width(&label), 64, "label should fill row width: {label:?}");
+        assert_eq!(
+            display_width(&label),
+            64,
+            "label should fill row width: {label:?}"
+        );
         assert!(
             label.ends_with("\u{26a0} waiting \u{1f514} 2 58m"),
             "metadata should be right-aligned: {label:?}"
@@ -8841,19 +10673,25 @@ mod tests {
 
         let out = render_switch_picker_to_string(&state, 120, 10);
 
-        assert!(out.contains("wait"), "compact row should keep status visible: {out:?}");
-        assert!(out.contains("58m"), "compact row should keep age visible: {out:?}");
-        assert!(out.contains('\u{1f514}'), "compact row should keep notification badge visible: {out:?}");
+        assert!(
+            out.contains("wait"),
+            "compact row should keep status visible: {out:?}"
+        );
+        assert!(
+            out.contains("58m"),
+            "compact row should keep age visible: {out:?}"
+        );
+        assert!(
+            out.contains('\u{1f514}'),
+            "compact row should keep notification badge visible: {out:?}"
+        );
     }
 
     // ── Theme style tests (TestBackend) ──────────────────────────────────
 
     /// Find the buffer cell that starts rendering text `needle` and return
     /// the style of that cell.
-    fn find_cell_style(
-        buf: &ratatui::buffer::Buffer,
-        needle: &str,
-    ) -> Option<Style> {
+    fn find_cell_style(buf: &ratatui::buffer::Buffer, needle: &str) -> Option<Style> {
         let area = buf.area;
         for row in area.y..area.y + area.height {
             let mut line = String::new();
@@ -8870,7 +10708,13 @@ mod tests {
 
     #[test]
     fn theme_selected_project_has_dracula_colors() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Default theme is Dracula — selected project "myapp" should have
         // purple fg (#bd93f9) and current-line bg (#44475a)
         let backend = TestBackend::new(80, 24);
@@ -8881,14 +10725,28 @@ mod tests {
         // The highlight symbol "▸" precedes the selected item
         let style = find_cell_style(&buf, "\u{25b8}").expect("should find highlight symbol");
         // Verify Dracula purple fg
-        assert_eq!(style.fg, Some(Color::Rgb(189, 147, 249)), "selected item fg should be Dracula purple");
+        assert_eq!(
+            style.fg,
+            Some(Color::Rgb(189, 147, 249)),
+            "selected item fg should be Dracula purple"
+        );
         // Verify Dracula current-line bg
-        assert_eq!(style.bg, Some(Color::Rgb(68, 71, 90)), "selected item bg should be Dracula current-line");
+        assert_eq!(
+            style.bg,
+            Some(Color::Rgb(68, 71, 90)),
+            "selected item bg should be Dracula current-line"
+        );
     }
 
     #[test]
     fn theme_focused_border_has_dracula_purple() {
-        let state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| render(f, &state)).unwrap();
@@ -8898,13 +10756,19 @@ mod tests {
         let corner = buf.cell((0u16, 0u16)).expect("should have corner cell");
         let style = corner.style();
         // Focused panel border = Dracula purple + bold
-        assert_eq!(style.fg, Some(Color::Rgb(189, 147, 249)), "focused border fg should be Dracula purple");
+        assert_eq!(
+            style.fg,
+            Some(Color::Rgb(189, 147, 249)),
+            "focused border fg should be Dracula purple"
+        );
     }
 
     // ── apply_delete_session (in-place session delete) tests ─────────────────
 
     /// Helper: returns a reload closure that produces a fixed set of entries.
-    fn make_reload_fn(entries: Vec<ProjectEntry>) -> impl Fn() -> io::Result<(Vec<ProjectEntry>, HashSet<String>)> {
+    fn make_reload_fn(
+        entries: Vec<ProjectEntry>,
+    ) -> impl Fn() -> io::Result<(Vec<ProjectEntry>, HashSet<String>)> {
         move || Ok((entries.clone(), HashSet::new()))
     }
 
@@ -8921,7 +10785,13 @@ mod tests {
 
     #[test]
     fn apply_reloaded_entries_bumps_revision_and_clears_inflight_refresh() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let (_tx, rx) = mpsc::channel();
         state.refresh_rx = Some(rx);
         let revision = state.state_revision;
@@ -8934,11 +10804,18 @@ mod tests {
 
     #[test]
     fn poll_refresh_discards_stale_revision() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let (tx, rx) = mpsc::channel();
         state.refresh_rx = Some(rx);
         state.state_revision = 2;
-        tx.send(make_refresh_message(1, "stale:notification")).unwrap();
+        tx.send(make_refresh_message(1, "stale:notification"))
+            .unwrap();
 
         state.poll_refresh();
 
@@ -8948,11 +10825,18 @@ mod tests {
 
     #[test]
     fn poll_refresh_applies_current_revision() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let (tx, rx) = mpsc::channel();
         state.refresh_rx = Some(rx);
         state.state_revision = 2;
-        tx.send(make_refresh_message(2, "current:notification")).unwrap();
+        tx.send(make_refresh_message(2, "current:notification"))
+            .unwrap();
 
         state.poll_refresh();
 
@@ -8961,7 +10845,13 @@ mod tests {
 
     #[test]
     fn apply_delete_session_sets_status_message_on_success() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let reload_entries = make_entries();
         apply_delete_session(
             &mut state,
@@ -8977,7 +10867,13 @@ mod tests {
 
     #[test]
     fn apply_delete_session_clamps_selected_session() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Select session index 1 (feat/login).
         state.focused_panel = Panel::Worktrees;
         state.selected_session = 1;
@@ -8998,7 +10894,13 @@ mod tests {
 
     #[test]
     fn apply_delete_session_reloads_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Reload returns only one project (simulating the session being gone).
         let reloaded = vec![make_entries()[0].clone()];
         apply_delete_session(
@@ -9007,12 +10909,22 @@ mod tests {
             &make_reload_fn(reloaded),
             "myapp:feat/login",
         );
-        assert_eq!(state.entries.len(), 1, "state should reflect reloaded entries");
+        assert_eq!(
+            state.entries.len(),
+            1,
+            "state should reflect reloaded entries"
+        );
     }
 
     #[test]
     fn apply_delete_session_shows_error_as_status_message() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         apply_delete_session(
             &mut state,
             &|_| Err(io::Error::new(io::ErrorKind::Other, "session not found")),
@@ -9030,15 +10942,19 @@ mod tests {
 
     #[test]
     fn apply_delete_project_sets_status_message_on_success() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
-        // After deletion, reload returns entries without "myapp".
-        let remaining: Vec<_> = make_entries().into_iter().filter(|e| e.project.name != "myapp").collect();
-        apply_delete_project(
-            &mut state,
-            &|_| Ok(()),
-            &make_reload_fn(remaining),
-            "myapp",
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
         );
+        // After deletion, reload returns entries without "myapp".
+        let remaining: Vec<_> = make_entries()
+            .into_iter()
+            .filter(|e| e.project.name != "myapp")
+            .collect();
+        apply_delete_project(&mut state, &|_| Ok(()), &make_reload_fn(remaining), "myapp");
         assert_eq!(
             state.status_message.as_deref(),
             Some("Project myapp deleted."),
@@ -9047,25 +10963,38 @@ mod tests {
 
     #[test]
     fn apply_delete_project_reloads_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
-        let remaining: Vec<_> = make_entries().into_iter().filter(|e| e.project.name != "myapp").collect();
-        let expected_len = remaining.len();
-        apply_delete_project(
-            &mut state,
-            &|_| Ok(()),
-            &make_reload_fn(remaining),
-            "myapp",
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
         );
+        let remaining: Vec<_> = make_entries()
+            .into_iter()
+            .filter(|e| e.project.name != "myapp")
+            .collect();
+        let expected_len = remaining.len();
+        apply_delete_project(&mut state, &|_| Ok(()), &make_reload_fn(remaining), "myapp");
         assert_eq!(state.entries.len(), expected_len);
     }
 
     #[test]
     fn apply_delete_project_cursor_moves_to_nearest_neighbor() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Select the last project (index 2 = "prod-api").
         state.selected_project = 2;
         // Delete it — reload returns only first two.
-        let remaining: Vec<_> = make_entries().into_iter().filter(|e| e.project.name != "prod-api").collect();
+        let remaining: Vec<_> = make_entries()
+            .into_iter()
+            .filter(|e| e.project.name != "prod-api")
+            .collect();
         apply_delete_project(
             &mut state,
             &|_| Ok(()),
@@ -9081,7 +11010,13 @@ mod tests {
 
     #[test]
     fn apply_delete_project_shows_error_as_status_message() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let original_count = state.entries.len();
         apply_delete_project(
             &mut state,
@@ -9093,14 +11028,24 @@ mod tests {
             state.status_message.as_deref(),
             Some("Error: permission denied"),
         );
-        assert_eq!(state.entries.len(), original_count, "should not reload on error");
+        assert_eq!(
+            state.entries.len(),
+            original_count,
+            "should not reload on error"
+        );
     }
 
     // ── apply_add_project (in-place project add) tests ────────────────────
 
     #[test]
     fn apply_add_project_sets_status_message_on_success() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut reloaded = make_entries();
         reloaded.push(ProjectEntry {
             project: make_project("new-proj", false),
@@ -9113,7 +11058,10 @@ mod tests {
             &mut state,
             &|_, _, _, _| Ok(()),
             &make_reload_fn(reloaded),
-            "/tmp/new-proj", "new-proj", None, None,
+            "/tmp/new-proj",
+            "new-proj",
+            None,
+            None,
         );
         assert_eq!(
             state.status_message.as_deref(),
@@ -9123,7 +11071,13 @@ mod tests {
 
     #[test]
     fn apply_add_project_reloads_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut reloaded = make_entries();
         reloaded.push(ProjectEntry {
             project: make_project("new-proj", false),
@@ -9136,21 +11090,38 @@ mod tests {
             &mut state,
             &|_, _, _, _| Ok(()),
             &make_reload_fn(reloaded),
-            "/tmp/new-proj", "new-proj", None, None,
+            "/tmp/new-proj",
+            "new-proj",
+            None,
+            None,
         );
-        assert_eq!(state.entries.len(), 4, "state should contain the new project after reload");
+        assert_eq!(
+            state.entries.len(),
+            4,
+            "state should contain the new project after reload"
+        );
     }
 
     // ── apply_edit_project (in-place project edit) tests ──────────────────
 
     #[test]
     fn apply_edit_project_sets_status_message_on_success() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         apply_edit_project(
             &mut state,
             &|_, _, _, _, _| Ok(()),
             &make_reload_fn(make_entries()),
-            "myapp", "/new/path", "myapp-renamed", None, None,
+            "myapp",
+            "/new/path",
+            "myapp-renamed",
+            None,
+            None,
         );
         assert_eq!(
             state.status_message.as_deref(),
@@ -9160,37 +11131,67 @@ mod tests {
 
     #[test]
     fn apply_edit_project_reloads_state() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         // Reload returns only 2 entries (simulating a rename that changed the list).
         let reloaded = vec![make_entries()[0].clone(), make_entries()[1].clone()];
         apply_edit_project(
             &mut state,
             &|_, _, _, _, _| Ok(()),
             &make_reload_fn(reloaded),
-            "myapp", "/new/path", "myapp", None, None,
+            "myapp",
+            "/new/path",
+            "myapp",
+            None,
+            None,
         );
         assert_eq!(state.entries.len(), 2);
     }
 
     #[test]
     fn apply_edit_project_shows_error_as_status_message() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let original_count = state.entries.len();
         apply_edit_project(
             &mut state,
             &|_, _, _, _, _| Err(io::Error::new(io::ErrorKind::Other, "write failed")),
             &make_reload_fn(vec![]),
-            "myapp", "/path", "myapp", None, None,
+            "myapp",
+            "/path",
+            "myapp",
+            None,
+            None,
         );
         assert_eq!(state.status_message.as_deref(), Some("Error: write failed"));
-        assert_eq!(state.entries.len(), original_count, "should not reload on error");
+        assert_eq!(
+            state.entries.len(),
+            original_count,
+            "should not reload on error"
+        );
     }
 
     // ── apply_add_project continued ─────────────────────────────────────────
 
     #[test]
     fn apply_add_project_selects_new_project() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let mut reloaded = make_entries();
         reloaded.push(ProjectEntry {
             project: make_project("new-proj", false),
@@ -9203,7 +11204,10 @@ mod tests {
             &mut state,
             &|_, _, _, _| Ok(()),
             &make_reload_fn(reloaded),
-            "/tmp/new-proj", "new-proj", None, None,
+            "/tmp/new-proj",
+            "new-proj",
+            None,
+            None,
         );
         assert_eq!(
             state.selected_project, 3,
@@ -9213,23 +11217,45 @@ mod tests {
 
     #[test]
     fn apply_add_project_shows_error_as_status_message() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let original_count = state.entries.len();
         apply_add_project(
             &mut state,
             &|_, _, _, _| Err(io::Error::new(io::ErrorKind::Other, "duplicate name")),
             &make_reload_fn(vec![]),
-            "/tmp/x", "x", None, None,
+            "/tmp/x",
+            "x",
+            None,
+            None,
         );
-        assert_eq!(state.status_message.as_deref(), Some("Error: duplicate name"));
-        assert_eq!(state.entries.len(), original_count, "should not reload on error");
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("Error: duplicate name")
+        );
+        assert_eq!(
+            state.entries.len(),
+            original_count,
+            "should not reload on error"
+        );
     }
 
     // ── apply_delete_session continued ──────────────────────────────────────
 
     #[test]
     fn apply_delete_session_does_not_reload_on_error() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         let original_count = state.entries.len();
         apply_delete_session(
             &mut state,
@@ -9237,7 +11263,11 @@ mod tests {
             &make_reload_fn(vec![]), // reload would produce empty list
             "myapp:feat/login",
         );
-        assert_eq!(state.entries.len(), original_count, "should not reload on error");
+        assert_eq!(
+            state.entries.len(),
+            original_count,
+            "should not reload on error"
+        );
     }
 
     // ── ActionMenu modal tests ─────────────────────────────────────────────
@@ -9246,19 +11276,25 @@ mod tests {
         vec![
             ResolvedAction {
                 name: "Review code".into(),
-                action: ActionType::Run { command: "codex review".into() },
+                action: ActionType::Run {
+                    command: "codex review".into(),
+                },
                 pane: PaneType::Tab,
                 icon: Some("\u{1f50d}".into()),
             },
             ResolvedAction {
                 name: "Fix CI".into(),
-                action: ActionType::Run { command: "claude fix".into() },
+                action: ActionType::Run {
+                    command: "claude fix".into(),
+                },
                 pane: PaneType::Tab,
                 icon: Some("\u{1f527}".into()),
             },
             ResolvedAction {
                 name: "Open PR".into(),
-                action: ActionType::OpenUrl { url: "https://github.com/pr/42".into() },
+                action: ActionType::OpenUrl {
+                    url: "https://github.com/pr/42".into(),
+                },
                 pane: PaneType::Float,
                 icon: Some("\u{1f310}".into()),
             },
@@ -9267,14 +11303,23 @@ mod tests {
 
     #[test]
     fn action_menu_renders_action_names() {
-        let mut state = TuiState::new(make_entries(), Navigation::Arrows, mock_forge(), mock_remote_preview(), mock_refresher());
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
         state.modal = Some(Modal::ActionMenu {
             actions: make_test_actions(),
             selected: 0,
         });
         let out = render_to_string(&state, 80, 24);
         assert!(out.contains("Actions"), "should show Actions title");
-        assert!(out.contains("Review code"), "should show 'Review PR' action");
+        assert!(
+            out.contains("Review code"),
+            "should show 'Review PR' action"
+        );
         assert!(out.contains("Fix CI"), "should show 'Fix CI' action");
         assert!(out.contains("Open PR"), "should show 'Open PR' action");
     }

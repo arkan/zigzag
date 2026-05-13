@@ -46,7 +46,11 @@ pub struct CliStepExecutor {
 
 impl CliStepExecutor {
     pub fn new(cwd: PathBuf, host: Option<String>, notifier: Box<dyn Notifier>) -> Self {
-        Self { cwd, host, notifier }
+        Self {
+            cwd,
+            host,
+            notifier,
+        }
     }
 
     fn run_local_command(&self, command: &str) -> Result<StepResult> {
@@ -55,7 +59,11 @@ impl CliStepExecutor {
             .current_dir(&self.cwd)
             .output()
             .map_err(|e| ZError::Io(format!("run autopilot command: {e}")))?;
-        Ok(step_result_from_output(output.status.success(), &output.stdout, &output.stderr))
+        Ok(step_result_from_output(
+            output.status.success(),
+            &output.stdout,
+            &output.stderr,
+        ))
     }
 
     fn run_remote_command(&self, host: &str, command: &str) -> Result<StepResult> {
@@ -69,7 +77,11 @@ impl CliStepExecutor {
             .args(["-o", "ConnectTimeout=10", host, &wrapped])
             .output()
             .map_err(|e| ZError::Io(format!("run remote autopilot command: {e}")))?;
-        Ok(step_result_from_output(output.status.success(), &output.stdout, &output.stderr))
+        Ok(step_result_from_output(
+            output.status.success(),
+            &output.stdout,
+            &output.stderr,
+        ))
     }
 }
 
@@ -160,7 +172,9 @@ mod tests {
     fn step_result_from_output_marks_failure() {
         assert_eq!(
             step_result_from_output(false, b"", b"failed"),
-            StepResult::Failure { output: Some("failed".to_string()) }
+            StepResult::Failure {
+                output: Some("failed".to_string())
+            }
         );
     }
 }

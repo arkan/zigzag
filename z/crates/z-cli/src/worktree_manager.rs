@@ -526,8 +526,7 @@ mod tests {
 
     #[test]
     fn parse_path_with_spaces() {
-        let output =
-            "worktree /home/user/my projects/myapp\nHEAD abc\nbranch refs/heads/main\n";
+        let output = "worktree /home/user/my projects/myapp\nHEAD abc\nbranch refs/heads/main\n";
         let worktrees = parse_git_worktree_porcelain(output, "myapp");
         assert_eq!(
             worktrees[0].path,
@@ -651,10 +650,7 @@ mod tests {
             Some("myserver"),
         );
         assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].identity.host.as_deref(),
-            Some("myserver")
-        );
+        assert_eq!(entries[0].identity.host.as_deref(), Some("myserver"));
         assert_eq!(entries[0].identity.project_root, PathBuf::from("/repo"));
         assert_eq!(
             entries[0].identity.worktree_path,
@@ -696,7 +692,8 @@ mod tests {
         let old = parse_git_worktree_porcelain(output, "myapp");
         let detailed =
             parse_git_worktree_porcelain_detailed(output, "myapp", &PathBuf::from("/repo"), None);
-        let filtered: Vec<&DiscoveredWorktree> = detailed.iter().filter(|d| d.branch.is_some()).collect();
+        let filtered: Vec<&DiscoveredWorktree> =
+            detailed.iter().filter(|d| d.branch.is_some()).collect();
         assert_eq!(old.len(), filtered.len());
         assert_eq!(old[0].branch, filtered[0].branch.as_deref().unwrap());
         assert_eq!(old[0].path, filtered[0].identity.worktree_path);
@@ -714,7 +711,9 @@ mod tests {
 
     #[test]
     fn detects_no_upstream_errors() {
-        assert!(is_no_upstream_error("fatal: no upstream configured for branch 'main'"));
+        assert!(is_no_upstream_error(
+            "fatal: no upstream configured for branch 'main'"
+        ));
         assert!(is_no_upstream_error("fatal: no such branch: '@{u}'"));
         assert!(!is_no_upstream_error("fatal: not a git repository"));
     }

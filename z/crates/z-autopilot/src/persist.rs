@@ -5,7 +5,9 @@ use z_core::error::{Result, ZError};
 /// Return the file path for a workflow run's persisted state.
 /// Format: `{state_dir}/{project}/{workflow_name}.json`
 fn run_path(state_dir: &Path, project: &str, workflow_name: &str) -> PathBuf {
-    state_dir.join(project).join(format!("{workflow_name}.json"))
+    state_dir
+        .join(project)
+        .join(format!("{workflow_name}.json"))
 }
 
 /// Persist a workflow run to disk as JSON.
@@ -17,23 +19,27 @@ pub fn save_run(run: &WorkflowRun, state_dir: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)
             .map_err(|e| ZError::Io(format!("create dirs {}: {e}", parent.display())))?;
     }
-    let json = serde_json::to_string_pretty(run)
-        .map_err(|e| ZError::Io(format!("serialize run: {e}")))?;
+    let json =
+        serde_json::to_string_pretty(run).map_err(|e| ZError::Io(format!("serialize run: {e}")))?;
     std::fs::write(&path, json)
         .map_err(|e| ZError::Io(format!("write {}: {e}", path.display())))?;
     Ok(())
 }
 
 /// Load a workflow run from disk. Returns `None` if the file does not exist.
-pub fn load_run(project: &str, workflow_name: &str, state_dir: &Path) -> Result<Option<WorkflowRun>> {
+pub fn load_run(
+    project: &str,
+    workflow_name: &str,
+    state_dir: &Path,
+) -> Result<Option<WorkflowRun>> {
     let path = run_path(state_dir, project, workflow_name);
     if !path.exists() {
         return Ok(None);
     }
     let json = std::fs::read_to_string(&path)
         .map_err(|e| ZError::Io(format!("read {}: {e}", path.display())))?;
-    let run: WorkflowRun = serde_json::from_str(&json)
-        .map_err(|e| ZError::Io(format!("deserialize run: {e}")))?;
+    let run: WorkflowRun =
+        serde_json::from_str(&json).map_err(|e| ZError::Io(format!("deserialize run: {e}")))?;
     Ok(Some(run))
 }
 
@@ -58,7 +64,10 @@ pub fn list_runs(state_dir: &Path) -> Result<Vec<WorkflowRun>> {
 }
 
 /// Delete terminal workflow runs and return the runs that were removed.
-pub fn prune_terminal_runs(state_dir: &Path, project_filter: Option<&str>) -> Result<Vec<WorkflowRun>> {
+pub fn prune_terminal_runs(
+    state_dir: &Path,
+    project_filter: Option<&str>,
+) -> Result<Vec<WorkflowRun>> {
     let runs = list_runs(state_dir)?;
     let mut removed = Vec::new();
     for run in runs {
@@ -101,7 +110,7 @@ fn collect_runs(dir: &Path, runs: &mut Vec<WorkflowRun>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{WorkflowStatus, WorkflowRun};
+    use crate::state::{WorkflowRun, WorkflowStatus};
     use std::fs;
 
     fn temp_dir() -> PathBuf {

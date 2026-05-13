@@ -9,7 +9,10 @@ use z_core::traits::{ProjectStore, ProjectStoreWriter};
 /// Returns the path to `~/.config/z/projects.kdl`.
 pub fn projects_kdl_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".config").join("z").join("projects.kdl")
+    PathBuf::from(home)
+        .join(".config")
+        .join("z")
+        .join("projects.kdl")
 }
 
 /// A `ProjectStore` that reads from `~/.config/z/projects.kdl`.
@@ -196,8 +199,8 @@ impl ProjectStoreWriter for KdlProjectStore {
     }
 
     fn swap_projects(&mut self, a: usize, b: usize) -> Result<()> {
-        let content = fs::read_to_string(&self.projects_path)
-            .map_err(|e| ZError::Io(e.to_string()))?;
+        let content =
+            fs::read_to_string(&self.projects_path).map_err(|e| ZError::Io(e.to_string()))?;
 
         let new_content = swap_project_nodes(&content, a, b)?;
 
@@ -304,8 +307,14 @@ project "alpha" {
         store.add_project(&project).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("project \"newapp\""), "should contain project node");
-        assert!(content.contains("path \"/code/newapp\""), "should contain path");
+        assert!(
+            content.contains("project \"newapp\""),
+            "should contain project node"
+        );
+        assert!(
+            content.contains("path \"/code/newapp\""),
+            "should contain path"
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -321,7 +330,10 @@ project "alpha" {
         store.add_project(&project).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("project \"alpha\""), "original project preserved");
+        assert!(
+            content.contains("project \"alpha\""),
+            "original project preserved"
+        );
         assert!(content.contains("project \"beta\""), "new project added");
         // Verify parse round-trip works
         let projects = store.list_projects().unwrap();
@@ -338,7 +350,10 @@ project "alpha" {
         store.add_project(&project).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("// This is my project list"), "comment preserved");
+        assert!(
+            content.contains("// This is my project list"),
+            "comment preserved"
+        );
         assert!(content.contains("project \"beta\""), "new project added");
         std::fs::remove_file(path).ok();
     }
@@ -353,7 +368,10 @@ project "alpha" {
         let mut store = KdlProjectStore::with_path(path.clone());
         let project = make_project("alpha", "/code/alpha2");
         let err = store.add_project(&project).unwrap_err();
-        assert!(matches!(err, ZError::ConfigParse(_)), "should return ConfigParse error");
+        assert!(
+            matches!(err, ZError::ConfigParse(_)),
+            "should return ConfigParse error"
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -407,7 +425,10 @@ project "beta" {
 }
 "#;
         let result = remove_project_from_kdl(kdl, "alpha").unwrap();
-        assert!(!result.contains("project \"alpha\""), "alpha should be removed");
+        assert!(
+            !result.contains("project \"alpha\""),
+            "alpha should be removed"
+        );
         assert!(result.contains("project \"beta\""), "beta should remain");
     }
 
@@ -426,8 +447,14 @@ project "alpha" {
 }
 "#;
         let result = remove_project_from_kdl(kdl, "alpha").unwrap();
-        assert!(result.contains("// old: project \"alpha\" was here"), "comment preserved");
-        assert!(!result.contains("path \"/code/alpha\""), "project block removed");
+        assert!(
+            result.contains("// old: project \"alpha\" was here"),
+            "comment preserved"
+        );
+        assert!(
+            !result.contains("path \"/code/alpha\""),
+            "project block removed"
+        );
     }
 
     #[test]
@@ -442,7 +469,10 @@ project "alpha" {
     fn remove_project_from_kdl_only_project_in_file() {
         let kdl = "project \"only\" {\n    path \"/code/only\"\n}\n";
         let result = remove_project_from_kdl(kdl, "only").unwrap();
-        assert!(result.trim().is_empty(), "file should be empty after removing only project");
+        assert!(
+            result.trim().is_empty(),
+            "file should be empty after removing only project"
+        );
     }
 
     #[test]
@@ -454,7 +484,10 @@ project "alpha" {
             transport: None,
         };
         let kdl = format_project_kdl(&project);
-        assert!(kdl.contains(r#"path "/code/my \"app\"""#), "quotes in path should be escaped");
+        assert!(
+            kdl.contains(r#"path "/code/my \"app\"""#),
+            "quotes in path should be escaped"
+        );
     }
 
     // ── update_project / rename tests ─────────────────────────────────────
@@ -472,7 +505,10 @@ project "alpha" {
         };
         store.update_project(&updated).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("path \"/code/new\""), "path should be updated");
+        assert!(
+            content.contains("path \"/code/new\""),
+            "path should be updated"
+        );
         assert!(!content.contains("/code/old"), "old path should be gone");
         let projects = store.list_projects().unwrap();
         assert_eq!(projects.len(), 1);
@@ -495,8 +531,14 @@ project "alpha" {
         };
         store.add_project(&renamed).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("project \"new-name\""), "new name should be present");
-        assert!(!content.contains("project \"old-name\""), "old name should be gone");
+        assert!(
+            content.contains("project \"new-name\""),
+            "new name should be present"
+        );
+        assert!(
+            !content.contains("project \"old-name\""),
+            "old name should be gone"
+        );
         let projects = store.list_projects().unwrap();
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].name, "new-name");
@@ -517,8 +559,14 @@ project "alpha" {
         };
         store.update_project(&updated).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("// header comment"), "header comment preserved");
-        assert!(content.contains("// footer comment"), "footer comment preserved");
+        assert!(
+            content.contains("// header comment"),
+            "header comment preserved"
+        );
+        assert!(
+            content.contains("// footer comment"),
+            "footer comment preserved"
+        );
         assert!(content.contains("path \"/code/new\""), "path updated");
         std::fs::remove_file(path).ok();
     }
@@ -532,7 +580,10 @@ project "alpha" {
             transport: None,
         };
         let kdl = format_project_kdl(&project);
-        assert!(kdl.contains(r#"project "back\\slash""#), "backslash in name should be escaped");
+        assert!(
+            kdl.contains(r#"project "back\\slash""#),
+            "backslash in name should be escaped"
+        );
     }
 
     // --- transport in KDL output ---
@@ -546,7 +597,10 @@ project "alpha" {
             transport: Some(z_core::domain::Transport::Mosh),
         };
         let kdl = format_project_kdl(&project);
-        assert!(kdl.contains("transport \"mosh\""), "should write transport mosh");
+        assert!(
+            kdl.contains("transport \"mosh\""),
+            "should write transport mosh"
+        );
     }
 
     #[test]
@@ -558,7 +612,10 @@ project "alpha" {
             transport: Some(z_core::domain::Transport::Ssh),
         };
         let kdl = format_project_kdl(&project);
-        assert!(kdl.contains("transport \"ssh\""), "should write transport ssh");
+        assert!(
+            kdl.contains("transport \"ssh\""),
+            "should write transport ssh"
+        );
     }
 
     #[test]
@@ -570,6 +627,9 @@ project "alpha" {
             transport: None,
         };
         let kdl = format_project_kdl(&project);
-        assert!(!kdl.contains("transport"), "should not write transport when None");
+        assert!(
+            !kdl.contains("transport"),
+            "should not write transport when None"
+        );
     }
 }
