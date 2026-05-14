@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "zigzag-autopilot"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "kdl",
  "serde",
@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "zigzag-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "kdl",
  "serde_json",
@@ -1016,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "zigzag-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "kdl",
  "semver",
@@ -1027,14 +1027,14 @@ dependencies = [
 
 [[package]]
 name = "zigzag-plugin"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "zigzag-core",
 ]
 
 [[package]]
 name = "zigzag-tui"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "zigzag-web"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "zigzag-core",
 ]

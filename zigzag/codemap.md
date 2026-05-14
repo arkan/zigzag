@@ -1,6 +1,6 @@
 # Zigzag — Workspace Codemap
 
-**Version:** 0.6.0
+**Version:** 0.7.0
 **Edition:** 2021  
 **Resolvers:** `resolver = "2"`
 

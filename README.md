@@ -50,7 +50,7 @@ Zigzag checks these dependencies at startup and reports missing or outdated tool
 curl -fsSL https://raw.githubusercontent.com/arkan/zigzag/main/install.sh | bash
 
 # Specific version
-curl -fsSL https://raw.githubusercontent.com/arkan/zigzag/main/install.sh | ZIGZAG_VERSION=v0.6.0 bash
+curl -fsSL https://raw.githubusercontent.com/arkan/zigzag/main/install.sh | ZIGZAG_VERSION=v0.7.0 bash
 
 # Custom install directory, default is ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/arkan/zigzag/main/install.sh | ZIGZAG_INSTALL_DIR=/usr/local/bin bash
