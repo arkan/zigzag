@@ -89,6 +89,7 @@ All SSH command construction uses `remote::shell_quote` which wraps values in si
       - `EditPerRepoConfig` → `cmd_edit_per_repo_config` (spawns `$EDITOR`)
       - `RunAction` → `zellij_action::run_action` (launches command in new tab/pane)
       - `RunWorkflow` → `cmd_autopilot_run`
+      - `OpenSwitcher` → local session switcher, then no-op/switch/attach depending on current Zellij context
       - `Quit` → return
 
 ### Open Session Flow (`cmd_open`)
@@ -112,8 +113,8 @@ All SSH command construction uses `remote::shell_quote` which wraps values in si
 4. `prune_summary` (TUI mode): kills sessions and removes worktrees immediately, returns status string.
 5. `cmd_prune` (interactive): shows lists, prompts for confirmation, then acts.
 
-### Switch Flow (`cmd_switch`)
-1. Guard: must run inside a Zellij session (`ZELLIJ_SESSION_NAME` set).
+### Switch Flow (`cmd_switch` / dashboard `OpenSwitcher`)
+1. `z switch` guard: must run inside a Zellij session (`ZELLIJ_SESSION_NAME` set). Dashboard switcher accepts no current session and attaches interactively from outside Zellij.
 2. Global lock file (`/tmp/z-switch.lock`) prevents concurrent invocations (cleanup via `LockGuard` Drop impl).
 3. List all z-managed sessions with ages and notification counts → sort by recent activity → `run_switch_picker`.
 4. On selection: `zellij action switch-session <name>`.

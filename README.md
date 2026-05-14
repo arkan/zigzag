@@ -94,6 +94,7 @@ Then use:
 | `↑` / `↓` | Move in the current list |
 | `←` / `→` or `Tab` | Switch between Projects and Worktrees |
 | `Enter` or `o` | Open/restore the selected worktree session |
+| `s` or `Alt+k` | Pick another local active `z` session |
 | `n` | Create a new worktree + session from a branch, issue, or PR |
 | `/` | Fuzzy search |
 | `?` | Show in-app help |
@@ -107,7 +108,7 @@ Then use:
 ```bash
 z open myapp              # Open/restore the primary checkout session
 z open myapp feat/login   # Open/restore a branch worktree + session
-z switch                  # Pick another z-managed session
+z switch                  # Pick another local z-managed session
 ```
 
 When a branch worktree does not exist yet, `z open <project> <branch>` creates it with `wt`, generates a Zellij layout, starts the session, then attaches to it.
@@ -123,6 +124,7 @@ Inside a session, press `Ctrl+O`, then `D` to detach. The Zellij session keeps r
 | Key | Action |
 |---|---|
 | `o` / `Enter` | Open/restore selected project or worktree |
+| `s` / `Alt+k` | Pick another local active `z` session |
 | `n` | New worktree + session |
 | `r` | Run action menu |
 | `a` | Autopilot workflows |
@@ -161,7 +163,7 @@ Inside a session, press `Ctrl+O`, then `D` to detach. The Zellij session keeps r
 | `z list` | List configured projects and active sessions |
 | `z open <project> [branch]` | Open/restore a checkout or branch session |
 | `z close [session]` | Detach a session without deleting it |
-| `z switch` | Pick and jump to another `z` session |
+| `z switch` | Pick and jump to another local `z` session |
 | `z actions` | Open the action menu for the current session |
 | `z logs [-n <count>]` | Show `z` logs |
 | `z doctor [--fix]` | Diagnose or repair safe project/session issues |

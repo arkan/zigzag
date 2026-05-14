@@ -117,13 +117,13 @@ loop {
         if leader_pending → dispatch Alt+z leader combo
         elif modal → advance_modal(...) → handle ModalOutcome
         elif search_mode → update search_query / navigate
-        else → normal mode dispatch (nav, open, add, edit, delete, prune, search, help, reorder)
+        else → normal mode dispatch (nav, switcher, open, add, edit, delete, prune, search, help, reorder)
     state.trigger_preview_load()  // after any navigation event
 }
 ```
 
 ### TuiAction Routing
-- **`Quit`**, **`Open`**, **`New`**, **`NewFromIssue`**, **`NewFromPr`**, **`EditPerRepoConfig`**, **`RunAction`**, **`RunWorkflow`** — returned from `event_loop` to the caller, which leaves the TUI and executes the action.
+- **`Quit`**, **`Open`**, **`OpenSwitcher`**, **`New`**, **`NewFromIssue`**, **`NewFromPr`**, **`EditPerRepoConfig`**, **`RunAction`**, **`RunWorkflow`** — returned from `event_loop` to the caller, which leaves the TUI and executes the action.
 - **Modal outcomes** (`Submit`, `SubmitEdit`, `DeleteConfirmed`, `SessionDeleteConfirmed`) — processed in-place via `TuiCallbacks` closures + `reload_fn`. The TUI never leaves the alternate screen.
 - **`DeleteConfirmed`** → `apply_delete_project` → `delete_project_fn` + `reload_fn` → `apply_reloaded_entries` + clamp cursor.
 - **`Submit`** → `apply_add_project` → `add_project_fn` + `reload_fn` → `apply_reloaded_entries` + move cursor to new entry.

@@ -738,6 +738,18 @@ fn cmd_tui() -> z_core::error::Result<()> {
             TuiAction::RunWorkflow { project, workflow } => {
                 cmd_autopilot_run(&project, &workflow)?;
             }
+            TuiAction::OpenSwitcher { selected_project } => {
+                match cmd_switch_from_dashboard(selected_project, resolve_session_env(), &global) {
+                    DashboardSwitchOutcome::Return {
+                        selected_project,
+                        status_message: next_status,
+                    } => {
+                        initial_project = selected_project;
+                        status_message = next_status;
+                    }
+                    DashboardSwitchOutcome::Exit => return Ok(()),
+                }
+            }
         }
     }
 }
@@ -1764,6 +1776,216 @@ fn log_switch_event(message: &str, level: LogLevel) {
     let _ = logger.log(level, &format!("switch: {message}"));
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SwitchExecution {
+    Noop,
+    SwitchInsideZellij,
+    AttachOutsideZellij,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DashboardSwitchOutcome {
+    Return {
+        selected_project: Option<String>,
+        status_message: Option<String>,
+    },
+    Exit,
+}
+
+fn dashboard_switch_return(
+    selected_project: Option<String>,
+    status_message: Option<String>,
+) -> DashboardSwitchOutcome {
+    DashboardSwitchOutcome::Return {
+        selected_project,
+        status_message,
+    }
+}
+
+fn selected_project_for_session(session_name: &str, fallback: Option<String>) -> Option<String> {
+    parse_session_name(session_name)
+        .map(|(project, _)| project)
+        .or(fallback)
+}
+
+fn decide_switch_execution(current_session: Option<&str>, selected: &str) -> SwitchExecution {
+    match current_session.filter(|session| !session.is_empty()) {
+        Some(current) if current == selected => SwitchExecution::Noop,
+        Some(_) => SwitchExecution::SwitchInsideZellij,
+        None => SwitchExecution::AttachOutsideZellij,
+    }
+}
+
+fn build_sorted_switch_entries(
+    sessions: Vec<(String, Option<String>)>,
+    metadata: Option<&z_core::domain::WorktreeMetadataFile>,
+    discovered: &[z_core::domain::DiscoveredWorktree],
+    global: &GlobalConfig,
+    session_activity: &z_core::activity::SessionActivity,
+) -> Vec<z_tui::SwitchSessionEntry> {
+    let mut entries =
+        build_switch_entries(sessions, metadata, discovered, global, session_activity);
+    z_tui::sort_switch_entries(&mut entries, &global.switcher.priority);
+    entries
+}
+
+fn load_local_switch_entries(global: &GlobalConfig) -> Vec<z_tui::SwitchSessionEntry> {
+    let activity = activity_store::FileActivityStore::default().load_activity();
+    let discovered = discover_local_worktrees().unwrap_or_default();
+    let metadata = worktree_metadata_store::LocalWorktreeMetadataStore::default()
+        .read_metadata()
+        .ok();
+    let sessions = list_all_z_sessions_with_ages();
+    build_sorted_switch_entries(sessions, metadata.as_ref(), &discovered, global, &activity)
+}
+
+fn switch_to_session_inside_zellij(session_name: &str) -> z_core::error::Result<()> {
+    let output = std::process::Command::new("zellij")
+        .args(["action", "switch-session", session_name])
+        .output()
+        .map_err(|e| z_core::error::ZError::Session(e.to_string()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(z_core::error::ZError::Session(format!(
+        "zellij action switch-session failed: {}",
+        stderr.trim()
+    )))
+}
+
+fn session_from_name(session_name: &str) -> z_core::error::Result<Session> {
+    let (project, branch) = parse_session_name(session_name).ok_or_else(|| {
+        z_core::error::ZError::Session(format!(
+            "invalid z session name {:?}: expected project:branch",
+            session_name
+        ))
+    })?;
+    Ok(Session {
+        name: session_name.to_string(),
+        project,
+        branch,
+    })
+}
+
+fn attach_session_outside_zellij(session_name: &str) -> z_core::error::Result<()> {
+    let session = session_from_name(session_name)?;
+    (ZellijSessionManager {
+        bin_path: resolve_bin_path(),
+    })
+    .attach_session(&session)
+}
+
+fn record_successful_session_entry(session_name: &str) {
+    z_core::session_entry::record_session_attach(
+        &activity_store::FileActivityStore::default(),
+        session_name,
+    );
+    clear_metadata_after_session_entry(session_name);
+}
+
+fn execute_switch_selection(
+    current_session: Option<&str>,
+    selected: &str,
+) -> z_core::error::Result<SwitchExecution> {
+    let execution = decide_switch_execution(current_session, selected);
+    match execution {
+        SwitchExecution::Noop => Ok(SwitchExecution::Noop),
+        SwitchExecution::SwitchInsideZellij => {
+            switch_to_session_inside_zellij(selected)?;
+            record_successful_session_entry(selected);
+            Ok(SwitchExecution::SwitchInsideZellij)
+        }
+        SwitchExecution::AttachOutsideZellij => {
+            attach_session_outside_zellij(selected)?;
+            record_successful_session_entry(selected);
+            Ok(SwitchExecution::AttachOutsideZellij)
+        }
+    }
+}
+
+fn cmd_switch_from_dashboard(
+    selected_project: Option<String>,
+    current_session: Option<String>,
+    global: &GlobalConfig,
+) -> DashboardSwitchOutcome {
+    let lock = match acquire_switch_lock("/tmp/z-switch.lock") {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            log_switch_event("dashboard lock busy after wait", LogLevel::Warning);
+            return dashboard_switch_return(
+                selected_project,
+                Some("Session switcher is already open.".to_string()),
+            );
+        }
+        Err(e) => {
+            log_switch_event(
+                &format!("dashboard lock acquisition failed: {e}"),
+                LogLevel::Error,
+            );
+            return dashboard_switch_return(
+                selected_project,
+                Some(format!("Session switcher failed: {e}")),
+            );
+        }
+    };
+
+    let switch_entries = load_local_switch_entries(global);
+    log_switch_event(
+        &format!("dashboard built {} switch entrie(s)", switch_entries.len()),
+        LogLevel::Info,
+    );
+    if switch_entries.is_empty() {
+        return dashboard_switch_return(
+            selected_project,
+            Some("No active local z sessions found.".to_string()),
+        );
+    }
+
+    let picker_current = current_session.clone().unwrap_or_default();
+    let selected = match z_tui::run_switch_picker_with_entries(switch_entries, picker_current) {
+        Ok(selected) => selected,
+        Err(e) => {
+            log_switch_event(&format!("dashboard picker failed: {e}"), LogLevel::Error);
+            return dashboard_switch_return(
+                selected_project,
+                Some(format!("Session switcher failed: {e}")),
+            );
+        }
+    };
+
+    let Some(session_name) = selected else {
+        log_switch_event("dashboard picker returned no selection", LogLevel::Info);
+        return dashboard_switch_return(selected_project, None);
+    };
+    let target_project = selected_project_for_session(&session_name, selected_project);
+
+    drop(lock);
+    match execute_switch_selection(current_session.as_deref(), &session_name) {
+        Ok(SwitchExecution::Noop) => {
+            dashboard_switch_return(target_project, Some(format!("Already in {session_name}.")))
+        }
+        Ok(SwitchExecution::SwitchInsideZellij) => {
+            log_switch_event(
+                &format!("dashboard switched to {session_name}"),
+                LogLevel::Info,
+            );
+            DashboardSwitchOutcome::Exit
+        }
+        Ok(SwitchExecution::AttachOutsideZellij) => dashboard_switch_return(
+            target_project,
+            Some(format!("Returned from {session_name}.")),
+        ),
+        Err(e) => {
+            log_switch_event(
+                &format!("dashboard switch failed for {session_name}: {e}"),
+                LogLevel::Error,
+            );
+            dashboard_switch_return(target_project, Some(format!("Session switch failed: {e}")))
+        }
+    }
+}
+
 /// Launch the interactive session switch picker.
 ///
 /// Guard: must be run inside a Zellij session (`$Z_SESSION_NAME` or `$ZELLIJ_SESSION_NAME` set).
@@ -1788,19 +2010,7 @@ fn cmd_switch() -> z_core::error::Result<()> {
     };
 
     let global = load_global_config();
-    let activity = activity_store::FileActivityStore::default().load_activity();
-    let discovered = discover_local_worktrees().unwrap_or_default();
-    let metadata = worktree_metadata_store::LocalWorktreeMetadataStore::default()
-        .read_metadata()
-        .ok();
-    let sessions = list_all_z_sessions_with_ages();
-    log_switch_event(
-        &format!("listed {} active z session(s)", sessions.len()),
-        LogLevel::Info,
-    );
-    let mut switch_entries =
-        build_switch_entries(sessions, metadata.as_ref(), &discovered, &global, &activity);
-    z_tui::sort_switch_entries(&mut switch_entries, &global.switcher.priority);
+    let switch_entries = load_local_switch_entries(&global);
     log_switch_event(
         &format!("built {} switch entrie(s)", switch_entries.len()),
         LogLevel::Info,
@@ -1815,7 +2025,7 @@ fn cmd_switch() -> z_core::error::Result<()> {
         return Ok(());
     }
 
-    let selected = z_tui::run_switch_picker_with_entries(switch_entries, current_session)
+    let selected = z_tui::run_switch_picker_with_entries(switch_entries, current_session.clone())
         .map_err(|e| z_core::error::ZError::Io(e.to_string()))?;
 
     if let Some(session_name) = selected {
@@ -1824,34 +2034,19 @@ fn cmd_switch() -> z_core::error::Result<()> {
         // can move the client away from the pane that launched this process.
         drop(lock);
 
-        let output = std::process::Command::new("zellij")
-            .args(["action", "switch-session", &session_name])
-            .output()
-            .map_err(|e| z_core::error::ZError::Session(e.to_string()))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log_switch_event(
-                &format!(
-                    "zellij switch-session failed: status={} stderr={}",
-                    output.status,
-                    stderr.trim()
-                ),
-                LogLevel::Error,
-            );
-            return Err(z_core::error::ZError::Session(format!(
-                "zellij action switch-session failed: {}",
-                stderr.trim()
-            )));
+        match execute_switch_selection(Some(&current_session), &session_name)? {
+            SwitchExecution::Noop => log_switch_event(
+                &format!("selected current session {session_name}; no-op"),
+                LogLevel::Info,
+            ),
+            SwitchExecution::SwitchInsideZellij => log_switch_event(
+                &format!("zellij switched to {session_name}"),
+                LogLevel::Info,
+            ),
+            SwitchExecution::AttachOutsideZellij => {
+                unreachable!("z switch always has current session")
+            }
         }
-        log_switch_event(
-            &format!("zellij switched to {session_name}"),
-            LogLevel::Info,
-        );
-        z_core::session_entry::record_session_attach(
-            &activity_store::FileActivityStore::default(),
-            &session_name,
-        );
-        clear_metadata_after_session_entry(&session_name);
     } else {
         log_switch_event("picker returned no selection", LogLevel::Info);
     }
@@ -2662,6 +2857,66 @@ mod tests {
             entries[0].activity.as_ref().map(|activity| activity.state),
             Some(z_tui::SwitchAgentActivityState::Waiting)
         );
+    }
+
+    #[test]
+    fn decide_switch_execution_handles_noop_inside_and_outside() {
+        assert_eq!(
+            decide_switch_execution(Some("myapp:main"), "myapp:main"),
+            SwitchExecution::Noop
+        );
+        assert_eq!(
+            decide_switch_execution(Some("myapp:main"), "api:main"),
+            SwitchExecution::SwitchInsideZellij
+        );
+        assert_eq!(
+            decide_switch_execution(None, "api:main"),
+            SwitchExecution::AttachOutsideZellij
+        );
+        assert_eq!(
+            decide_switch_execution(Some(""), "api:main"),
+            SwitchExecution::AttachOutsideZellij
+        );
+    }
+
+    #[test]
+    fn selected_project_for_session_prefers_session_project_then_fallback() {
+        assert_eq!(
+            selected_project_for_session("myapp:feat-login", Some("fallback".to_string())),
+            Some("myapp".to_string())
+        );
+        assert_eq!(
+            selected_project_for_session("invalid", Some("fallback".to_string())),
+            Some("fallback".to_string())
+        );
+        assert_eq!(selected_project_for_session("invalid", None), None);
+    }
+
+    #[test]
+    fn build_sorted_switch_entries_applies_switcher_priority() {
+        let first_project = test_project_name("recent-first");
+        let second_project = test_project_name("recent-second");
+        let first_session = format!("{first_project}:main");
+        let second_session = format!("{second_project}:main");
+        let mut activity = z_core::activity::SessionActivity::new();
+        activity.insert(first_session.clone(), 10);
+        activity.insert(second_session.clone(), 20);
+        let mut global = GlobalConfig::default();
+        global.switcher.priority = vec![z_core::config::SwitcherPriorityCriterion::Recent];
+
+        let entries = build_sorted_switch_entries(
+            vec![
+                (first_session.clone(), None),
+                (second_session.clone(), None),
+            ],
+            None,
+            &[],
+            &global,
+            &activity,
+        );
+
+        assert_eq!(entries[0].session_name, second_session);
+        assert_eq!(entries[1].session_name, first_session);
     }
 
     #[test]

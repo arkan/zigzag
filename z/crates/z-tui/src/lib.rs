@@ -39,7 +39,7 @@ pub fn fuzzy_match(query: &str, target: &str) -> bool {
 
 use crossterm::{
     cursor::Show,
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -173,6 +173,8 @@ pub enum TuiAction {
     },
     /// User selected an autopilot workflow from the workflow selector.
     RunWorkflow { project: String, workflow: String },
+    /// User pressed `s` or `Alt+k` to open the local session switcher.
+    OpenSwitcher { selected_project: Option<String> },
 }
 
 /// All callbacks the TUI can invoke to mutate external state without leaving
@@ -2087,6 +2089,10 @@ fn event_loop<B: Backend>(
             }
 
             // ── Normal mode ────────────────────────────────────────────────
+            if let Some(action) = dashboard_switcher_action_for_key(&key, state) {
+                return Ok(action);
+            }
+
             let vim = state.navigation == Navigation::Vim;
 
             let is_up =
@@ -2329,6 +2335,24 @@ fn event_loop<B: Backend>(
             state.trigger_preview_load();
         }
     }
+}
+
+fn open_switcher_action(state: &TuiState) -> TuiAction {
+    TuiAction::OpenSwitcher {
+        selected_project: state
+            .selected_entry()
+            .map(|entry| entry.project.name.clone()),
+    }
+}
+
+fn dashboard_switcher_action_for_key(key: &KeyEvent, state: &TuiState) -> Option<TuiAction> {
+    if key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::ALT) {
+        return Some(open_switcher_action(state));
+    }
+    if key.code == KeyCode::Char('s') && key.modifiers.is_empty() {
+        return Some(open_switcher_action(state));
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -2904,9 +2928,9 @@ fn render_status(f: &mut Frame, area: Rect, state: &TuiState) {
     };
 
     let hints = if compact {
-        " Enter open · Tab panel · / search · ? help"
+        " Enter open · s switch · / search · ? help"
     } else {
-        " [o]pen [n]ew [r]un action [K]ill session [d]el worktree [D]octor [A]dd [E]dit [X]del project [e]config [/]search [?]help [q]uit"
+        " [o]pen [s]witch [n]ew [r]un [K]ill [d]el wt [D]octor [A]dd [E]dit [e]config [X]del project [/]search [?]help [q]uit"
     };
     let content = if compact {
         hints.to_string()
@@ -3300,6 +3324,10 @@ fn render_help_modal(f: &mut Frame, theme: &z_core::theme::Theme) {
         )),
         Line::from(""),
         Line::from(Span::styled(" Session", heading)),
+        Line::from(Span::styled(
+            "   s / Alt+k        Switch local session",
+            normal,
+        )),
         Line::from(Span::styled(
             "   Ctrl+O \u{2192} D      Detach (return to z)",
             normal,
@@ -3747,11 +3775,13 @@ impl SwitchPickerState {
         if sessions.is_empty() {
             return 0;
         }
+        if current.is_empty() {
+            return 0;
+        }
         match sessions.iter().position(|s| s == current) {
             Some(i) if i + 1 < sessions.len() => i + 1,
             Some(i) if i > 0 => i - 1,
             Some(_) => 0,
-            None if sessions.len() >= 2 => 1,
             None => 0,
         }
     }
@@ -4970,6 +5000,7 @@ mod tests {
         assert!(out.contains("[d]"), "should show [d] hint");
         assert!(out.contains("[e]"), "should show [e] edit config hint");
         assert!(out.contains("[r]"), "should show [r] run action hint");
+        assert!(out.contains("[s]"), "should show [s] switch hint");
     }
 
     #[test]
@@ -5014,6 +5045,77 @@ mod tests {
         assert!(
             state.selected_entry().is_none(),
             "empty state should have no selected entry"
+        );
+    }
+
+    #[test]
+    fn s_key_returns_open_switcher_with_selected_project() {
+        let state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
+
+        let action = dashboard_switcher_action_for_key(
+            &event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+            &state,
+        );
+
+        assert_eq!(
+            action,
+            Some(TuiAction::OpenSwitcher {
+                selected_project: Some("myapp".to_string())
+            })
+        );
+    }
+
+    #[test]
+    fn s_key_without_projects_opens_switcher_without_selected_project() {
+        let state = TuiState::new(
+            vec![],
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
+
+        let action = dashboard_switcher_action_for_key(
+            &event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+            &state,
+        );
+
+        assert_eq!(
+            action,
+            Some(TuiAction::OpenSwitcher {
+                selected_project: None
+            })
+        );
+    }
+
+    #[test]
+    fn alt_k_in_vim_mode_opens_switcher_without_moving_selection() {
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Vim,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
+        state.selected_project = 1;
+
+        let action = dashboard_switcher_action_for_key(
+            &event::KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT),
+            &state,
+        );
+
+        assert_eq!(state.selected_project, 1, "Alt+k should not move up");
+        assert_eq!(
+            action,
+            Some(TuiAction::OpenSwitcher {
+                selected_project: Some("hermes".to_string())
+            })
         );
     }
 
@@ -9180,6 +9282,10 @@ mod tests {
             out.contains("Kill active session"),
             "help modal should describe 'K' key"
         );
+        assert!(
+            out.contains("Switch local session"),
+            "help modal should describe switch shortcut"
+        );
     }
 
     #[test]
@@ -10070,7 +10176,16 @@ mod tests {
             vec!["alpha:main".to_string(), "beta:dev".to_string()],
             "unknown:session".to_string(),
         );
-        assert_eq!(state.selected, 1, "with 2+ sessions, default to second");
+        assert_eq!(state.selected, 0, "without a matching current, use first");
+    }
+
+    #[test]
+    fn switch_picker_initial_selection_empty_current_uses_first_session() {
+        let state = SwitchPickerState::new(
+            vec!["alpha:main".to_string(), "beta:dev".to_string()],
+            String::new(),
+        );
+        assert_eq!(state.selected, 0, "empty current should not skip first");
     }
 
     #[test]
