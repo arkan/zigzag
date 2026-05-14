@@ -39,7 +39,7 @@ event_loop(&mut terminal, &mut state, &callbacks) — 100ms poll cycle
     ↓
 disable_raw_mode + LeaveAlternateScreen
     ↓
-return TuiAction (Quit | Open { project, session } | New { project, branch } | NewFromIssue/Pr | EditPerRepoConfig | RunAction | RunWorkflow)
+return TuiAction (Quit | Open { project, session } | SwitchToSession { session } | New { project, branch } | NewFromIssue/Pr | EditPerRepoConfig | RunAction | RunWorkflow)
 ```
 
 ### Event loop cycle
@@ -53,7 +53,7 @@ each iteration:
 ```
 
 ### Standalone pickers
-Three functions (`run_switch_picker`, `run_log_viewer`, `run_action_picker`) manage their own terminal lifecycle and render without `TuiState`. They live in `lib.rs` and reuse `Modal::LogViewer` / `Modal::ActionMenu` + `advance_modal` for key dispatch.
+Three functions (`run_switch_picker`, `run_log_viewer`, `run_action_picker`) manage their own terminal lifecycle and render without `TuiState`. They live in `lib.rs`; the dashboard also reuses the switch picker renderer as `Modal::SwitchPicker`.
 
 ### Preview pipeline (two-phase)
 1. Phase 1 (git info) — spawned on cursor change
@@ -80,7 +80,7 @@ All public items exported from `lib.rs`:
 - `pub fn run_tui(...) -> io::Result<TuiAction>` — main TUI event loop
 - `pub fn render(f: &mut Frame, state: &TuiState)` — draw current state (used by tests)
 - `pub fn fuzzy_match(query: &str, target: &str) -> bool` — fuzzy filter helper
-- `pub fn run_switch_picker(...) -> io::Result<Option<String>>` — standalone session picker
+- `pub fn run_switch_picker(...) -> io::Result<Option<String>>` — standalone session picker; dashboard `s` / `Alt+k` uses the same picker state as a modal overlay
 - `pub fn run_log_viewer(lines: Vec<String>) -> io::Result<()>` — standalone log viewer
 - `pub fn run_action_picker(actions: Vec<ResolvedAction>) -> io::Result<Option<ResolvedAction>>` — standalone action menu
 

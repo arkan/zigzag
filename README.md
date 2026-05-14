@@ -94,7 +94,7 @@ Then use:
 | `↑` / `↓` | Move in the current list |
 | `←` / `→` or `Tab` | Switch between Projects and Worktrees |
 | `Enter` or `o` | Open/restore the selected worktree session |
-| `s` or `Alt+k` | Pick another local active `z` session |
+| `s` or `Alt+k` | Open the local active-session switcher modal |
 | `n` | Create a new worktree + session from a branch, issue, or PR |
 | `/` | Fuzzy search |
 | `?` | Show in-app help |
@@ -124,7 +124,7 @@ Inside a session, press `Ctrl+O`, then `D` to detach. The Zellij session keeps r
 | Key | Action |
 |---|---|
 | `o` / `Enter` | Open/restore selected project or worktree |
-| `s` / `Alt+k` | Pick another local active `z` session |
+| `s` / `Alt+k` | Open the local active-session switcher modal |
 | `n` | New worktree + session |
 | `r` | Run action menu |
 | `a` | Autopilot workflows |

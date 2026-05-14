@@ -632,6 +632,17 @@ fn cmd_tui() -> z_core::error::Result<()> {
                 let notifications = load_notification_aliases();
                 Ok((entries, notifications))
             },
+            load_switch_entries_fn: &|| {
+                let entries = load_local_switch_entries(&global);
+                log_switch_event(
+                    &format!("dashboard modal built {} switch entrie(s)", entries.len()),
+                    LogLevel::Info,
+                );
+                Ok(z_tui::SwitchEntriesSnapshot {
+                    entries,
+                    current_session: resolve_session_env().unwrap_or_default(),
+                })
+            },
         };
 
         let action = z_tui::run_tui(
@@ -738,8 +749,8 @@ fn cmd_tui() -> z_core::error::Result<()> {
             TuiAction::RunWorkflow { project, workflow } => {
                 cmd_autopilot_run(&project, &workflow)?;
             }
-            TuiAction::OpenSwitcher { selected_project } => {
-                match cmd_switch_from_dashboard(selected_project, resolve_session_env(), &global) {
+            TuiAction::SwitchToSession { session } => {
+                match cmd_switch_selection_from_dashboard(session, resolve_session_env()) {
                     DashboardSwitchOutcome::Return {
                         selected_project,
                         status_message: next_status,
@@ -1904,17 +1915,17 @@ fn execute_switch_selection(
     }
 }
 
-fn cmd_switch_from_dashboard(
-    selected_project: Option<String>,
+fn cmd_switch_selection_from_dashboard(
+    session_name: String,
     current_session: Option<String>,
-    global: &GlobalConfig,
 ) -> DashboardSwitchOutcome {
+    let target_project = selected_project_for_session(&session_name, None);
     let lock = match acquire_switch_lock("/tmp/z-switch.lock") {
         Ok(Some(lock)) => lock,
         Ok(None) => {
             log_switch_event("dashboard lock busy after wait", LogLevel::Warning);
             return dashboard_switch_return(
-                selected_project,
+                target_project,
                 Some("Session switcher is already open.".to_string()),
             );
         }
@@ -1924,41 +1935,11 @@ fn cmd_switch_from_dashboard(
                 LogLevel::Error,
             );
             return dashboard_switch_return(
-                selected_project,
+                target_project,
                 Some(format!("Session switcher failed: {e}")),
             );
         }
     };
-
-    let switch_entries = load_local_switch_entries(global);
-    log_switch_event(
-        &format!("dashboard built {} switch entrie(s)", switch_entries.len()),
-        LogLevel::Info,
-    );
-    if switch_entries.is_empty() {
-        return dashboard_switch_return(
-            selected_project,
-            Some("No active local z sessions found.".to_string()),
-        );
-    }
-
-    let picker_current = current_session.clone().unwrap_or_default();
-    let selected = match z_tui::run_switch_picker_with_entries(switch_entries, picker_current) {
-        Ok(selected) => selected,
-        Err(e) => {
-            log_switch_event(&format!("dashboard picker failed: {e}"), LogLevel::Error);
-            return dashboard_switch_return(
-                selected_project,
-                Some(format!("Session switcher failed: {e}")),
-            );
-        }
-    };
-
-    let Some(session_name) = selected else {
-        log_switch_event("dashboard picker returned no selection", LogLevel::Info);
-        return dashboard_switch_return(selected_project, None);
-    };
-    let target_project = selected_project_for_session(&session_name, selected_project);
 
     drop(lock);
     match execute_switch_selection(current_session.as_deref(), &session_name) {

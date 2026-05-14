@@ -73,7 +73,7 @@ Guard: must be inside a Zellij session. Parses `project:branch` from `ZELLIJ_SES
 `cmd_autopilot_run`: resolves project, loads workflows (built-in + per-repo), creates `CliStepExecutor` + `FileRunStore` + `DispatchNotifier` → `execute_workflow_run`. `CliStepExecutor::run_command` dispatches locally or via SSH.
 
 ### Other Flows
-- **Switch**: guarded by `ZELLIJ_SESSION_NAME`, uses global lock file (`/tmp/z-switch.lock`), lists z-managed sessions sorted by recent activity → `run_switch_picker` → `zellij action switch-session`.
+- **Switch**: `z switch` is guarded by `ZELLIJ_SESSION_NAME`, uses global lock file (`/tmp/z-switch.lock`), lists z-managed sessions sorted by recent activity → `run_switch_picker` → `zellij action switch-session`. Dashboard `s` / `Alt+k` uses the same entries in a modal overlay, then switches/attaches after the TUI exits.
 - **Pruning**: iterates all projects, finds orphaned sessions (no matching worktree) and worktrees (no matching session, excluding main/master) via `sanitize_branch_name` normalization, optionally kills/removes.
 - **Notifications**: `cmd_notify` → `DispatchNotifier::from_config` constructs notifier list from `GlobalConfig::notifications`, fans out to file + optional macOS/Telegram.
 

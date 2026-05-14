@@ -53,7 +53,7 @@ Phase 1 (git): spawned immediately on cursor change. Phase 2 (forge): spawned co
 
 Three functions operate without the full `TuiState`:
 
-- **`run_switch_picker`** — Renders a filtered session list with age/notification columns. Returns `Option<String>`. Standalone `SwitchPickerState` with its own `render_switch_picker` and `switch_picker_event_loop`.
+- **`run_switch_picker`** — Renders a filtered session list with age/notification columns. Returns `Option<String>`. Standalone `SwitchPickerState` with its own `render_switch_picker` and `switch_picker_event_loop`; the dashboard also embeds `SwitchPickerState` as `Modal::SwitchPicker`.
 - **`run_log_viewer`** — Full-screen scrolled log display. Reuses `Modal::LogViewer` + `advance_modal`.
 - **`run_action_picker`** — Full-screen action menu. Reuses `Modal::ActionMenu` + `advance_modal`.
 
@@ -123,7 +123,7 @@ loop {
 ```
 
 ### TuiAction Routing
-- **`Quit`**, **`Open`**, **`OpenSwitcher`**, **`New`**, **`NewFromIssue`**, **`NewFromPr`**, **`EditPerRepoConfig`**, **`RunAction`**, **`RunWorkflow`** — returned from `event_loop` to the caller, which leaves the TUI and executes the action.
+- **`Quit`**, **`Open`**, **`SwitchToSession`**, **`New`**, **`NewFromIssue`**, **`NewFromPr`**, **`EditPerRepoConfig`**, **`RunAction`**, **`RunWorkflow`** — returned from `event_loop` to the caller, which leaves the TUI and executes the action.
 - **Modal outcomes** (`Submit`, `SubmitEdit`, `DeleteConfirmed`, `SessionDeleteConfirmed`) — processed in-place via `TuiCallbacks` closures + `reload_fn`. The TUI never leaves the alternate screen.
 - **`DeleteConfirmed`** → `apply_delete_project` → `delete_project_fn` + `reload_fn` → `apply_reloaded_entries` + clamp cursor.
 - **`Submit`** → `apply_add_project` → `add_project_fn` + `reload_fn` → `apply_reloaded_entries` + move cursor to new entry.

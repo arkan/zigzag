@@ -173,8 +173,14 @@ pub enum TuiAction {
     },
     /// User selected an autopilot workflow from the workflow selector.
     RunWorkflow { project: String, workflow: String },
-    /// User pressed `s` or `Alt+k` to open the local session switcher.
-    OpenSwitcher { selected_project: Option<String> },
+    /// User selected a local active session from the dashboard switcher modal.
+    SwitchToSession { session: String },
+}
+
+/// External session switcher data loaded by the CLI while the dashboard stays pure.
+pub struct SwitchEntriesSnapshot {
+    pub entries: Vec<SwitchSessionEntry>,
+    pub current_session: String,
 }
 
 /// All callbacks the TUI can invoke to mutate external state without leaving
@@ -194,6 +200,8 @@ pub struct TuiCallbacks<'a> {
     pub edit_project_fn: &'a dyn Fn(&str, &str, &str, Option<&str>, Option<&str>) -> io::Result<()>,
     pub delete_project_fn: &'a dyn Fn(&str) -> io::Result<()>,
     pub reload_fn: &'a dyn Fn() -> io::Result<(Vec<ProjectEntry>, HashSet<String>)>,
+    /// Load local active sessions for the dashboard switcher modal.
+    pub load_switch_entries_fn: &'a dyn Fn() -> io::Result<SwitchEntriesSnapshot>,
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +353,8 @@ pub enum Modal {
         actions: Vec<ResolvedAction>,
         selected: usize,
     },
+    /// Dashboard-local session switcher overlay.
+    SwitchPicker(SwitchPickerState),
 }
 
 /// Outcome of processing one keypress inside a modal.
@@ -408,6 +418,10 @@ enum ModalOutcome {
         project: String,
         branch: String,
         force: bool,
+    },
+    /// User selected a session from the dashboard switcher modal.
+    SwitchSelected {
+        session: String,
     },
 }
 
@@ -1685,6 +1699,25 @@ fn advance_modal(modal: &mut Modal, code: KeyCode) -> ModalOutcome {
             }
             _ => ModalOutcome::Continue,
         },
+
+        Modal::SwitchPicker(picker) => match code {
+            KeyCode::Esc | KeyCode::Char('q') => ModalOutcome::Close,
+            KeyCode::Up | KeyCode::Char('k') => {
+                picker.move_up();
+                ModalOutcome::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                picker.move_down();
+                ModalOutcome::Continue
+            }
+            KeyCode::Enter => match picker.selected_session() {
+                Some(session) => ModalOutcome::SwitchSelected {
+                    session: session.to_string(),
+                },
+                None => ModalOutcome::Close,
+            },
+            _ => ModalOutcome::Continue,
+        },
     }
 }
 
@@ -2051,6 +2084,10 @@ fn event_loop<B: Backend>(
                             }
                         }
                     }
+                    ModalOutcome::SwitchSelected { session } => {
+                        state.modal = None;
+                        return Ok(TuiAction::SwitchToSession { session });
+                    }
                     ModalOutcome::Continue => {}
                 }
                 continue;
@@ -2089,8 +2126,10 @@ fn event_loop<B: Backend>(
             }
 
             // ── Normal mode ────────────────────────────────────────────────
-            if let Some(action) = dashboard_switcher_action_for_key(&key, state) {
-                return Ok(action);
+            if is_dashboard_switcher_key(&key) {
+                open_switcher_modal(state, cb.load_switch_entries_fn);
+                state.trigger_preview_load();
+                continue;
             }
 
             let vim = state.navigation == Navigation::Vim;
@@ -2337,22 +2376,31 @@ fn event_loop<B: Backend>(
     }
 }
 
-fn open_switcher_action(state: &TuiState) -> TuiAction {
-    TuiAction::OpenSwitcher {
-        selected_project: state
-            .selected_entry()
-            .map(|entry| entry.project.name.clone()),
+fn is_dashboard_switcher_key(key: &KeyEvent) -> bool {
+    if key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::ALT) {
+        return true;
     }
+    key.code == KeyCode::Char('s') && key.modifiers.is_empty()
 }
 
-fn dashboard_switcher_action_for_key(key: &KeyEvent, state: &TuiState) -> Option<TuiAction> {
-    if key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::ALT) {
-        return Some(open_switcher_action(state));
+fn open_switcher_modal(
+    state: &mut TuiState,
+    load_switch_entries_fn: &dyn Fn() -> io::Result<SwitchEntriesSnapshot>,
+) {
+    match load_switch_entries_fn() {
+        Ok(snapshot) if snapshot.entries.is_empty() => {
+            state.status_message = Some("No active local z sessions found.".to_string());
+        }
+        Ok(snapshot) => {
+            state.modal = Some(Modal::SwitchPicker(SwitchPickerState::with_entries(
+                snapshot.entries,
+                snapshot.current_session,
+            )));
+        }
+        Err(e) => {
+            state.status_message = Some(format!("Session switcher failed: {e}"));
+        }
     }
-    if key.code == KeyCode::Char('s') && key.modifiers.is_empty() {
-        return Some(open_switcher_action(state));
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -3433,6 +3481,10 @@ fn render_modal(f: &mut Frame, state: &TuiState) {
             render_log_viewer_modal(f, lines, *scroll_offset, theme);
             return;
         }
+        Some(Modal::SwitchPicker(picker)) => {
+            render_switch_picker_modal(f, picker, theme);
+            return;
+        }
         Some(Modal::AddProject(form)) => (form, " Add Project "),
         Some(Modal::EditProject(form, _)) => (form, " Edit Project "),
     };
@@ -3753,6 +3805,7 @@ fn render_log_viewer_modal(
 // ---------------------------------------------------------------------------
 
 /// State for the `z switch` session picker TUI.
+#[derive(Debug, Clone)]
 pub struct SwitchPickerState {
     /// All z-managed session names, sorted alphabetically.
     pub sessions: Vec<String>,
@@ -4075,25 +4128,53 @@ fn entry_age_or_notification_age(entry: &SwitchSessionEntry, now_ms: u64) -> Str
 /// Render the session switch picker into the frame.
 fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core::theme::Theme) {
     let area = f.area();
+    render_switch_picker_in_area(f, state, theme, area, true);
+}
+
+fn render_switch_picker_modal(
+    f: &mut Frame,
+    state: &SwitchPickerState,
+    theme: &z_core::theme::Theme,
+) {
+    let area = switch_picker_modal_area(f.area(), state);
+    render_switch_picker_in_area(f, state, theme, area, false);
+}
+
+fn render_switch_picker_in_area(
+    f: &mut Frame,
+    state: &SwitchPickerState,
+    theme: &z_core::theme::Theme,
+    area: Rect,
+    fill_full_background: bool,
+) {
     let compact = is_compact_switch_picker(area);
     let now_ms = unix_now_ms_for_render();
-    let picker_area = if compact {
+    let picker_area = if fill_full_background && compact {
         compact_switch_picker_area(area, state)
     } else {
         area
     };
 
-    // Fill background
+    let background = if fill_full_background {
+        theme.background
+    } else {
+        theme.modal_background
+    };
     let bg_style = Style::default()
-        .bg(rgb_to_color(theme.background))
+        .bg(rgb_to_color(background))
         .fg(rgb_to_color(theme.foreground));
-    f.render_widget(Block::default().style(bg_style), area);
+    if fill_full_background {
+        f.render_widget(Block::default().style(bg_style), area);
+    } else {
+        f.render_widget(Clear, picker_area);
+    }
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Switch Session ")
         .title_style(theme_style_to_style(&theme.modal_title))
-        .border_style(theme_style_to_style(&theme.modal_border));
+        .border_style(theme_style_to_style(&theme.modal_border))
+        .style(bg_style);
     let inner = block.inner(picker_area);
     f.render_widget(block, picker_area);
 
@@ -4152,7 +4233,7 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
     let mut list_state = ListState::default();
     list_state.select(Some(state.selected));
 
-    let list = List::new(items);
+    let list = List::new(items).style(bg_style);
     f.render_stateful_widget(list, chunks[0], &mut list_state);
 
     if show_detail {
@@ -4166,8 +4247,28 @@ fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &z_core
             " j/k navigate  Enter switch  Esc close"
         },
         theme_style_to_style(&theme.text_dim),
-    )));
+    )))
+    .style(bg_style);
     f.render_widget(footer, chunks[chunks.len() - 1]);
+}
+
+fn switch_picker_modal_area(area: Rect, state: &SwitchPickerState) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return area;
+    }
+
+    let visible_items = state.entries.len().clamp(1, 10) as u16;
+    let detail_height = selected_switch_detail_height(state);
+    let desired_height = visible_items + detail_height + 3; // borders + footer
+    let max_height = area.height.saturating_sub(2).max(1);
+    let min_height = 5.min(max_height);
+    let height = desired_height.clamp(min_height, max_height);
+
+    let max_width = area.width.saturating_sub(4).max(1);
+    let min_width = 32.min(max_width);
+    let width = max_width.min(92).max(min_width);
+
+    modal_rect(width, height, area)
 }
 
 fn is_compact_switch_picker(area: Rect) -> bool {
@@ -4841,6 +4942,24 @@ mod tests {
         ]
     }
 
+    fn switch_entry(session_name: &str) -> SwitchSessionEntry {
+        SwitchSessionEntry {
+            session_name: session_name.to_string(),
+            age: None,
+            notification_count: 0,
+            notifications: Vec::new(),
+            activity: None,
+            last_attach: None,
+        }
+    }
+
+    fn switch_snapshot() -> SwitchEntriesSnapshot {
+        SwitchEntriesSnapshot {
+            entries: vec![switch_entry("myapp:main"), switch_entry("hermes:main")],
+            current_session: "myapp:main".to_string(),
+        }
+    }
+
     fn make_git_info() -> GitInfo {
         GitInfo {
             branch: "feat/login".to_string(),
@@ -5049,8 +5168,8 @@ mod tests {
     }
 
     #[test]
-    fn s_key_returns_open_switcher_with_selected_project() {
-        let state = TuiState::new(
+    fn s_key_opens_switcher_modal_with_entries() {
+        let mut state = TuiState::new(
             make_entries(),
             Navigation::Arrows,
             mock_forge(),
@@ -5058,44 +5177,46 @@ mod tests {
             mock_refresher(),
         );
 
-        let action = dashboard_switcher_action_for_key(
-            &event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
-            &state,
-        );
+        assert!(is_dashboard_switcher_key(&event::KeyEvent::new(
+            KeyCode::Char('s'),
+            KeyModifiers::NONE
+        )));
+        open_switcher_modal(&mut state, &|| Ok(switch_snapshot()));
 
-        assert_eq!(
-            action,
-            Some(TuiAction::OpenSwitcher {
-                selected_project: Some("myapp".to_string())
-            })
-        );
+        let Some(Modal::SwitchPicker(picker)) = state.modal else {
+            panic!("expected switch picker modal");
+        };
+        assert_eq!(picker.sessions, vec!["myapp:main", "hermes:main"]);
+        assert_eq!(picker.current_session, "myapp:main");
+        assert_eq!(picker.selected, 1, "current session should be skipped");
     }
 
     #[test]
-    fn s_key_without_projects_opens_switcher_without_selected_project() {
-        let state = TuiState::new(
-            vec![],
+    fn s_key_without_sessions_shows_status_without_modal() {
+        let mut state = TuiState::new(
+            make_entries(),
             Navigation::Arrows,
             mock_forge(),
             mock_remote_preview(),
             mock_refresher(),
         );
 
-        let action = dashboard_switcher_action_for_key(
-            &event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
-            &state,
-        );
-
-        assert_eq!(
-            action,
-            Some(TuiAction::OpenSwitcher {
-                selected_project: None
+        open_switcher_modal(&mut state, &|| {
+            Ok(SwitchEntriesSnapshot {
+                entries: Vec::new(),
+                current_session: String::new(),
             })
+        });
+
+        assert!(state.modal.is_none());
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("No active local z sessions found.")
         );
     }
 
     #[test]
-    fn alt_k_in_vim_mode_opens_switcher_without_moving_selection() {
+    fn alt_k_in_vim_mode_opens_switcher_modal_without_moving_selection() {
         let mut state = TuiState::new(
             make_entries(),
             Navigation::Vim,
@@ -5105,18 +5226,78 @@ mod tests {
         );
         state.selected_project = 1;
 
-        let action = dashboard_switcher_action_for_key(
-            &event::KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT),
-            &state,
-        );
+        assert!(is_dashboard_switcher_key(&event::KeyEvent::new(
+            KeyCode::Char('k'),
+            KeyModifiers::ALT
+        )));
+        open_switcher_modal(&mut state, &|| Ok(switch_snapshot()));
 
         assert_eq!(state.selected_project, 1, "Alt+k should not move up");
-        assert_eq!(
-            action,
-            Some(TuiAction::OpenSwitcher {
-                selected_project: Some("hermes".to_string())
-            })
+        assert!(matches!(state.modal, Some(Modal::SwitchPicker(_))));
+    }
+
+    #[test]
+    fn switcher_modal_enter_returns_selected_session() {
+        let mut modal = Modal::SwitchPicker(SwitchPickerState::with_entries(
+            vec![switch_entry("myapp:main"), switch_entry("hermes:main")],
+            String::new(),
+        ));
+
+        match advance_modal(&mut modal, KeyCode::Enter) {
+            ModalOutcome::SwitchSelected { session } => assert_eq!(session, "myapp:main"),
+            _ => panic!("expected selected session"),
+        }
+    }
+
+    #[test]
+    fn open_switcher_modal_then_enter_produces_switch_action() {
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
         );
+
+        open_switcher_modal(&mut state, &|| Ok(switch_snapshot()));
+        let outcome = match state.modal.as_mut() {
+            Some(modal) => advance_modal(modal, KeyCode::Enter),
+            None => panic!("expected switcher modal"),
+        };
+
+        match outcome {
+            ModalOutcome::SwitchSelected { session } => {
+                let action = TuiAction::SwitchToSession { session };
+                assert_eq!(
+                    action,
+                    TuiAction::SwitchToSession {
+                        session: "hermes:main".to_string()
+                    }
+                );
+            }
+            _ => panic!("expected switch action outcome"),
+        }
+    }
+
+    #[test]
+    fn renders_switcher_as_dashboard_modal() {
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
+        state.modal = Some(Modal::SwitchPicker(SwitchPickerState::with_entries(
+            vec![switch_entry("myapp:main"), switch_entry("hermes:main")],
+            "myapp:main".to_string(),
+        )));
+
+        let out = render_to_string(&state, 100, 30);
+        assert!(out.contains("Switch Session"));
+        assert!(out.contains("myapp:main"));
+        assert!(out.contains("hermes:main"));
+        assert!(out.contains("Enter switch"));
     }
 
     #[test]
