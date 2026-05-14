@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use zigzag_core::domain::{derive_session_name, Session, SessionLink, WorktreeIdentity, WorktreeStatus};
+use zigzag_core::domain::{
+    derive_session_name, Session, SessionLink, WorktreeIdentity, WorktreeStatus,
+};
 
 use crate::ProjectEntry;
 
@@ -66,7 +68,10 @@ pub fn merge_refresh(
     // Update sessions and Worktree session links per project, sorting by most-recent attach.
     for (proj_name, mut new_sessions) in data.sessions {
         if let Some(entry) = entries.iter_mut().find(|e| e.project.name == proj_name) {
-            zigzag_core::activity::sort_sessions_by_recent_attach(&mut new_sessions, &data.activity);
+            zigzag_core::activity::sort_sessions_by_recent_attach(
+                &mut new_sessions,
+                &data.activity,
+            );
             let sessions_by_name: HashMap<String, Session> = new_sessions
                 .iter()
                 .map(|session| (session.name.clone(), session.clone()))

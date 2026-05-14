@@ -1,4 +1,4 @@
-# z/crates/
+# zigzag/crates/
 
 <!--
   Codemap for the entire crate collection.
@@ -7,44 +7,44 @@
 
 ## Responsibility
 
-The `crates/` directory contains the entire `z` project as a **multi-crate workspace**.
+The `crates/` directory contains the entire `zigzag` project as a **multi-crate workspace**.
 Each crate is a focused, independently-versioned library (or binary) that composes
-to form the `z` CLI — a Zellij-based project manager for developers.
+to form the `zigzag` CLI — a Zellij-based project manager for developers.
 
 **Collection-level job**: Organise the system into clean architectural layers so that
 I/O-agnostic business logic, UI rendering, workflow automation, and future frontends
-(z-web, z-plugin) are fully decoupled.
+(zigzag-web, zigzag-plugin) are fully decoupled.
 
 ### Crate Dependency Graph
 
 ```
-z-core ─────────────────────────────────────────┐
+zigzag-core ─────────────────────────────────────────┐
   │                                              │
-  ├── z-tui  (depends on z-core + ratatui) ──────┤
+  ├── zigzag-tui  (depends on zigzag-core + ratatui) ──────┤
   │                                              │
-  ├── z-autopilot  (depends on z-core) ──────────┤
+  ├── zigzag-autopilot  (depends on zigzag-core) ──────────┤
   │                                              │
-  ├── z-cli  (depends on z-core, z-tui,          │
-  │           z-autopilot) ◄── produces `z` bin  │
+  ├── zigzag-cli  (depends on zigzag-core, zigzag-tui,          │
+  │           zigzag-autopilot) ◄── produces `zigzag` bin  │
   │                                              │
-  ├── z-web  (stub, depends on z-core) ──────────┤
+  ├── zigzag-web  (stub, depends on zigzag-core) ──────────┤
   │                                              │
-  └── z-plugin  (stub, depends on z-core) ───────┘
+  └── zigzag-plugin  (stub, depends on zigzag-core) ───────┘
 
-Key: no crate depends on z-cli, z-web, or z-plugin.
-     z-core is the sole foundation — zero z-dependencies.
+Key: no crate depends on zigzag-cli, zigzag-web, or zigzag-plugin.
+     zigzag-core is the sole foundation — zero reverse dependencies.
 ```
 
 ### Crate Roles
 
-| Crate | Role | Dependencies (z) | Phase |
+| Crate | Role | Dependencies | Phase |
 |-------|------|-------------------|-------|
-| `z-core` | I/O-agnostic business logic, domain types, traits | none | stable |
-| `z-tui` | ratatui-based TUI frontend | z-core | stable |
-| `z-autopilot` | State-machine workflow engine | z-core | phase 6 |
-| `z-cli` | Binary entry point — CLI commands + adapter wiring | z-core, z-tui, z-autopilot | stable |
-| `z-web` | Future web server with axum | z-core | phase 5 (stub) |
-| `z-plugin` | Future WASM Zellij plugin | z-core | phase 4 (stub) |
+| `zigzag-core` | I/O-agnostic business logic, domain types, traits | none | stable |
+| `zigzag-tui` | ratatui-based TUI frontend | zigzag-core | stable |
+| `zigzag-autopilot` | State-machine workflow engine | zigzag-core | phase 6 |
+| `zigzag-cli` | Binary entry point — CLI commands + adapter wiring | zigzag-core, zigzag-tui, zigzag-autopilot | stable |
+| `zigzag-web` | Future web server with axum | zigzag-core | phase 5 (stub) |
+| `zigzag-plugin` | Future WASM Zellij plugin | zigzag-core | phase 4 (stub) |
 
 ---
 
@@ -52,7 +52,7 @@ Key: no crate depends on z-cli, z-web, or z-plugin.
 
 ### 1. Trait-Based I/O Abstraction
 
-All side-effecting operations are behind traits defined in `z-core::traits`:
+All side-effecting operations are behind traits defined in `zigzag-core::traits`:
 
 - `ProjectStore` / `ProjectStoreWriter` — CRUD for projects
 - `SessionManager` — Zellij session lifecycle
@@ -63,21 +63,21 @@ All side-effecting operations are behind traits defined in `z-core::traits`:
 - `ActivityStore` — session attach-timestamp persistence
 - `WorktreeMetadataStore` — worktree-first metadata, pending notifications, and agent status
 
-**Adapters** live in `z-cli` (concrete implementations that shell out to
-`zellij`, `wt`, `gh`, the filesystem, etc.). This means `z-core` has
+**Adapters** live in `zigzag-cli` (concrete implementations that shell out to
+`zellij`, `wt`, `gh`, the filesystem, etc.). This means `zigzag-core` has
 zero I/O — it is purely data structures, parsing, and logic.
-`z-core` is fully testable without any external process.
+`zigzag-core` is fully testable without any external process.
 
 ### 2. Three-Tier Config Merging
 
 Configuration cascades: **hardcoded default < global config < per-repo config**.
 
-- **Hardcoded defaults**: `z-core::layout::default_layout()` — two-tab layout
+- **Hardcoded defaults**: `zigzag-core::layout::default_layout()` — two-tab layout
   (claude + shell)
-- **Global config**: `~/.config/z/config.kdl` — KDL file parsed by
-  `z-core::config::parse_global_config_kdl()`
-- **Per-repo config**: `<project-path>/.config/z.kdl` — KDL file parsed by
-  `z-core::config::parse_per_repo_config_kdl()`
+- **Global config**: `~/.config/zigzag/config.kdl` — KDL file parsed by
+  `zigzag-core::config::parse_global_config_kdl()`
+- **Per-repo config**: `<project-path>/.config/zigzag.kdl` — KDL file parsed by
+  `zigzag-core::config::parse_per_repo_config_kdl()`
 
 The lowest tier wins **entirely** — no partial merge (e.g. per-repo layout
 completely replaces global layout).
@@ -87,13 +87,13 @@ Same pattern for prompt templates (`issue-prompt-template`,
 
 ### 3. Callback-Driven TUI Mutation
 
-The TUI (`z-tui`) never directly performs I/O. It receives a `TuiCallbacks`
-struct of function pointers — closures provided by `z-cli` — that it invokes
+The TUI (`zigzag-tui`) never directly performs I/O. It receives a `TuiCallbacks`
+struct of function pointers — closures provided by `zigzag-cli` — that it invokes
 for side effects (add/edit/delete project, kill session, prune, reload).
 Operations that require leaving the alternate screen
 (e.g. `zellij attach-session`) return a `TuiAction` variant instead.
 
-This keeps `z-tui` pure UI logic — no knowledge of KDL, Zellij, or the
+This keeps `zigzag-tui` pure UI logic — no knowledge of KDL, Zellij, or the
 filesystem.
 
 ### 4. Two-Phase Async Preview Loading
@@ -137,7 +137,7 @@ Features:
 ### 8. Activity-Based MRU Sorting
 
 Session attach timestamps are persisted to a file via `ActivityStore`.
-The TUI and `z switch` picker use these timestamps to sort sessions with
+The TUI and `zigzag switch` picker use these timestamps to sort sessions with
 the most recently attached session first. Sessions with no recorded
 activity sort to the end (stable relative order).
 
@@ -206,7 +206,7 @@ cmd_open(project, branch, prompt)
   ├── If new:
   │   ├── WtWorktreeManager: find or create worktree for branch
   │   ├── Merge layout: hardcoded < global < per-repo
-  │   ├── Inject Z_SESSION_NAME env + optional prompt
+  │   ├── Inject ZIGZAG_SESSION_NAME env + optional prompt
   │   ├── Inject Claude stop hook (settings.json)
   │   ├── Apply theme
   │   └── ZellijSessionManager.create_session() with KDL layout
@@ -214,7 +214,7 @@ cmd_open(project, branch, prompt)
 ```
 
 **Remote variant** (project has `host`):
-- SSH into host, run `z open <project> <branch>` remotely via
+- SSH into host, run `zigzag open <project> <branch>` remotely via
   `ssh -t` or `mosh`
 
 ### Prune Flow
@@ -251,7 +251,7 @@ cmd_autopilot_run(project, workflow_name)
 
 ## Integration Points
 
-### External CLI Dependencies (shelled out by z-cli adapters)
+### External CLI Dependencies (shelled out by zigzag-cli adapters)
 
 | Tool | Used By | Purpose |
 |------|---------|---------|
@@ -265,39 +265,39 @@ cmd_autopilot_run(project, workflow_name)
 
 | Path | Format | Content | Adapter |
 |------|--------|---------|---------|
-| `~/.config/z/config.kdl` | KDL | Global config (layout, deps, notifications, actions) | `z-core::config` |
-| `~/.config/z/projects.kdl` | KDL | Project registry (name, path, host, transport) | `KdlProjectStore` |
-| `~/.config/z/worktree-metadata.json` | JSON | Worktree metadata, pending notifications, LLM status | `LocalWorktreeMetadataStore` / `RemoteWorktreeMetadataStore` |
-| `<project>/.config/z.kdl` | KDL | Per-repo config (layout, deploy, autopilot, actions) | `z-core::config` |
-| `~/.local/share/z/activity.json` | JSON | Session attach timestamps | `FileActivityStore` |
-| `~/.local/share/z/logs/*.log` | TSV | Structured event log | `FileLogger` |
-| `~/.local/share/z/autopilot/*.json` | JSON | In-progress workflow run state | `RunStore` (in z-autopilot) |
+| `~/.config/zigzag/config.kdl` | KDL | Global config (layout, deps, notifications, actions) | `zigzag-core::config` |
+| `~/.config/zigzag/projects.kdl` | KDL | Project registry (name, path, host, transport) | `KdlProjectStore` |
+| `~/.config/zigzag/worktree-metadata.json` | JSON | Worktree metadata, pending notifications, LLM status | `LocalWorktreeMetadataStore` / `RemoteWorktreeMetadataStore` |
+| `<project>/.config/zigzag.kdl` | KDL | Per-repo config (layout, deploy, autopilot, actions) | `zigzag-core::config` |
+| `~/.config/zigzag/session-activity.json` | JSON | Session attach timestamps | `FileActivityStore` |
+| `~/.local/state/zigzag/zigzag.log` | TSV | Structured event log | `FileLogger` |
+| `~/.local/share/zigzag/autopilot/*.json` | JSON | In-progress workflow run state | `RunStore` (in zigzag-autopilot) |
 
 ### Trait Contracts Between Crates
 
 ```
-z-core::traits::ProjectStore ────────────── KdlProjectStore (z-cli)
-z-core::traits::SessionManager ──────────── ZellijSessionManager (z-cli)
-z-core::traits::WorktreeManager ─────────── WtWorktreeManager (z-cli)
-z-core::traits::ForgeClient ─────────────── GhForgeClient (z-cli)
-z-core::traits::Notifier ────────────────── DispatchNotifier (z-cli)
-z-core::traits::SessionRefresher ────────── ZellijSessionRefresher (z-cli)
-z-core::activity::ActivityStore ─────────── FileActivityStore (z-cli)
-z-core::traits::WorktreeMetadataStore ───── LocalWorktreeMetadataStore / RemoteWorktreeMetadataStore (z-cli)
+zigzag-core::traits::ProjectStore ────────────── KdlProjectStore (zigzag-cli)
+zigzag-core::traits::SessionManager ──────────── ZellijSessionManager (zigzag-cli)
+zigzag-core::traits::WorktreeManager ─────────── WtWorktreeManager (zigzag-cli)
+zigzag-core::traits::ForgeClient ─────────────── GhForgeClient (zigzag-cli)
+zigzag-core::traits::Notifier ────────────────── DispatchNotifier (zigzag-cli)
+zigzag-core::traits::SessionRefresher ────────── ZellijSessionRefresher (zigzag-cli)
+zigzag-core::activity::ActivityStore ─────────── FileActivityStore (zigzag-cli)
+zigzag-core::traits::WorktreeMetadataStore ───── LocalWorktreeMetadataStore / RemoteWorktreeMetadataStore (zigzag-cli)
 
-z-tui::PreviewDataSource ────────────────── CliPreviewDataSource (z-cli)
-z-tui::TuiCallbacks ─────────────────────── closures (z-cli main.rs)
+zigzag-tui::PreviewDataSource ────────────────── CliPreviewDataSource (zigzag-cli)
+zigzag-tui::TuiCallbacks ─────────────────────── closures (zigzag-cli main.rs)
 
-z-autopilot::run_loop::RunStore ─────────── (z-cli, in autopilot_runner.rs)
+zigzag-autopilot::run_loop::RunStore ─────────── (zigzag-cli, in autopilot_runner.rs)
 ```
 
 ### Stub Crates (Future)
 
-- **`z-plugin`** (phase 4): WASM Zellij plugin — will embed z-core logic
+- **`zigzag-plugin`** (phase 4): WASM Zellij plugin — will embed zigzag-core logic
   into a Zellij plugin running inside the Zellij WASM runtime
-- **`z-web`** (phase 5): axum-based web server — will serve the same
+- **`zigzag-web`** (phase 5): axum-based web server — will serve the same
   project management capabilities over HTTP, potentially with a WASM-compiled
   ratatui frontend
 
-Both stubs depend on `z-core` and will reuse its domain types and traits,
+Both stubs depend on `zigzag-core` and will reuse its domain types and traits,
 with new adapters for their respective environments.

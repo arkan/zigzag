@@ -1,8 +1,8 @@
-# z/crates/z-autopilot/src/
+# zigzag/crates/zigzag-autopilot/src/
 
 ## Responsibility
 
-z-autopilot is the **state machine and workflow engine** for the z system. It
+zigzag-autopilot is the **state machine and workflow engine** for the Zigzag system. It
 defines, schedules, executes, and monitors automation workflows triggered by
 repository events (push, PR merge, review, Dependabot, manual). It owns:
 
@@ -55,7 +55,7 @@ Three traits define the boundary between the engine and its runtime environment:
 - **`RunStore`** (`run_loop.rs`) — `load_run`, `save_run`, `delete_run`.
   Abstracts persistence medium (filesystem in production, memory in tests).
 
-- **`Notifier`** (defined in `z-core::traits`) — `notify(&str, NotifyLevel) ->
+- **`Notifier`** (defined in `zigzag-core::traits`) — `notify(&str, NotifyLevel) ->
   Result<()>`. Abstracts notification channels (terminal, system notifications,
   etc.).
 
@@ -213,11 +213,11 @@ WorkflowRun {
 
 | Dependency | Module | Use |
 |-----------|--------|-----|
-| `z-core::config::AutopilotConfig` | `config.rs` | Project-level auto-push/review settings |
-| `z-core::config::parse_autopilot_config_doc` | `config.rs` | Parse config from KDL document |
-| `z-core::traits::Notifier` | `notify.rs`, `run_loop.rs` | Notification dispatch trait |
-| `z-core::domain::NotifyLevel` | `notify.rs` | Severity levels for notification |
-| `z-core::error::{Result, ZError}` | All modules | Error handling (ConfigParse, Io variants) |
+| `zigzag-core::config::AutopilotConfig` | `config.rs` | Project-level auto-push/review settings |
+| `zigzag-core::config::parse_autopilot_config_doc` | `config.rs` | Parse config from KDL document |
+| `zigzag-core::traits::Notifier` | `notify.rs`, `run_loop.rs` | Notification dispatch trait |
+| `zigzag-core::domain::NotifyLevel` | `notify.rs` | Severity levels for notification |
+| `zigzag-core::error::{Result, ZError}` | All modules | Error handling (ConfigParse, Io variants) |
 | `kdl` | `dsl.rs`, `config.rs` | KDL document parsing |
 
 ### Downstream Consumers
@@ -229,7 +229,7 @@ Any consumer that wants to run an autopilot workflow needs to:
 3. **Implement `StepExecutor`** — the concrete adapter for shell commands,
    notifications, and confirmations
 4. **Implement `RunStore`** — typically wrapping `persist.rs` functions
-5. **Obtain a `Notifier`** — from `z-core::traits`
+5. **Obtain a `Notifier`** — from `zigzag-core::traits`
 6. **Call `execute_workflow_run()`** — handles the full lifecycle
 
 The `config.rs::resolve_config()` + `push_decision()` chain is used by the

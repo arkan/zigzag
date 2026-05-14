@@ -185,7 +185,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.starts_with("layout {\n"));
         assert!(kdl.contains("theme \"dracula\""));
         assert!(kdl.contains("default_tab_template"));
@@ -200,7 +200,7 @@ mod tests {
             )),
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.starts_with("layout cwd=\"/home/user/projects/myapp-feat-login\" {\n"));
         assert!(kdl.contains("theme \"dracula\""));
         assert!(kdl.contains("default_tab_template"));
@@ -213,7 +213,7 @@ mod tests {
             cwd: Some(std::path::PathBuf::from(r#"/home/user/my "project""#)),
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.starts_with("layout cwd=\"/home/user/my \\\"project\\\"\""));
     }
 
@@ -230,7 +230,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.starts_with("layout {\n"));
         assert!(kdl.contains("tab name=\"shell\""));
         assert!(kdl.contains("        pane\n"));
@@ -250,7 +250,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.contains("pane command=\"claude\""));
         assert!(kdl.contains("tab name=\"claude\""));
     }
@@ -268,7 +268,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.contains("pane command=\"nvim\" {\n            args \"--headless\"\n        }"));
     }
 
@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn generate_kdl_default_layout_kdl_output() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.starts_with("layout {\n"));
         assert!(kdl.contains("tab name=\"claude\""));
         assert!(kdl.contains("pane command=\"claude\""));
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn generate_kdl_multiple_tabs() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         let claude_pos = kdl.find("tab name=\"claude\"").unwrap();
         let shell_pos = kdl.find("tab name=\"shell\"").unwrap();
         // claude tab appears before shell tab
@@ -322,7 +322,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.starts_with("layout {\n"));
         assert!(kdl.contains("tab name=\"empty\""));
         assert!(kdl.contains("theme \"dracula\""));
@@ -341,7 +341,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.contains(r#"tab name="my \"tab\"""#));
     }
 
@@ -358,7 +358,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.contains(r#"pane command="C:\\bin\\tool""#));
     }
 
@@ -375,7 +375,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.contains("args \"hello \\\"world\\\"\""));
     }
 
@@ -398,7 +398,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.contains("pane command=\"htop\""));
         assert!(kdl.contains("        pane\n"));
     }
@@ -416,7 +416,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.contains(
             "pane command=\"nvim\" {\n            args \"-u\" \"NONE\" \"file.txt\"\n        }"
         ));
@@ -435,7 +435,7 @@ mod tests {
             cwd: Some(std::path::PathBuf::from("/home/user/myapp-feat")),
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.starts_with("layout cwd=\"/home/user/myapp-feat\" {\n"));
         assert!(kdl.contains("tab name=\"shell\""));
         assert!(kdl.contains("theme \"dracula\""));
@@ -445,7 +445,7 @@ mod tests {
     fn generate_kdl_default_layout_with_cwd() {
         let mut layout = default_layout();
         layout.cwd = Some(std::path::PathBuf::from("/worktree/path"));
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.starts_with("layout cwd=\"/worktree/path\""));
         assert!(kdl.contains("tab name=\"claude\""));
         assert!(kdl.contains("pane command=\"claude\""));
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn generate_kdl_includes_default_tab_template_with_tab_bar_and_status_bar() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(
             kdl.contains("default_tab_template"),
             "layout must include default_tab_template block"
@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn generate_kdl_tab_template_appears_before_tabs() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         let template_pos = kdl.find("default_tab_template").unwrap();
         let first_tab_pos = kdl.find("tab name=").unwrap();
         assert!(
@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn generate_kdl_includes_keybinds_block() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(
             kdl.contains("keybinds {"),
             "layout must include keybinds block"
@@ -513,7 +513,10 @@ mod tests {
         // Alt g removed — lazygit is now in the action menu
         assert!(kdl.contains("bind \"Alt z\""), "keybinds must bind Alt z");
         assert!(kdl.contains("\"switch\""), "binding must run zigzag switch");
-        assert!(kdl.contains("\"actions\""), "binding must run z actions");
+        assert!(
+            kdl.contains("\"actions\""),
+            "binding must run zigzag actions"
+        );
         // lazygit removed from keybinds — now in action menu
         assert!(
             kdl.contains("floating true"),
@@ -528,7 +531,7 @@ mod tests {
     #[test]
     fn alt_k_switcher_uses_wide_floating_pane() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         let alt_k_start = kdl.find("bind \"Alt k\"").expect("Alt k binding missing");
         let alt_k_block = &kdl[alt_k_start..];
         let alt_k_end = alt_k_block
@@ -550,13 +553,13 @@ mod tests {
     #[test]
     fn generate_kdl_keybinds_use_provided_bin_path() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout, "/opt/z/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/opt/zigzag/bin/zigzag", &Theme::default());
         assert!(
-            kdl.contains("Run \"/opt/z/bin/z\" \"switch\""),
+            kdl.contains("Run \"/opt/zigzag/bin/zigzag\" \"switch\""),
             "switch keybind must use provided bin_path"
         );
         assert!(
-            kdl.contains("Run \"/opt/z/bin/z\" \"logs-viewer\""),
+            kdl.contains("Run \"/opt/zigzag/bin/zigzag\" \"logs-viewer\""),
             "logs-viewer keybind must use provided bin_path"
         );
         assert!(
@@ -572,7 +575,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.contains("keybinds {"));
         assert!(kdl.contains("bind \"Alt k\""));
     }
@@ -590,7 +593,7 @@ mod tests {
             cwd: Some(std::path::PathBuf::from("/some/path")),
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.contains("keybinds {"));
         assert!(kdl.contains("bind \"Alt k\""));
         assert!(kdl.contains("tab name=\"work\""));
@@ -599,7 +602,7 @@ mod tests {
     #[test]
     fn generate_kdl_keybinds_appears_after_tab_template() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         let template_pos = kdl.find("default_tab_template").unwrap();
         let keybinds_pos = kdl.find("keybinds {").unwrap();
         assert!(
@@ -611,7 +614,7 @@ mod tests {
     #[test]
     fn generate_kdl_keybinds_appears_after_layout_block() {
         let layout = default_layout();
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         let layout_close = kdl.find("}\n").unwrap();
         let keybinds_pos = kdl.find("keybinds {").unwrap();
         assert!(
@@ -692,7 +695,7 @@ mod tests {
     fn inject_prompt_generates_correct_kdl() {
         let mut layout = default_layout();
         inject_prompt_into_layout(&mut layout, "/grill-me issue #42");
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.contains("\"/grill-me issue #42\""));
     }
 
@@ -707,7 +710,7 @@ mod tests {
             cwd: None,
             session_name_env: None,
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(
             !kdl.contains("env {"),
             "should not contain env block when session_name_env is None"
@@ -721,7 +724,7 @@ mod tests {
             cwd: None,
             session_name_env: Some("myapp:feat-login".to_string()),
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.contains("env {"), "should contain env block");
         assert!(
             kdl.contains(r#"ZIGZAG_SESSION_NAME "myapp:feat-login""#),
@@ -736,7 +739,7 @@ mod tests {
             cwd: None,
             session_name_env: Some("myapp:main".to_string()),
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         let layout_close = kdl.find("layout {").expect("layout block opening");
         // Find the "}\n" that closes the layout block (first `}\n` after layout {)
         let layout_block_end = kdl[layout_close..].find("}\n").expect("layout block end");
@@ -760,7 +763,7 @@ mod tests {
             cwd: Some(std::path::PathBuf::from("/work/path")),
             session_name_env: Some("proj:branch".to_string()),
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(kdl.starts_with("layout cwd=\"/work/path\" {"));
         assert!(kdl.contains(r#"ZIGZAG_SESSION_NAME "proj:branch""#));
     }
@@ -772,7 +775,7 @@ mod tests {
             cwd: None,
             session_name_env: Some(r#"my"app:feat"#.to_string()),
         };
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &Theme::default());
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &Theme::default());
         assert!(
             kdl.contains(r#"ZIGZAG_SESSION_NAME "my\"app:feat""#),
             "should escape quotes in session name"

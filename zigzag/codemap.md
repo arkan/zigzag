@@ -1,4 +1,4 @@
-# z — Workspace Codemap
+# Zigzag — Workspace Codemap
 
 **Version:** 0.6.0
 **Edition:** 2021  
@@ -8,31 +8,31 @@
 
 ## Responsibility
 
-`z` is a developer productivity tool that bridges **Zellij terminal multiplexer sessions** with **git worktrees** and **GitHub workflow automation**. It manages the lifecycle of per-branch Zellij sessions backed by git worktrees, provides a TUI for browsing projects/sessions with async PR/CI preview, and runs automated CI-fix/review/merge workflows via a built-in state machine.
+`zigzag` is a developer productivity tool that bridges **Zellij terminal multiplexer sessions** with **git worktrees** and **GitHub workflow automation**. It manages the lifecycle of per-branch Zellij sessions backed by git worktrees, provides a TUI for browsing projects/sessions with async PR/CI preview, and runs automated CI-fix/review/merge workflows via a built-in state machine.
 
 The workspace is a **Rust monorepo** with 6 crates organized in a layered dependency graph:
 
 ```
                 ┌──────────┐
-                │  z-cli   │  Binary entry point
+                │  zigzag-cli   │  Binary entry point
                 ├──────────┤
-                │ z-tui    │  Ratatui-based terminal UI
+                │ zigzag-tui    │  Ratatui-based terminal UI
                 ├──────────┤
-                │z-autopilot│ Workflow automation engine
+                │zigzag-autopilot│ Workflow automation engine
                 ├──────────┤
-     ┌──────────┤  z-core  ├──────────┐
+     ┌──────────┤  zigzag-core  ├──────────┐
      │          └──────────┘          │
      ▼                                ▼
-  z-plugin (stub)                z-web (stub)
+  zigzag-plugin (stub)                zigzag-web (stub)
   WASM Zellij plugin             Axum web server
 ```
 
-- **z-core** — Foundational types, trait interfaces, config parsing, domain logic. No internal crate deps.
-- **z-tui** — Full-screen terminal UI using `ratatui` + `crossterm`. Depends on z-core for types/domains.
-- **z-cli** — Binary crate. Depends on z-core, z-tui, z-autopilot. Provides concrete implementations of all z-core traits.
-- **z-autopilot** — Workflow DSL parsing, state machine, run loop, persistence. Depends on z-core.
-- **z-plugin** — WASM plugin for Zellij (stub, future phase).
-- **z-web** — Web server with axum + ratatui WASM (stub, future phase).
+- **zigzag-core** — Foundational types, trait interfaces, config parsing, domain logic. No internal crate deps.
+- **zigzag-tui** — Full-screen terminal UI using `ratatui` + `crossterm`. Depends on zigzag-core for types/domains.
+- **zigzag-cli** — Binary crate. Depends on zigzag-core, zigzag-tui, zigzag-autopilot. Provides concrete implementations of all zigzag-core traits.
+- **zigzag-autopilot** — Workflow DSL parsing, state machine, run loop, persistence. Depends on zigzag-core.
+- **zigzag-plugin** — WASM plugin for Zellij (stub, future phase).
+- **zigzag-web** — Web server with axum + ratatui WASM (stub, future phase).
 
 ---
 
@@ -40,7 +40,7 @@ The workspace is a **Rust monorepo** with 6 crates organized in a layered depend
 
 ### 1. Trait-Based Plugin Architecture
 
-z-core defines **abstraction traits**; z-cli provides **concrete adapters**. This keeps core logic testable and crate boundaries clean.
+zigzag-core defines **abstraction traits**; zigzag-cli provides **concrete adapters**. This keeps core logic testable and crate boundaries clean.
 
 | Trait | Purpose | CLI Adapter |
 |-------|---------|-------------|
@@ -56,7 +56,7 @@ z-core defines **abstraction traits**; z-cli provides **concrete adapters**. Thi
 
 ### 2. Callback-Based TUI
 
-The `z-tui` crate is **pure UI** with no direct side effects. It accepts a `TuiCallbacks` struct of closures for all mutating operations (prune, kill session, add/edit/delete project, reload). The event loop returns a `TuiAction` enum for operations that require leaving the alternate screen (open session, run workflow, edit config).
+The `zigzag-tui` crate is **pure UI** with no direct side effects. It accepts a `TuiCallbacks` struct of closures for all mutating operations (prune, kill session, add/edit/delete project, reload). The event loop returns a `TuiAction` enum for operations that require leaving the alternate screen (open session, run workflow, edit config).
 
 ### 3. Background Async via mpsc Channels
 
@@ -73,11 +73,11 @@ All polling happens in the main event loop tick before `terminal.draw()`.
 ### 4. KDL Configuration
 
 All configuration uses the KDL document format:
-- **Global:** `~/.config/z/config.kdl` — theme, navigation, notifications, dependencies, actions, default layout
-- **Per-repo:** `<project>/.config/z.kdl` — layout override, deploy command, autopilot settings, repo actions
-- **Projects list:** `~/.config/z/projects.kdl` — project entries
+- **Global:** `~/.config/zigzag/config.kdl` — theme, navigation, notifications, dependencies, actions, default layout
+- **Per-repo:** `<project>/.config/zigzag.kdl` — layout override, deploy command, autopilot settings, repo actions
+- **Projects list:** `~/.config/zigzag/projects.kdl` — project entries
 
-### 5. State Machine (z-autopilot)
+### 5. State Machine (zigzag-autopilot)
 
 Autopilot workflows are defined as KDL documents with named steps, each with:
 - An action (`run`, `notify`, `confirm`)
@@ -165,7 +165,7 @@ run_tui()
 cmd_open(project, branch, prompt?)
   └─ KdlProjectStore.get_project(name)
   └─ Remote? → cmd_open_remote()
-  │    └─ ssh/mosh <host> "cd <path> && z open <project> <branch>"
+  │    └─ ssh/mosh <host> "cd <path> && zigzag open <project> <branch>"
   │
   └─ Local flow:
        ├─ SessionManager.list_sessions(project)
@@ -228,13 +228,13 @@ TuiState.trigger_preview_load()
 ### File System Integration
 | Path | Purpose |
 |------|---------|
-| `~/.config/z/config.kdl` | Global configuration |
-| `~/.config/z/projects.kdl` | Project registry |
-| `~/.config/z/worktree-metadata.json` | Worktree-first metadata, pending notifications, and agent status |
-| `<project>/.config/z.kdl` | Per-repo configuration |
-| `/tmp/z/logs/` | Structured log files |
-| `/tmp/z/activity.kdl` | Session attach timestamps |
-| `/tmp/z-autopilot/` | Workflow run state persistence |
+| `~/.config/zigzag/config.kdl` | Global configuration |
+| `~/.config/zigzag/projects.kdl` | Project registry |
+| `~/.config/zigzag/worktree-metadata.json` | Worktree-first metadata, pending notifications, and agent status |
+| `<project>/.config/zigzag.kdl` | Per-repo configuration |
+| `/tmp/zigzag/logs/` | Structured log files |
+| `/tmp/zigzag/activity.kdl` | Session attach timestamps |
+| `/tmp/zigzag/autopilot/` | Workflow run state persistence |
 | `<project>/.claude/settings.json` | Claude Code stop hook injection |
 
 ### Remote Machine Integration
@@ -246,24 +246,24 @@ TuiState.trigger_preview_load()
 ### Notification Channels
 | Channel | Trigger | Implementation |
 |---------|---------|----------------|
-| Metadata | `z notify` / `z notify --event` | Write notification records to worktree metadata |
+| Metadata | `zigzag notify` / `zigzag notify --event` | Write notification records to worktree metadata |
 | macOS native | `notifications.macos-native true` | `osascript` System Events |
 | Telegram | `notifications.telegram true` + token/chat_id | `curl` to Telegram Bot API |
 | TUI badges | Metadata channel (polled every 5s) | 🔔 indicator in sessions list |
 
 ### Forge (GitHub) Integration
 - `gh` CLI invoked for PR/CI/review data
-- JSON output parsed via z-core's `gh` module (no API dependency — pure JSON from `gh` subprocess)
+- JSON output parsed via zigzag-core's `gh` module (no API dependency — pure JSON from `gh` subprocess)
 - Issue/PR title slugs used for branch naming convention `grill/{number}-{slug}`
 
 ### AI/Review Tool Integration
 - Action menu includes `codex` (default) or configurable review tool
 - Prompt templates for issue-based and PR-based sessions (`/grill-me ...`)
-- Claude Code `z notify` hook injected into `.claude/settings.json` on session creation
+- Claude Code `zigzag notify` hook injected into `.claude/settings.json` on session creation
 - Autopilot workflows invoke `claude` for CI-fix and review-resolution commands
 
 ### Zellij Layout Generation
 - Keybindings injected for `Alt+k` (switch), `Alt+l` (logs), `Alt+z` (actions)
 - Theme colors converted to Zellij KDL `colors { ... }` blocks
-- Session name injected as `Z_SESSION_NAME` env var for child processes
+- Session name injected as `ZIGZAG_SESSION_NAME` env var for child processes
 - Default UI chrome (tab-bar, status-bar) included in all generated layouts

@@ -80,7 +80,7 @@ pub fn delete_remote_session(ssh_host: &str, session_name: &str) -> Result<()> {
     ssh_run_remote(ssh_host, &cmd)
 }
 
-/// Read a file under the remote `~/.config/zigzagigzag/` directory.
+/// Read a file under the remote `~/.config/zigzag/` directory.
 pub fn read_remote_zigzag_config_file(ssh_host: &str, filename: &str) -> Result<Option<String>> {
     let cmd = format!(
         "dir=\"${{XDG_CONFIG_HOME:-$HOME/.config}}/zigzag\"; file=\"$dir/{}\"; if [ -f \"$file\" ]; then cat \"$file\"; else exit 3; fi",
@@ -104,7 +104,7 @@ pub fn read_remote_zigzag_config_file(ssh_host: &str, filename: &str) -> Result<
     )))
 }
 
-/// Atomically write a file under the remote `~/.config/zigzagigzag/` directory with a mkdir lock.
+/// Atomically write a file under the remote `~/.config/zigzag/` directory with a mkdir lock.
 pub fn write_remote_zigzag_config_file_atomic(
     ssh_host: &str,
     filename: &str,

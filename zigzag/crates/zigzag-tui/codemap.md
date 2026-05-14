@@ -1,10 +1,10 @@
-# z/crates/z-tui/
+# zigzag/crates/zigzag-tui/
 
 ## Responsibility
 
-Provides the full-screen terminal UI frontend for the `z` session manager. This crate implements an interactive, ratatui-based panel layout for browsing projects and Zellij sessions, previewing git/forge state, dispatching actions, and managing project lifecycle — all within the terminal alternate screen. It also hosts standalone TUI pickers (session switch, log viewer, action menu) used in Zellij floating panes.
+Provides the full-screen terminal UI frontend for the `zigzag` session manager. This crate implements an interactive, ratatui-based panel layout for browsing projects and Zellij sessions, previewing git/forge state, dispatching actions, and managing project lifecycle — all within the terminal alternate screen. It also hosts standalone TUI pickers (session switch, log viewer, action menu) used in Zellij floating panes.
 
-Boundary: consumes domain types and traits from `z-core`, owns all TUI rendering and user interaction logic, and delegates persistent state mutations to callbacks injected by the binary (`bin/z`). Never writes to disk or calls Zellij directly.
+Boundary: consumes domain types and traits from `zigzag-core`, owns all TUI rendering and user interaction logic, and delegates persistent state mutations to callbacks injected by the binary (`bin/zigzag`). Never writes to disk or calls Zellij directly.
 
 ## Design
 
@@ -20,8 +20,8 @@ Boundary: consumes domain types and traits from `z-core`, owns all TUI rendering
 
 - **Synchronous event loop, async via threads**: No async runtime. Background work spawns `std::thread` with `std::sync::mpsc` channels. The event loop polls 4 channels each cycle via `try_recv` (preview, forge, gh, refresh).
 - **Closure-based dependency injection**: `TuiCallbacks` is a struct of closure references for all side-effecting operations (add/edit/delete project, kill session, prune, reload). Enables testing without real I/O and keeps the TUI pure.
-- **Trait-based adapters at crate boundary**: `PreviewDataSource` trait for git/forge/Zellij data loading (default: `NoopPreviewDataSource` returns errors); `SessionRefresher` trait (from `z-core`) for polling daemon state. Injected at `run_tui` call site.
-- **Three-source code split**: `lib.rs` (monolith), `preview_state.rs` (preview state machine), `refresh.rs` (refresh merge). No sub-crate dependencies within `z-tui`.
+- **Trait-based adapters at crate boundary**: `PreviewDataSource` trait for git/forge/Zellij data loading (default: `NoopPreviewDataSource` returns errors); `SessionRefresher` trait (from `zigzag-core`) for polling daemon state. Injected at `run_tui` call site.
+- **Three-source code split**: `lib.rs` (monolith), `preview_state.rs` (preview state machine), `refresh.rs` (refresh merge). No sub-crate dependencies within `zigzag-tui`.
 - **State revision guard**: `TuiState.state_revision` is a monotonic counter incremented on every reload. Background refresh threads capture the revision at spawn; `should_apply_refresh` rejects stale results.
 - **Modal enum with local state**: Each `Modal` variant carries its own state. `advance_modal` is a pure function mapping (modal, key) → outcome. Only one modal at a time (no modal stack).
 
@@ -64,13 +64,13 @@ Merge only applies to `PreviewData::Ready` target; `preview_state::apply_extra_p
 
 ### Crate graph
 ```
-z-tui
-  ├── z-core (domain types, traits, actions, theme, gh parsing, activity sorting)
+zigzag-tui
+  ├── zigzag-core (domain types, traits, actions, theme, gh parsing, activity sorting)
   ├── ratatui (Terminal, Frame, Layout, List, Paragraph, Block, Clear, styling)
   └── crossterm (raw mode, alternate screen, event poll/read, KeyCode, KeyModifiers)
 ```
 
-No reverse dependencies — `z-tui` is a leaf crate consumed only by the `bin/z` binary.
+No reverse dependencies — `zigzag-tui` is a leaf crate consumed only by the `bin/zigzag` binary.
 
 ### Public API (crate boundary)
 
@@ -110,7 +110,7 @@ All mutations of persistent state go through `TuiCallbacks` closures, never call
 
 ### Background side effects (via traits)
 - `PreviewDataSource` — reads git data from filesystem; SSH for remote hosts; network fetch for PR/CI/Zellij
-- `SessionRefresher` (from z-core) — polls Zellij daemon for sessions/notifications/activity
+- `SessionRefresher` (from zigzag-core) — polls Zellij daemon for sessions/notifications/activity
 - GhPicker background thread — runs `gh issue list` / `gh pr list` locally or via SSH
 
 ### See also

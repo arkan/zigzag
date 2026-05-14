@@ -1,14 +1,14 @@
-# z/crates/z-tui/src/
+# zigzag/crates/zigzag-tui/src/
 
 ## Responsibility
 
-Provides the full-screen terminal UI frontend for the `z` session manager. Implements an interactive, ratatui-based panel layout for browsing projects and Zellij sessions, previewing git/forge state, dispatching actions, and managing project lifecycle — all within the terminal alternate screen. Also hosts standalone TUI pickers for session switching, log viewing, and action selection (used in Zellij floating panes).
+Provides the full-screen terminal UI frontend for the `zigzag` session manager. Implements an interactive, ratatui-based panel layout for browsing projects and Zellij sessions, previewing git/forge state, dispatching actions, and managing project lifecycle — all within the terminal alternate screen. Also hosts standalone TUI pickers for session switching, log viewing, and action selection (used in Zellij floating panes).
 
 ## Design
 
 ### Architectural Pattern — Monolithic Event-Loop with Trait-Based Adapters
 
-Three source modules, no sub-crate dependency within `z-tui`:
+Three source modules, no sub-crate dependency within `zigzag-tui`:
 
 - **`lib.rs`** — The monolith. Contains entry points, all rendering, event dispatch, modal state machines, form logic, and the massive `TuiState` struct. Uses a single `event_loop` with a 100 ms poll cycle that multiplexes key events, async channel drains (4 channels), and terminal redraws.
 - **`preview_state.rs`** — Pure functions for state transitions (`Loading` → `Ready`/`Error`, and merging extra forge/Zellij data into `Ready`). Separated to isolate the `PreviewData` state machine.
@@ -21,7 +21,7 @@ Three source modules, no sub-crate dependency within `z-tui`:
 | `TuiState` | Single source of truth; owns entries, cursor positions, panel focus, preview pipeline state (4 `mpsc::Receiver` fields), modal stack, notifications, theme, leader-key state, and refresh state revision counter. |
 | `TuiCallbacks` | Closure-based dependency injection for all side-effecting operations (prune, add/edit/delete project, kill session, reload entries). Enables testing without real I/O. |
 | `PreviewDataSource` (trait) | Adapter trait for loading git preview and extra forge/Zellij data. `NoopPreviewDataSource` is the default (returns errors). Real implementation injected via `run_tui`. |
-| `SessionRefresher` (trait from `z_core`) | Adapter for polling session/notification/activity state in a background thread. |
+| `SessionRefresher` (trait from `zigzag_core`) | Adapter for polling session/notification/activity state in a background thread. |
 | `Modal` (enum) | Sum type for all overlay dialogs — each variant carries its own local state. The `advance_modal` pure function implements per-modal key dispatch. No modal stack, only one at a time. |
 | `PreviewData` (enum) | Three-state machine: `Loading` → `Ready(GitInfo)` | `Error(String)`. Transitioned by channel poll results via `preview_state` helpers. |
 | `Panel` (enum) + `Navigation` (enum) | `Panel::Projects`/`Sessions` for focus routing; `Navigation::Arrows`/`Vim` for key scheme selection. |
@@ -77,7 +77,7 @@ Four-field form (Path, Name, Host, Transport) with:
 
 Modals are rendered last (on top) via `render_modal` dispatch. The `Clear` widget is rendered before each modal to punch through the existing content.
 
-Theme is applied uniformly through `rgb_to_color` and `theme_style_to_style` conversions from `z_core::theme::Theme`.
+Theme is applied uniformly through `rgb_to_color` and `theme_style_to_style` conversions from `zigzag_core::theme::Theme`.
 
 ## Data & Control Flow
 
@@ -162,7 +162,7 @@ OpenGhPicker outcome:
 poll_gh:
     try_recv on gh_rx
     if json:
-        parse via z_core::gh::parse_gh_issues|parse_gh_prs
+        parse via zigzag_core::gh::parse_gh_issues|parse_gh_prs
         map to GhPickerItem vec
         update modal.items, loading = false
 ```
@@ -173,7 +173,7 @@ poll_gh:
 
 | Dependency | Usage |
 |---|---|
-| `z_core` | Domain types (`Project`, `Session`, `PullRequest`, `CiStatus`, `ReviewStatus`, `Transport`), traits (`SessionRefresher`, `ForgeClient`), action system (`ActionDef`, `ActionType`, `ResolvedAction`, `ActionEnv`, `ActionPreview`, `builtin_actions`, `merge_actions`, `resolve_actions`), theme (`Theme`, `ThemeStyle`, `Rgb`), domain helpers (`sanitize_branch_name`, `slugify`), GitHub JSON parsing (`gh::parse_gh_issues`, `gh::parse_gh_prs`), activity sorting (`activity::sort_sessions_by_recent_attach`) |
+| `zigzag_core` | Domain types (`Project`, `Session`, `PullRequest`, `CiStatus`, `ReviewStatus`, `Transport`), traits (`SessionRefresher`, `ForgeClient`), action system (`ActionDef`, `ActionType`, `ResolvedAction`, `ActionEnv`, `ActionPreview`, `builtin_actions`, `merge_actions`, `resolve_actions`), theme (`Theme`, `ThemeStyle`, `Rgb`), domain helpers (`sanitize_branch_name`, `slugify`), GitHub JSON parsing (`gh::parse_gh_issues`, `gh::parse_gh_prs`), activity sorting (`activity::sort_sessions_by_recent_attach`) |
 | `ratatui` | Full widget tree: `Terminal`, `Frame`, `Layout`, `Block`, `List`, `ListItem`, `ListState`, `Paragraph`, `Clear`, `CrosstermBackend`, styling primitives |
 | `crossterm` | Terminal lifecycle: `enable_raw_mode`, `EnterAlternateScreen`, `event::poll`, `event::read`, `Event`, `KeyCode`, `KeyModifiers` |
 | `std::sync::mpsc` | All async communication (4 channels) |
@@ -217,7 +217,7 @@ pub struct SwitchPickerState { ... }
 
 ### External Side Effects (via `TuiCallbacks` closures)
 
-All mutations of persistent state go through closures injected by the caller (`bin/z`), never through the TUI directly:
+All mutations of persistent state go through closures injected by the caller (`bin/zigzag`), never through the TUI directly:
 
 - **`prune_fn(bool) → io::Result<String>`** — Remove orphan git worktrees
 - **`log_fn(usize) → io::Result<Vec<String>>`** — Fetch recent log lines

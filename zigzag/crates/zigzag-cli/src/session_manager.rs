@@ -293,7 +293,7 @@ fn delete_dead_session(session_name: &str) {
 /// The caller is responsible for removing the file after use.
 pub fn write_temp_layout(content: &str) -> Result<String> {
     let seq = LAYOUT_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = format!("/tmp/z-layout-{}-{}.kdl", std::process::id(), seq);
+    let path = format!("/tmp/zigzag-layout-{}-{}.kdl", std::process::id(), seq);
     std::fs::write(&path, content)
         .map_err(|e| ZError::Io(format!("failed to write temp layout: {}", e)))?;
     Ok(path)
@@ -365,7 +365,9 @@ fn extract_unit(s: &str, unit: char) -> Option<u64> {
 ///
 /// Each entry is `(session_name, age)` where `age` is `None` when the age cannot be parsed.
 /// Sorted alphabetically by session name.
-pub fn list_all_zigzag_sessions_with_ages_from_output(output: &str) -> Vec<(String, Option<String>)> {
+pub fn list_all_zigzag_sessions_with_ages_from_output(
+    output: &str,
+) -> Vec<(String, Option<String>)> {
     let mut sessions: Vec<(String, Option<String>)> = output
         .lines()
         .filter_map(|line| {
@@ -520,7 +522,7 @@ mod tests {
     fn write_temp_layout_creates_file_with_content() {
         let content = "layout {\n    tab name=\"test\" {\n        pane\n    }\n}\n";
         let path = write_temp_layout(content).expect("write_temp_layout should succeed");
-        assert!(path.starts_with("/tmp/z-layout-"));
+        assert!(path.starts_with("/tmp/zigzag-layout-"));
         assert!(path.ends_with(".kdl"));
         let read_back = std::fs::read_to_string(&path).expect("temp file should be readable");
         assert_eq!(read_back, content);
@@ -532,7 +534,7 @@ mod tests {
         use zigzag_core::layout::{default_layout, generate_layout_kdl};
         let layout = default_layout();
         let theme = zigzag_core::theme::Theme::default();
-        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/z", &theme);
+        let kdl = generate_layout_kdl(&layout, "/usr/local/bin/zigzag", &theme);
         let path = write_temp_layout(&kdl).expect("write_temp_layout should succeed");
         let read_back = std::fs::read_to_string(&path).expect("temp file should be readable");
         assert!(read_back.contains("tab name=\"claude\""));
@@ -770,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_with_ages_excludes_non_z_sessions() {
+    fn sessions_with_ages_excludes_non_zigzag_sessions() {
         let output = "plain-session\nanother-session\nmyapp:main [Created 1h ago]\n";
         let sessions = list_all_zigzag_sessions_with_ages_from_output(output);
         assert_eq!(sessions.len(), 1);
@@ -845,7 +847,7 @@ mod tests {
     /// Verify that `env_remove("ZELLIJ")` on a Command prevents the env var
     /// from reaching the child process. This documents the mechanism used in
     /// `create_session()` to avoid Zellij interpreting `--session <name>` as
-    /// "attach" when `z` is launched from inside an existing Zellij session.
+    /// "attach" when `zigzag` is launched from inside an existing Zellij session.
     ///
     /// Note: we cannot call `create_session()` directly because it requires
     /// zellij to be installed. Instead we verify the env_remove mechanism on

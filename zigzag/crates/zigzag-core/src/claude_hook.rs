@@ -93,7 +93,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const CMD: &str = "zigzag notify \"Claude a terminé: ${ZIGZAG_SESSION_NAME:-$ZELLIJ_SESSION_NAME}\"";
+    const CMD: &str =
+        "zigzag notify \"Claude a terminé: ${ZIGZAG_SESSION_NAME:-$ZELLIJ_SESSION_NAME}\"";
 
     fn z_hook_entry(cmd: &str) -> Value {
         json!({

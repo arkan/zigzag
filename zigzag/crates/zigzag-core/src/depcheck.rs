@@ -108,11 +108,11 @@ pub fn format_dep_error(result: &DepCheckResult) -> String {
     match &result.status {
         DepCheckStatus::Ok { .. } => String::new(),
         DepCheckStatus::Missing => format!(
-            "error: '{}' is not installed or not in PATH.\n  Please install it before running z.",
+            "error: '{}' is not installed or not in PATH.\n  Please install it before running Zigzag.",
             result.tool
         ),
         DepCheckStatus::VersionTooLow { found, required } => format!(
-            "error: '{}' version {} does not satisfy {}.\n  Please upgrade before running z.",
+            "error: '{}' version {} does not satisfy {}.\n  Please upgrade before running Zigzag.",
             result.tool, found, required
         ),
         DepCheckStatus::VersionUnparseable { output } => format!(

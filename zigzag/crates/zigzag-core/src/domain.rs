@@ -9,7 +9,7 @@ pub enum Transport {
     Mosh,
 }
 
-/// A project managed by z.
+/// A project managed by Zigzag.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
     pub name: String,

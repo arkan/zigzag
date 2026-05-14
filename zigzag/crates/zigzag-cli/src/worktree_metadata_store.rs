@@ -104,7 +104,10 @@ impl RemoteWorktreeMetadataStore {
             .retain(|notification| notification.target != *identity);
         file.llm_status.retain(|status| {
             !(status.target == *identity
-                && matches!(status.state, zigzag_core::domain::AgentActivityState::Waiting))
+                && matches!(
+                    status.state,
+                    zigzag_core::domain::AgentActivityState::Waiting
+                ))
         });
         self.write_metadata(&file)
     }
@@ -118,9 +121,8 @@ impl LocalWorktreeMetadataStore {
         }
     }
 
-    /// Default config directory from `$HOME/.config/z`.
+    /// Default config directory from `$HOME/.config/zigzag`.
     pub fn default_config_dir() -> PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         crate::paths::config_dir()
     }
 
@@ -591,7 +593,10 @@ impl LocalWorktreeMetadataStore {
                 .retain(|notification| notification.target != *identity);
             file.llm_status.retain(|status| {
                 !(status.target == *identity
-                    && matches!(status.state, zigzag_core::domain::AgentActivityState::Waiting))
+                    && matches!(
+                        status.state,
+                        zigzag_core::domain::AgentActivityState::Waiting
+                    ))
             });
         })
     }
@@ -821,7 +826,7 @@ mod tests {
     fn test_dir() -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
-        std::env::temp_dir().join(format!("z-wt-metadata-test-{}-{}", pid, n))
+        std::env::temp_dir().join(format!("zigzag-wt-metadata-test-{}-{}", pid, n))
     }
 
     fn cleanup(path: &Path) {

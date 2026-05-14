@@ -166,7 +166,7 @@ mod tests {
 
     fn temp_logger(name: &str) -> FileLogger {
         let path = PathBuf::from(format!(
-            "/tmp/z-test-log-{}-{}.log",
+            "/tmp/zigzag-test-log-{}-{}.log",
             std::process::id(),
             name
         ));

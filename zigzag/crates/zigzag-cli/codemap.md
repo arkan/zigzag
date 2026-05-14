@@ -1,10 +1,10 @@
-# z/crates/z-cli/
+# zigzag/crates/zigzag-cli/
 
 ## Responsibility
 
-The `z-cli` crate is the **binary entry point** for the `z` project manager. It produces the `z` binary and implements every CLI subcommand (`open`, `close`, `delete`, `prune`, `notify`, `list`, `switch`, `logs`, `logs-viewer`, `actions`, `autopilot`) and the interactive TUI loop. It owns all **concrete adapters** for the trait abstractions defined in `z_core` — process-backed I/O (Zellij, git, gh, ssh, curl, osascript), file-backed persistence (KDL, JSON, flat files), and SSH-encapsulated remote execution.
+The `zigzag-cli` crate is the **binary entry point** for the `zigzag` project manager. It produces the `zigzag` binary and implements every CLI subcommand (`open`, `close`, `delete`, `prune`, `notify`, `list`, `switch`, `logs`, `logs-viewer`, `actions`, `autopilot`) and the interactive TUI loop. It owns all **concrete adapters** for the trait abstractions defined in `zigzag_core` — process-backed I/O (Zellij, git, gh, ssh, curl, osascript), file-backed persistence (KDL, JSON, flat files), and SSH-encapsulated remote execution.
 
-**Non-responsibilities**: domain logic, data model definitions, layout composition, workflow DSL interpretation, forge data parsing — these are delegated to `z_core` and `z_autopilot`.
+**Non-responsibilities**: domain logic, data model definitions, layout composition, workflow DSL interpretation, forge data parsing — these are delegated to `zigzag_core` and `zigzag_autopilot`.
 
 For per-source-file details, see [`src/codemap.md`](./src/codemap.md).
 
@@ -13,14 +13,14 @@ For per-source-file details, see [`src/codemap.md`](./src/codemap.md).
 ## Design Patterns
 
 ### 1. Ports & Adapters (Trait-Adapter Separation)
-All domain interfaces are defined as traits in `z_core::traits`. This crate provides the concrete, process-backed implementations:
+All domain interfaces are defined as traits in `zigzag_core::traits`. This crate provides the concrete, process-backed implementations:
 - `ZellijSessionManager` → `SessionManager`, `SessionRefresher` — shells out to `zellij`
 - `WtWorktreeManager` → `WorktreeManager` — shells out to `git worktree` / `wt`
 - `GhForgeClient` → `ForgeClient` — shells out to `gh`
-- `KdlProjectStore` → `ProjectStore` / `ProjectStoreWriter` — reads/writes `~/.config/z/projects.kdl`
-- `FileActivityStore` → `ActivityStore` — reads/writes `~/.config/z/session-activity.json`
-- `LocalWorktreeMetadataStore` → `WorktreeMetadataStore` — reads/writes `~/.config/z/worktree-metadata.json`
-- `FileLogger` → `Logger` — appends to `~/.local/state/z/z.log`
+- `KdlProjectStore` → `ProjectStore` / `ProjectStoreWriter` — reads/writes `~/.config/zigzag/projects.kdl`
+- `FileActivityStore` → `ActivityStore` — reads/writes `~/.config/zigzag/session-activity.json`
+- `LocalWorktreeMetadataStore` → `WorktreeMetadataStore` — reads/writes `~/.config/zigzag/worktree-metadata.json`
+- `FileLogger` → `Logger` — appends to `~/.local/state/zigzag/zigzag.log`
 - `ProcessDepChecker` → `DepChecker` — probes tool `--version` output
 - `DispatchNotifier` → `Notifier` — fans out to file/macOS/Telegram channels
 - `CliStepExecutor` → `StepExecutor` — runs autopilot commands locally or via SSH
@@ -29,7 +29,7 @@ All domain interfaces are defined as traits in `z_core::traits`. This crate prov
 - `CliPreviewDataSource` → `PreviewDataSource` — TUI preview acquisition
 
 ### 2. Callback Inversion (TUI Integration)
-The TUI loop (`z_tui::run_tui`) receives a `TuiCallbacks` struct of function pointers (`prune_fn`, `log_fn`, `swap_fn`, `kill_session_fn`, `add_project_fn`, `edit_project_fn`, `delete_project_fn`, `reload_fn`). This inverts control: the TUI invokes CLI operations without depending on CLI crate internals, keeping `z_tui` pure.
+The TUI loop (`zigzag_tui::run_tui`) receives a `TuiCallbacks` struct of function pointers (`prune_fn`, `log_fn`, `swap_fn`, `kill_session_fn`, `add_project_fn`, `edit_project_fn`, `delete_project_fn`, `reload_fn`). This inverts control: the TUI invokes CLI operations without depending on CLI crate internals, keeping `zigzag_tui` pure.
 
 ### 3. Process-as-Subsystem
 Nearly all infrastructure interactions go through subprocess execution. Each external tool (zellij, git, gh, ssh, mosh, osascript, curl, wt) is invoked as a child process with well-defined argument and output contracts.
@@ -38,10 +38,10 @@ Nearly all infrastructure interactions go through subprocess execution. Each ext
 `ZellijSessionRefresher::fetch_all_sessions` and `build_entries` in `main.rs` make **one** `zellij list-sessions` call per refresh cycle, then filter by project prefix. Remote sessions are fetched in parallel via `std::thread::scope` with one SSH call per remote host.
 
 ### 5. KDL as Configuration Metalanguage
-Project registration lives in `~/.config/z/projects.kdl` (parsed by `z_core::config::parse_projects_kdl`). Per-repo config lives in `<project>/.config/z.kdl`, parsed by `parse_repo_config_projection` which uses two-phase parsing: first raw KDL document, then projections via `z_core::config::parse_per_repo_config_doc` and `z_autopilot::dsl::parse_autopilot_workflows_doc`. Global config lives in `~/.config/z/config.kdl`.
+Project registration lives in `~/.config/zigzag/projects.kdl` (parsed by `zigzag_core::config::parse_projects_kdl`). Per-repo config lives in `<project>/.config/zigzag.kdl`, parsed by `parse_repo_config_projection` which uses two-phase parsing: first raw KDL document, then projections via `zigzag_core::config::parse_per_repo_config_doc` and `zigzag_autopilot::dsl::parse_autopilot_workflows_doc`. Global config lives in `~/.config/zigzag/config.kdl`.
 
 ### 6. Temporary File Protocol for Layouts
-Zellij layouts are KDL documents generated by `z_core::layout::generate_layout_kdl`, written to `/tmp/z-layout-{PID}-{SEQ}.kdl` via `write_temp_layout`, then consumed by `zellij --session <name> -n <path>`. The counter uses `AtomicU64` for thread-safe unique paths.
+Zellij layouts are KDL documents generated by `zigzag_core::layout::generate_layout_kdl`, written to `/tmp/zigzag-layout-{PID}-{SEQ}.kdl` via `write_temp_layout`, then consumed by `zellij --session <name> -n <path>`. The counter uses `AtomicU64` for thread-safe unique paths.
 
 ### 7. Shell Quoting for Remote Safety
 All SSH command construction uses `remote::shell_quote` which wraps values in single quotes with embedded-quote escaping (`'\''` idiom), preventing shell injection through branch names, paths, or session names.
@@ -61,19 +61,19 @@ All SSH command construction uses `remote::shell_quote` which wraps values in si
 2. Calls `run()`, which matches on `args[0]` and dispatches: `None` → `cmd_tui()`, `"list"` → `cmd_list()`, `"open"` → `cmd_open()`, `"close"` → `cmd_close()`, `"delete"` → `cmd_delete()`, `"prune"` → `cmd_prune()`, `"notify"` → `cmd_notify()`, `"autopilot"` → `cmd_autopilot_dispatch()`, `"logs"` → `cmd_logs()`, `"switch"` → `cmd_switch()`, `"logs-viewer"` → `cmd_logs_viewer()`, `"actions"` → `cmd_actions()`.
 
 ### TUI Loop (`cmd_tui`)
-Creates `KdlProjectStore`, loads `GlobalConfig`, loads built-in workflows once. Loops: builds `Vec<ProjectEntry>` via `build_entries` (projects + one-shot `zellij list-sessions` + worktree counts + per-repo configs), loads notifications, calls `z_tui::run_tui(…, TuiCallbacks, preview_source, refresher, …)`, dispatches `TuiAction` result.
+Creates `KdlProjectStore`, loads `GlobalConfig`, loads built-in workflows once. Loops: builds `Vec<ProjectEntry>` via `build_entries` (projects + one-shot `zellij list-sessions` + worktree counts + per-repo configs), loads notifications, calls `zigzag_tui::run_tui(…, TuiCallbacks, preview_source, refresher, …)`, dispatches `TuiAction` result.
 
 ### Open Session Flow (`cmd_open`)
-Resolves project from `KdlProjectStore`. Remote projects delegate via SSH/Mosh to `z open <project> <branch>` on the host. Local projects: `ZellijSessionManager::list_sessions` → `plan_open_session` — if existing live session → attach; else resolve/create worktree → merge global + per-repo config for `effective_layout` → optionally inject prompt/Claude stop hook → `session_mgr.create_session(…)` → generate KDL layout, write temp file, run `zellij --session <name> -n <layout_path>`.
+Resolves project from `KdlProjectStore`. Remote projects delegate via SSH/Mosh to `zigzag open <project> <branch>` on the host. Local projects: `ZellijSessionManager::list_sessions` → `plan_open_session` — if existing live session → attach; else resolve/create worktree → merge global + per-repo config for `effective_layout` → optionally inject prompt/Claude stop hook → `session_mgr.create_session(…)` → generate KDL layout, write temp file, run `zellij --session <name> -n <layout_path>`.
 
 ### Actions Flow (`cmd_actions`)
-Guard: must be inside a Zellij session. Parses `project:branch` from `ZELLIJ_SESSION_NAME`. Loads global + per-repo actions, merges with built-in actions via `z_core::action::merge_actions`, resolves against `ActionEnv` (project context + forge preview), presents picker via `z_tui::run_action_picker`, executes selected action.
+Guard: must be inside a Zellij session. Parses `project:branch` from `ZELLIJ_SESSION_NAME`. Loads global + per-repo actions, merges with built-in actions via `zigzag_core::action::merge_actions`, resolves against `ActionEnv` (project context + forge preview), presents picker via `zigzag_tui::run_action_picker`, executes selected action.
 
 ### Autopilot Flow
 `cmd_autopilot_run`: resolves project, loads workflows (built-in + per-repo), creates `CliStepExecutor` + `FileRunStore` + `DispatchNotifier` → `execute_workflow_run`. `CliStepExecutor::run_command` dispatches locally or via SSH.
 
 ### Other Flows
-- **Switch**: `z switch` is guarded by `ZELLIJ_SESSION_NAME`, uses global lock file (`/tmp/z-switch.lock`), lists z-managed sessions sorted by recent activity → `run_switch_picker` → `zellij action switch-session`. Dashboard `s` / `Alt+k` uses the same entries in a modal overlay, then switches/attaches after the TUI exits.
+- **Switch**: `zigzag switch` is guarded by `ZELLIJ_SESSION_NAME`, uses global lock file (`/tmp/zigzag-switch.lock`), lists Zigzag-managed sessions sorted by recent activity → `run_switch_picker` → `zellij action switch-session`. Dashboard `s` / `Alt+k` uses the same entries in a modal overlay, then switches/attaches after the TUI exits.
 - **Pruning**: iterates all projects, finds orphaned sessions (no matching worktree) and worktrees (no matching session, excluding main/master) via `sanitize_branch_name` normalization, optionally kills/removes.
 - **Notifications**: `cmd_notify` → `DispatchNotifier::from_config` constructs notifier list from `GlobalConfig::notifications`, fans out to file + optional macOS/Telegram.
 
@@ -85,10 +85,10 @@ Guard: must be inside a Zellij session. Parses `project:branch` from `ZELLIJ_SES
 
 | Dependency | Role | Integration Mechanism |
 |---|---|---|
-| `z_core` | Domain models, traits, config parsing, layout gen, session entry mgmt, theme, template resolution, action resolution | Rust trait implementations + function calls through public API |
-| `z_autopilot` | Workflow DSL, run loop, step execution, persistence | `execute_workflow_run`, `list_runs`, `prune_terminal_runs`; trait `StepExecutor`, `RunStore` implemented here |
-| `z_tui` | Interactive terminal UI (TUI, switch picker, action picker, log viewer) | `run_tui(entries, …, callbacks, preview_source, refresher, …)`, `run_switch_picker`, `run_action_picker`, `run_log_viewer` |
-| `kdl` | KDL document model for config parsing | Raw `KdlDocument` parse in `repo_config`, then domain parsers from `z_core` |
+| `zigzag_core` | Domain models, traits, config parsing, layout gen, session entry mgmt, theme, template resolution, action resolution | Rust trait implementations + function calls through public API |
+| `zigzag_autopilot` | Workflow DSL, run loop, step execution, persistence | `execute_workflow_run`, `list_runs`, `prune_terminal_runs`; trait `StepExecutor`, `RunStore` implemented here |
+| `zigzag_tui` | Interactive terminal UI (TUI, switch picker, action picker, log viewer) | `run_tui(entries, …, callbacks, preview_source, refresher, …)`, `run_switch_picker`, `run_action_picker`, `run_log_viewer` |
+| `kdl` | KDL document model for config parsing | Raw `KdlDocument` parse in `repo_config`, then domain parsers from `zigzag_core` |
 | `serde_json` | Activity store serialization | `FileActivityStore` reads/writes `SessionActivity` as JSON |
 
 ### External Process Contracts
@@ -109,20 +109,20 @@ Guard: must be inside a Zellij session. Parses `project:branch` from `ZELLIJ_SES
 
 | Path | Format | Owned By |
 |---|---|---|
-| `~/.config/z/config.kdl` | KDL (global config: theme, nav, notifications, actions, review_tool) | `z_core::config::parse_global_config_kdl` |
-| `~/.config/z/projects.kdl` | KDL (project list: name, path, host, transport) | `KdlProjectStore` / `z_core::config::parse_projects_kdl` |
-| `<project>/.config/z.kdl` | KDL (per-repo: layout, custom workflows, autopilot settings, actions) | `repo_config::parse_repo_config_projection` |
-| `~/.config/z/session-activity.json` | JSON map `{session_name: unix_epoch_secs}` | `FileActivityStore` |
-| `~/.config/z/worktree-metadata.json` | JSON (worktree records, notifications, agent activity) | `LocalWorktreeMetadataStore` |
-| `~/.local/state/z/z.log` | Structured text log (`[LEVEL] timestamp message`) | `FileLogger` |
-| `~/.local/share/z/autopilot/` | JSON (workflow run state per project+name) | `FileRunStore` → `z_autopilot::persist` |
-| `/tmp/z-layout-{PID}-{SEQ}.kdl` | KDL (temporary Zellij layout) | `session_manager::write_temp_layout` |
+| `~/.config/zigzag/config.kdl` | KDL (global config: theme, nav, notifications, actions, review_tool) | `zigzag_core::config::parse_global_config_kdl` |
+| `~/.config/zigzag/projects.kdl` | KDL (project list: name, path, host, transport) | `KdlProjectStore` / `zigzag_core::config::parse_projects_kdl` |
+| `<project>/.config/zigzag.kdl` | KDL (per-repo: layout, custom workflows, autopilot settings, actions) | `repo_config::parse_repo_config_projection` |
+| `~/.config/zigzag/session-activity.json` | JSON map `{session_name: unix_epoch_secs}` | `FileActivityStore` |
+| `~/.config/zigzag/worktree-metadata.json` | JSON (worktree records, notifications, agent activity) | `LocalWorktreeMetadataStore` |
+| `~/.local/state/zigzag/zigzag.log` | Structured text log (`[LEVEL] timestamp message`) | `FileLogger` |
+| `~/.local/share/zigzag/autopilot/` | JSON (workflow run state per project+name) | `FileRunStore` → `zigzag_autopilot::persist` |
+| `/tmp/zigzag-layout-{PID}-{SEQ}.kdl` | KDL (temporary Zellij layout) | `session_manager::write_temp_layout` |
 | `<cwd>/.claude/settings.json` | JSON (Claude stop hook injection) | `main::inject_claude_stop_hook` |
-| `/tmp/z-switch.lock` | Empty lock file (PID content) | `main::cmd_switch` |
+| `/tmp/zigzag-switch.lock` | Empty lock file (PID content) | `main::cmd_switch` |
 
 ### Trait Implementations (Port-Adapter Map)
 
-| Trait (defined in `z_core`) | Adapter Struct | Module |
+| Trait (defined in `zigzag_core`) | Adapter Struct | Module |
 |---|---|---|
 | `SessionManager` | `ZellijSessionManager` | `session_manager` |
 | `SessionRefresher` | `ZellijSessionRefresher` | `session_manager` |
@@ -139,29 +139,29 @@ Guard: must be inside a Zellij session. Parses `project:branch` from `ZELLIJ_SES
 | `StepExecutor` | `CliStepExecutor` | `autopilot_runner` |
 | `PreviewDataSource` | `CliPreviewDataSource` | `preview` |
 
-### Module Dependency Graph (within `z-cli`)
+### Module Dependency Graph (within `zigzag-cli`)
 
 ```
 main ──────────────────────────────────────────────────────────────────┐
- ├── config_store ──► z_core::config                                    │
- ├── session_manager ──► z_core::traits::SessionManager                  │
- │    └── activity_store ──► z_core::activity                            │
- ├── session_open ──► z_core::domain                                     │
- ├── worktree_manager ──► z_core::traits::WorktreeManager                │
+ ├── config_store ──► zigzag_core::config                                    │
+ ├── session_manager ──► zigzag_core::traits::SessionManager                  │
+ │    └── activity_store ──► zigzag_core::activity                            │
+ ├── session_open ──► zigzag_core::domain                                     │
+ ├── worktree_manager ──► zigzag_core::traits::WorktreeManager                │
  │    └── remote                                                         │
  ├── workspace                                                           │
- │    └── repo_config ──► z_core::config                                 │
+ │    └── repo_config ──► zigzag_core::config                                 │
  ├── preview                                                             │
  │    ├── git_preview ──► remote                                         │
  │    ├── worktree_manager                                               │
  │    └── forge                                                          │
- ├── prune ──► z_core::domain                                            │
+ ├── prune ──► zigzag_core::domain                                            │
  ├── remote ──► session_manager (parse_zellij_sessions)                  │
  ├── notify                                                              │
  ├── zellij_action                                                       │
- ├── worktree_metadata_store ──► z_core::traits::WorktreeMetadataStore   │
- ├── log ──► z_core::log                                                 │
- ├── depcheck_impl ──► z_core::depcheck                                  │
- └── autopilot_runner ──► z_autopilot::lifecycle, z_autopilot::persist  │
+ ├── worktree_metadata_store ──► zigzag_core::traits::WorktreeMetadataStore   │
+ ├── log ──► zigzag_core::log                                                 │
+ ├── depcheck_impl ──► zigzag_core::depcheck                                  │
+ └── autopilot_runner ──► zigzag_autopilot::lifecycle, zigzag_autopilot::persist  │
       └── remote                                                         │
 ```

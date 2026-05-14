@@ -1,11 +1,11 @@
-# z/crates/z-core/src/ — Domain Logic & Pure Abstractions
+# zigzag/crates/zigzag-core/src/ — Domain Logic & Pure Abstractions
 
 ## Responsibility
 
-`z-core` is the shared library crate that defines the domain model, configuration
+`zigzag-core` is the shared library crate that defines the domain model, configuration
 parsing, action system, forge integration helpers, theme engine, and all trait
-abstractions for the `z` CLI and TUI. It has zero executable surface —
-every binary target (`z-cli`, `z-tui`) depends on `z-core` for its core types,
+abstractions for the `zigzag` CLI and TUI. It has zero executable surface —
+every binary target (`zigzag-cli`, `zigzag-tui`) depends on `zigzag-core` for its core types,
 parsing, and rendering primitives.
 
 This crate is deliberately **I/O-agnostic at the boundary**: traits (e.g.
@@ -20,7 +20,7 @@ adapters live in consumer crates.
 | **Trait-based abstraction** | `ProjectStore`, `SessionManager`, `WorktreeManager`, `ForgeClient`, `Notifier`, `DepChecker`, `Logger`, `ActivityStore`, `SessionRefresher`, `WorktreeMetadataStore`, `ConfigEnvironment` — all define pure interfaces injected by the CLI/TUI adapters. |
 | **Trait-object polymorphism** | `dyn ActivityStore` used in `session_entry.rs` for best-effort effect composition. |
 | **Companion function + trait** | `depcheck::check_deps()` takes a `&impl DepChecker`; `config::parse_projects_kdl_with_environment()` takes `&impl ConfigEnvironment` — enabling deterministic testing without I/O. |
-| **Three-tier config merging** | Hardcoded defaults ← global `~/.config/z/config.kdl` ← per-repo `.config/z.kdl`. Used for `layout`, `actions`, and prompt templates. Lower tier wins entirely (no partial merge). |
+| **Three-tier config merging** | Hardcoded defaults ← global `~/.config/zigzag/config.kdl` ← per-repo `.config/zigzag.kdl`. Used for `layout`, `actions`, and prompt templates. Lower tier wins entirely (no partial merge). |
 | **Inner-outer layer merge** | `action::merge_actions()` applies layers sequentially by name (later overrides earlier); `disabled: true` removes the action. Used to compose builtin + global + per-repo actions. |
 | **Pure KDL generation** | `layout::generate_layout_kdl()` constructs a Zellij KDL layout string from the `Layout` domain struct. No I/O — pure string manipulation with KDL escaping. |
 | **Best-effort effect pattern** | `session_entry::mark_existing_session_entered()` runs notification clearing and activity recording, returning a `SessionEntryEffects` struct that reports per-operation success independently. |
@@ -32,7 +32,7 @@ adapters live in consumer crates.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                          z-core Crate                                │
+│                          zigzag-core Crate                                │
 │                                                                      │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────────────┐   │
 │  │ domain   │  │ error    │  │ traits   │  │ config            │   │
@@ -82,7 +82,7 @@ adapters live in consumer crates.
 **Layout generation flow:**
 1. `Layout` domain struct → `generate_layout_kdl(layout, bin_path, theme)` → Zellij KDL string
 2. Always prepends `default_tab_template { tab-bar + status-bar + children }` for UI chrome
-3. Appends tab definitions, `env { Z_SESSION_NAME "..." }` block (if set), `keybinds` block (Alt+k/l/z), and `themes { ... }` block
+3. Appends tab definitions, `env { ZIGZAG_SESSION_NAME "..." }` block (if set), `keybinds` block (Alt+k/l/z), and `themes { ... }` block
 4. `inject_prompt_into_layout()` appends a prompt string as an argument to the first `command="claude"` pane
 
 **Forge data flow:**
@@ -101,23 +101,23 @@ adapters live in consumer crates.
 
 | Interface | Consumer(s) | Description |
 |---|---|---|
-| `ProjectStore` | `z-cli`, `z-tui` | CRUD for persisted projects |
-| `ProjectStoreWriter` | `z-cli`, `z-tui` | Write-side project operations |
-| `SessionManager` | `z-cli`, `z-tui` | Zellij session lifecycle (list, create, attach, detach, kill) |
-| `WorktreeManager` | `z-cli` | `wt` worktree create/list/remove |
-| `ForgeClient` | `z-cli`, `z-tui` | GitHub PR, CI, review queries (backed by `gh` CLI) |
-| `Notifier` | `z-cli`, `z-tui` | System notification dispatch (macOS, Telegram, TUI) |
-| `SessionRefresher` | `z-tui` | Periodic background fetch of all sessions + notifications + activity |
-| `DepChecker` | `z-cli` | Version probing for external tool dependencies (`zellij`, `wt`, `gh`) |
-| `Logger` | `z-cli`, `z-tui` | Appending structured log entries |
-| `ActivityStore` | `z-cli`, `z-tui` | File-backed last-attach timestamp tracking |
-| `WorktreeMetadataStore` | `z-cli`, `z-tui` | JSON metadata persistence for worktree records, notifications, and LLM status |
+| `ProjectStore` | `zigzag-cli`, `zigzag-tui` | CRUD for persisted projects |
+| `ProjectStoreWriter` | `zigzag-cli`, `zigzag-tui` | Write-side project operations |
+| `SessionManager` | `zigzag-cli`, `zigzag-tui` | Zellij session lifecycle (list, create, attach, detach, kill) |
+| `WorktreeManager` | `zigzag-cli` | `wt` worktree create/list/remove |
+| `ForgeClient` | `zigzag-cli`, `zigzag-tui` | GitHub PR, CI, review queries (backed by `gh` CLI) |
+| `Notifier` | `zigzag-cli`, `zigzag-tui` | System notification dispatch (macOS, Telegram, TUI) |
+| `SessionRefresher` | `zigzag-tui` | Periodic background fetch of all sessions + notifications + activity |
+| `DepChecker` | `zigzag-cli` | Version probing for external tool dependencies (`zellij`, `wt`, `gh`) |
+| `Logger` | `zigzag-cli`, `zigzag-tui` | Appending structured log entries |
+| `ActivityStore` | `zigzag-cli`, `zigzag-tui` | File-backed last-attach timestamp tracking |
+| `WorktreeMetadataStore` | `zigzag-cli`, `zigzag-tui` | JSON metadata persistence for worktree records, notifications, and LLM status |
 | `ConfigEnvironment` | `config` | `env:VAR` resolution strategy (injected for tests) |
 
 **Config files consumed:**
-- `~/.config/z/config.kdl` — parsed by `parse_global_config_kdl()`
-- `~/.config/z/projects.kdl` — parsed by `parse_projects_kdl()`
-- `<project-root>/.config/z.kdl` — parsed by `parse_per_repo_config_kdl()`
+- `~/.config/zigzag/config.kdl` — parsed by `parse_global_config_kdl()`
+- `~/.config/zigzag/projects.kdl` — parsed by `parse_projects_kdl()`
+- `<project-root>/.config/zigzag.kdl` — parsed by `parse_per_repo_config_kdl()`
 
 **External CLI output parsed:**
 - `zellij list-sessions --json` — parsed by `zellij::parse_zellij_session_info()`

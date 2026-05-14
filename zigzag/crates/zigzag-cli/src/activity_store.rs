@@ -24,8 +24,7 @@ impl FileActivityStore {
     }
 
     pub fn default_path() -> PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".config/z/session-activity.json")
+        crate::paths::config_dir().join("session-activity.json")
     }
 
     pub fn record_attach(&self, session: &str) -> Result<()> {
@@ -98,7 +97,7 @@ mod tests {
     fn tmp_activity_file() -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
-        std::env::temp_dir().join(format!("z-activity-test-{}-{}.json", pid, n))
+        std::env::temp_dir().join(format!("zigzag-activity-test-{}-{}.json", pid, n))
     }
 
     fn cleanup(path: &Path) {

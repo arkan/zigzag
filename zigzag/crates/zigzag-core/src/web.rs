@@ -1,4 +1,4 @@
-//! Pure helpers for the `z web` dashboard view.
+//! Pure helpers for the `zigzag web` dashboard view.
 //!
 //! The functions here are I/O-agnostic: callers supply sessions, projects,
 //! activity, and notification counts, and get back a structure ready for

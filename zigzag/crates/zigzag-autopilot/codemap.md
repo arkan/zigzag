@@ -1,8 +1,8 @@
-# z/crates/z-autopilot/
+# zigzag/crates/zigzag-autopilot/
 
 ## Responsibility
 
-z-autopilot is the **state machine and workflow engine** for the z system. It
+zigzag-autopilot is the **state machine and workflow engine** for the Zigzag system. It
 parses, schedules, executes, and monitors deterministic automation workflows
 triggered by repository events (push, PR merge, review, Dependabot, manual).
 
@@ -28,7 +28,7 @@ Each layer depends only on those below it; `run_loop` is the sole consumer of al
 **Trait-based adapter pattern** — Three traits define the engine/environment boundary:
 - `StepExecutor` — abstracts shell commands, notifications, confirmations
 - `RunStore` — abstracts persistence (filesystem vs. in-memory for tests)
-- `Notifier` (from `z-core`) — abstracts notification channel
+- `Notifier` (from `zigzag-core`) — abstracts notification channel
 
 **Pure state machine with observable events:**
 `state::advance()` is a pure function — no I/O. Events are materialized
@@ -79,14 +79,14 @@ Single JSON object per run, serde-roundtrippable. `prune_terminal_runs()` GC.
 
 ## Integration
 
-**From z-core:** `AutopilotConfig`, `Notifier` trait, `NotifyLevel`, `ZError`/`Result`, `kdl`
+**From zigzag-core:** `AutopilotConfig`, `Notifier` trait, `NotifyLevel`, `ZError`/`Result`, `kdl`
 
-**To consumers (z-cli, z-tui, z-web, z-plugin):**
+**To consumers (zigzag-cli, zigzag-tui, zigzag-web, zigzag-plugin):**
 Consumers must provide:
 1. Parsed `AutopilotWorkflow` definitions (via `dsl` or `builtin`)
 2. `StepExecutor` impl (shell/notification/confirm adapter)
 3. `RunStore` impl (typically wrapping `persist.rs`)
-4. `Notifier` impl (from `z-core::traits`)
+4. `Notifier` impl (from `zigzag-core::traits`)
 5. Call `execute_workflow_run()` + `push_decision()` post-execution
 
 **Public surface (9 modules):**

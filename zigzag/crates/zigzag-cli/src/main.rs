@@ -36,7 +36,9 @@ use zigzag_core::traits::{
 use zigzag_autopilot::builtin::builtin_workflows;
 use zigzag_autopilot::dsl::AutopilotWorkflow;
 use zigzag_autopilot::persist::{list_runs, prune_terminal_runs};
-use zigzag_autopilot::run_loop::{execute_workflow_run, RunLoopOptions, RunLoopReport, RunLoopStop};
+use zigzag_autopilot::run_loop::{
+    execute_workflow_run, RunLoopOptions, RunLoopReport, RunLoopStop,
+};
 use zigzag_autopilot::state::{WorkflowRun, WorkflowStatus};
 
 use crate::config_store::KdlProjectStore;
@@ -119,6 +121,12 @@ fn main() {
     run();
 }
 
+fn print_usage() {
+    println!(
+        "usage: zigzag [list|open|close|project|session|worktree|doctor|notify|autopilot|logs|switch|logs-viewer|actions]"
+    );
+}
+
 fn run() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(|s| s.as_str()) {
@@ -133,6 +141,9 @@ fn run() {
                 eprintln!("error: {}", e);
                 std::process::exit(1);
             }
+        }
+        Some("--help") | Some("-h") | Some("help") => {
+            print_usage();
         }
         Some("open") => {
             let project = args.get(1).map(|s| s.as_str()).unwrap_or("");
@@ -202,7 +213,9 @@ fn run() {
                     }
                 }
                 _ => {
-                    eprintln!("usage: zigzag worktree delete <project> <branch> [--confirm <branch>]");
+                    eprintln!(
+                        "usage: zigzag worktree delete <project> <branch> [--confirm <branch>]"
+                    );
                     std::process::exit(1);
                 }
             }
@@ -306,7 +319,9 @@ fn run() {
         }
         Some(cmd) => {
             eprintln!("unknown command: {:?}", cmd);
-            eprintln!("usage: zigzag [list|open|close|project|session|worktree|doctor|notify|autopilot|logs|switch|logs-viewer|actions]");
+            eprintln!(
+                "usage: zigzag [list|open|close|project|session|worktree|doctor|notify|autopilot|logs|switch|logs-viewer|actions]"
+            );
             std::process::exit(1);
         }
     }
@@ -686,7 +701,8 @@ fn cmd_tui() -> zigzag_core::error::Result<()> {
                 let branch = format!("grill/{}-{}", number, slug);
                 let global = load_global_config();
                 let per_repo = load_per_repo_config_for_project(&project);
-                let template = zigzag_core::config::effective_issue_prompt_template(&global, &per_repo);
+                let template =
+                    zigzag_core::config::effective_issue_prompt_template(&global, &per_repo);
                 let mut vars = std::collections::HashMap::new();
                 let num_str = number.to_string();
                 vars.insert("number", num_str.as_str());
@@ -704,7 +720,8 @@ fn cmd_tui() -> zigzag_core::error::Result<()> {
             } => {
                 let global = load_global_config();
                 let per_repo = load_per_repo_config_for_project(&project);
-                let template = zigzag_core::config::effective_pr_prompt_template(&global, &per_repo);
+                let template =
+                    zigzag_core::config::effective_pr_prompt_template(&global, &per_repo);
                 let mut vars = std::collections::HashMap::new();
                 let num_str = number.to_string();
                 vars.insert("number", num_str.as_str());
@@ -774,7 +791,8 @@ fn load_notification_aliases() -> HashSet<String> {
         .unwrap_or_default()
 }
 
-fn discover_local_worktrees() -> zigzag_core::error::Result<Vec<zigzag_core::domain::DiscoveredWorktree>> {
+fn discover_local_worktrees(
+) -> zigzag_core::error::Result<Vec<zigzag_core::domain::DiscoveredWorktree>> {
     let store = KdlProjectStore::new();
     let projects = store.list_projects()?;
     Ok(discover_local_worktrees_for_projects(&projects))
@@ -871,7 +889,7 @@ fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> zigzag_core::erro
 // }
 
 // deploy {
-//   command \"npm run deploy\"   // command run by `z deploy`
+//   command \"npm run deploy\"   // command run by `zigzag deploy`
 // }
 
 // autopilot {
@@ -879,7 +897,8 @@ fn cmd_edit_per_repo_config(project_path: &std::path::Path) -> zigzag_core::erro
 //   review true        // open a PR after each autopilot session
 // }
 ";
-        fs::write(&config_file, template).map_err(|e| zigzag_core::error::ZError::Io(e.to_string()))?;
+        fs::write(&config_file, template)
+            .map_err(|e| zigzag_core::error::ZError::Io(e.to_string()))?;
     }
 
     // Determine editor: $EDITOR, falling back to vi.
@@ -1057,7 +1076,10 @@ fn cmd_open_remote(
         )
     };
 
-    let use_mosh = matches!(project.transport, Some(zigzag_core::domain::Transport::Mosh));
+    let use_mosh = matches!(
+        project.transport,
+        Some(zigzag_core::domain::Transport::Mosh)
+    );
 
     // Wrap in login shell so nix/direnv PATH is available on the remote.
     let wrapped = format!("bash -l -c {}", remote::shell_quote(&remote_cmd));
@@ -1229,7 +1251,9 @@ fn cmd_worktree_delete(
         .args(["worktree", "list", "--porcelain"])
         .current_dir(&project.path)
         .output()
-        .map_err(|e| zigzag_core::error::ZError::Worktree(format!("git worktree list failed: {e}")))?;
+        .map_err(|e| {
+            zigzag_core::error::ZError::Worktree(format!("git worktree list failed: {e}"))
+        })?;
     if !detailed_output.status.success() {
         return Err(zigzag_core::error::ZError::Worktree(format!(
             "git worktree list failed with status {}",
@@ -1246,7 +1270,8 @@ fn cmd_worktree_delete(
     .into_iter()
     .filter_map(|worktree| worktree.branch)
     .filter(|candidate_branch| {
-        zigzag_core::domain::Session::new(project_name, candidate_branch).name == target_session_name
+        zigzag_core::domain::Session::new(project_name, candidate_branch).name
+            == target_session_name
     })
     .collect();
     let has_session_name_collision = colliding_branches.len() > 1;
@@ -1469,16 +1494,15 @@ fn cmd_doctor(fix: bool, interactive: bool) -> zigzag_core::error::Result<String
                             );
                             for entry in &entries {
                                 match entry.status {
-                                    zigzag_core::domain::WorktreeStatus::Conflict => {
-                                        diagnostics.push(format!(
+                                    zigzag_core::domain::WorktreeStatus::Conflict => diagnostics
+                                        .push(format!(
                                             "    ⚠ session-name conflict: {}",
                                             entry
                                                 .discovered
                                                 .branch
                                                 .as_deref()
                                                 .unwrap_or("(detached)")
-                                        ))
-                                    }
+                                        )),
                                     zigzag_core::domain::WorktreeStatus::Unsupported => diagnostics
                                         .push(format!(
                                             "    ? unsupported detached worktree: {}",
@@ -1712,10 +1736,10 @@ fn switch_lock_owner_is_active(path: &Path) -> bool {
     else {
         return false;
     };
-    process_looks_like_z_switch(pid)
+    process_looks_like_zigzag_switch(pid)
 }
 
-fn process_looks_like_z_switch(pid: u32) -> bool {
+fn process_looks_like_zigzag_switch(pid: u32) -> bool {
     let cmdline_path = format!("/proc/{pid}/cmdline");
     let Ok(cmdline) = fs::read(cmdline_path) else {
         return false;
@@ -1728,7 +1752,9 @@ fn check_switch_deps() -> zigzag_core::error::Result<()> {
         .arg("--version")
         .output()
         .map_err(|e| {
-            zigzag_core::error::ZError::Session(format!("zellij is required for zigzag switch: {e}"))
+            zigzag_core::error::ZError::Session(format!(
+                "zellij is required for zigzag switch: {e}"
+            ))
         })?;
     if output.status.success() {
         return Ok(());
@@ -1745,7 +1771,8 @@ fn switch_bootstrap_log_message(args: &[String]) -> String {
         .ok()
         .and_then(|path| path.to_str().map(str::to_string))
         .unwrap_or_else(|| "<unknown>".to_string());
-    let z_session = std::env::var("ZIGZAG_SESSION_NAME").unwrap_or_else(|_| "<unset>".to_string());
+    let zigzag_session =
+        std::env::var("ZIGZAG_SESSION_NAME").unwrap_or_else(|_| "<unset>".to_string());
     let zellij_session =
         std::env::var("ZELLIJ_SESSION_NAME").unwrap_or_else(|_| "<unset>".to_string());
     format!(
@@ -1754,7 +1781,7 @@ fn switch_bootstrap_log_message(args: &[String]) -> String {
         parent_process_id(),
         exe,
         args,
-        z_session,
+        zigzag_session,
         zellij_session,
     )
 }
@@ -1915,7 +1942,7 @@ fn cmd_switch_selection_from_dashboard(
     current_session: Option<String>,
 ) -> DashboardSwitchOutcome {
     let target_project = selected_project_for_session(&session_name, None);
-    let lock = match acquire_switch_lock("/tmp/zigzag-switch.lock") {
+    let lock = match acquire_switch_lock(paths::SWITCH_LOCK_PATH) {
         Ok(Some(lock)) => lock,
         Ok(None) => {
             log_switch_event("dashboard lock busy after wait", LogLevel::Warning);
@@ -1976,7 +2003,7 @@ fn cmd_switch() -> zigzag_core::error::Result<()> {
 
     // Prevent multiple switch pickers from opening simultaneously, while
     // allowing stale lock files from crashed/interrupted panes to self-heal.
-    let Some(lock) = acquire_switch_lock("/tmp/zigzag-switch.lock")
+    let Some(lock) = acquire_switch_lock(paths::SWITCH_LOCK_PATH)
         .map_err(|e| zigzag_core::error::ZError::Io(e.to_string()))?
     else {
         // Another switcher is already running — exit silently so the floating
@@ -1993,16 +2020,17 @@ fn cmd_switch() -> zigzag_core::error::Result<()> {
     );
     if switch_entries.is_empty() {
         log_switch_event(
-            "no active z sessions found; showing diagnostic",
+            "no active Zigzag sessions found; showing diagnostic",
             LogLevel::Warning,
         );
-        eprintln!("zigzag switch: no active z sessions found");
+        eprintln!("zigzag switch: no active Zigzag sessions found");
         std::thread::sleep(Duration::from_secs(2));
         return Ok(());
     }
 
-    let selected = zigzag_tui::run_switch_picker_with_entries(switch_entries, current_session.clone())
-        .map_err(|e| zigzag_core::error::ZError::Io(e.to_string()))?;
+    let selected =
+        zigzag_tui::run_switch_picker_with_entries(switch_entries, current_session.clone())
+            .map_err(|e| zigzag_core::error::ZError::Io(e.to_string()))?;
 
     if let Some(session_name) = selected {
         log_switch_event(&format!("selected {session_name}"), LogLevel::Info);
@@ -2211,8 +2239,8 @@ fn cmd_actions() -> zigzag_core::error::Result<()> {
         return Ok(());
     }
 
-    let selected =
-        zigzag_tui::run_action_picker(actions).map_err(|e| zigzag_core::error::ZError::Io(e.to_string()))?;
+    let selected = zigzag_tui::run_action_picker(actions)
+        .map_err(|e| zigzag_core::error::ZError::Io(e.to_string()))?;
 
     if let Some(action) = selected {
         match &action.action {
@@ -2225,7 +2253,9 @@ fn cmd_actions() -> zigzag_core::error::Result<()> {
                 })
                 .map_err(|e| zigzag_core::error::ZError::Io(e.to_string()))?;
                 if !status.success() {
-                    return Err(zigzag_core::error::ZError::Io("action command failed".into()));
+                    return Err(zigzag_core::error::ZError::Io(
+                        "action command failed".into(),
+                    ));
                 }
             }
             zigzag_core::action::ActionType::OpenUrl { url } => {
@@ -2315,7 +2345,9 @@ fn cmd_notify_event(event: NotifyEventCommand) -> zigzag_core::error::Result<()>
                 global.llm.working_update_min_interval_seconds,
             );
             let activity_event = match event.kind {
-                NotifyEventKind::LlmWorking => zigzag_core::agent_activity::AgentActivityEvent::Working,
+                NotifyEventKind::LlmWorking => {
+                    zigzag_core::agent_activity::AgentActivityEvent::Working
+                }
                 NotifyEventKind::LlmIdle => zigzag_core::agent_activity::AgentActivityEvent::Idle,
                 NotifyEventKind::LlmWaiting => {
                     zigzag_core::agent_activity::AgentActivityEvent::Waiting {
@@ -2423,9 +2455,12 @@ fn resolve_notify_target(session_name: &str) -> zigzag_core::error::Result<Notif
                     session_name
                 )))
             }
-            zigzag_core::domain::SessionAliasResolution::None => Err(zigzag_core::error::ZError::Session(
-                format!("session {} does not resolve to a worktree", session_name),
-            )),
+            zigzag_core::domain::SessionAliasResolution::None => {
+                Err(zigzag_core::error::ZError::Session(format!(
+                    "session {} does not resolve to a worktree",
+                    session_name
+                )))
+            }
         };
     }
 
@@ -2724,7 +2759,7 @@ mod tests {
     }
 
     fn test_project_name(suffix: &str) -> String {
-        format!("z-test-{}-{suffix}", std::process::id())
+        format!("zigzag-test-{}-{suffix}", std::process::id())
     }
 
     fn test_identity(project_name: &str) -> zigzag_core::domain::WorktreeIdentity {
@@ -2750,7 +2785,10 @@ mod tests {
     }
 
     impl ProjectStoreWriter for RecordingProjectStore {
-        fn add_project(&mut self, _project: &zigzag_core::domain::Project) -> zigzag_core::error::Result<()> {
+        fn add_project(
+            &mut self,
+            _project: &zigzag_core::domain::Project,
+        ) -> zigzag_core::error::Result<()> {
             Ok(())
         }
 
@@ -2773,12 +2811,12 @@ mod tests {
 
     #[test]
     fn resolve_bin_path_uses_path_command() {
-        assert_eq!(resolve_bin_path(), "z");
+        assert_eq!(resolve_bin_path(), "zigzag");
     }
 
     fn temp_switch_lock_path(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "z-switch-lock-test-{}-{}",
+            "zigzag-switch-lock-test-{}-{}",
             std::process::id(),
             name
         ));
@@ -3391,12 +3429,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_session_env_uses_z_session_name() {
+    fn resolve_session_env_uses_zigzag_session_name() {
         let _guard = SESSION_ENV_MUTEX.lock().unwrap();
         clear_session_env();
-        std::env::set_var("ZIGZAG_SESSION_NAME", "z-session");
+        std::env::set_var("ZIGZAG_SESSION_NAME", "zigzag-session");
 
-        assert_eq!(resolve_session_env().as_deref(), Some("z-session"));
+        assert_eq!(resolve_session_env().as_deref(), Some("zigzag-session"));
 
         clear_session_env();
     }
@@ -3413,7 +3451,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_session_env_ignores_empty_z_session_name() {
+    fn resolve_session_env_ignores_empty_zigzag_session_name() {
         let _guard = SESSION_ENV_MUTEX.lock().unwrap();
         clear_session_env();
         std::env::set_var("ZIGZAG_SESSION_NAME", "");
@@ -3436,7 +3474,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_required_session_env_accepts_z_session_name() {
+    fn resolve_required_session_env_accepts_zigzag_session_name() {
         let _guard = SESSION_ENV_MUTEX.lock().unwrap();
         clear_session_env();
         std::env::set_var("ZIGZAG_SESSION_NAME", "myapp:main");
@@ -3480,13 +3518,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_session_env_prefers_z_session_name() {
+    fn resolve_session_env_prefers_zigzag_session_name() {
         let _guard = SESSION_ENV_MUTEX.lock().unwrap();
         clear_session_env();
-        std::env::set_var("ZIGZAG_SESSION_NAME", "z-session");
+        std::env::set_var("ZIGZAG_SESSION_NAME", "zigzag-session");
         std::env::set_var("ZELLIJ_SESSION_NAME", "zellij-session");
 
-        assert_eq!(resolve_session_env().as_deref(), Some("z-session"));
+        assert_eq!(resolve_session_env().as_deref(), Some("zigzag-session"));
 
         clear_session_env();
     }
@@ -3814,7 +3852,9 @@ fn cmd_autopilot_dispatch(sub: Option<&str>, args: &[String]) -> zigzag_core::er
 
 /// List all available autopilot workflows: built-in + per-repo custom workflows
 /// for the given project path (if provided).
-pub fn cmd_autopilot_list(project_path: Option<&std::path::Path>) -> zigzag_core::error::Result<()> {
+pub fn cmd_autopilot_list(
+    project_path: Option<&std::path::Path>,
+) -> zigzag_core::error::Result<()> {
     let all_workflows = load_autopilot_workflows(project_path)?;
 
     println!("{}", format_workflow_list(&all_workflows));
@@ -3995,7 +4035,7 @@ fn cmd_list() -> zigzag_core::error::Result<()> {
     let projects = store.list_projects()?;
 
     if projects.is_empty() {
-        println!("No projects found. Add projects to ~/.config/zigzagigzag/projects.kdl");
+        println!("No projects found. Add projects to ~/.config/zigzag/projects.kdl");
         return Ok(());
     }
 

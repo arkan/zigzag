@@ -2168,7 +2168,7 @@ fn event_loop<B: Backend>(
                                 match state.filtered_worktrees().get(state.selected_session) {
                                     Some(wt) if matches!(wt.status, WorktreeStatus::Conflict) => {
                                         state.status_message = Some(
-                                            "Worktree has a session-name conflict. Run z doctor."
+                                            "Worktree has a session-name conflict. Run zigzag doctor."
                                                 .to_string(),
                                         );
                                         None
@@ -2389,7 +2389,7 @@ fn open_switcher_modal(
 ) {
     match load_switch_entries_fn() {
         Ok(snapshot) if snapshot.entries.is_empty() => {
-            state.status_message = Some("No active local z sessions found.".to_string());
+            state.status_message = Some("No active local Zigzag sessions found.".to_string());
         }
         Ok(snapshot) => {
             state.modal = Some(Modal::SwitchPicker(SwitchPickerState::with_entries(
@@ -3061,7 +3061,11 @@ fn render_delete_confirm_modal(
     f.render_widget(paragraph, inner);
 }
 
-fn render_delete_session_confirm_modal(f: &mut Frame, session: &str, theme: &zigzag_core::theme::Theme) {
+fn render_delete_session_confirm_modal(
+    f: &mut Frame,
+    session: &str,
+    theme: &zigzag_core::theme::Theme,
+) {
     let area = f.area();
     let modal_width = 56u16;
     let modal_height = 7u16;
@@ -3377,11 +3381,11 @@ fn render_help_modal(f: &mut Frame, theme: &zigzag_core::theme::Theme) {
             normal,
         )),
         Line::from(Span::styled(
-            "   Ctrl+O \u{2192} D      Detach (return to z)",
+            "   Ctrl+O \u{2192} D      Detach (return to Zigzag)",
             normal,
         )),
         Line::from(Span::styled(
-            "   Ctrl+Q           Quit session (return to z)",
+            "   Ctrl+Q           Quit session (return to Zigzag)",
             normal,
         )),
         Line::from(Span::styled(
@@ -4126,7 +4130,11 @@ fn entry_age_or_notification_age(entry: &SwitchSessionEntry, now_ms: u64) -> Str
 }
 
 /// Render the session switch picker into the frame.
-fn render_switch_picker(f: &mut Frame, state: &SwitchPickerState, theme: &zigzag_core::theme::Theme) {
+fn render_switch_picker(
+    f: &mut Frame,
+    state: &SwitchPickerState,
+    theme: &zigzag_core::theme::Theme,
+) {
     let area = f.area();
     render_switch_picker_in_area(f, state, theme, area, true);
 }
@@ -4693,7 +4701,7 @@ impl Drop for TerminalRestoreGuard {
 }
 
 // ---------------------------------------------------------------------------
-// Standalone log viewer (used by `z logs-viewer` in a Zellij floating pane)
+// Standalone log viewer (used by `zigzag logs-viewer` in a Zellij floating pane)
 // ---------------------------------------------------------------------------
 
 /// Run a standalone log viewer TUI. `lines` are the log entries to display.
@@ -4744,7 +4752,7 @@ pub fn run_log_viewer(lines: Vec<String>) -> io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Standalone action picker (used by `z actions` in a Zellij floating pane)
+// Standalone action picker (used by `zigzag actions` in a Zellij floating pane)
 // ---------------------------------------------------------------------------
 
 /// Run a standalone action picker TUI. Displays the given actions in a modal
@@ -5211,7 +5219,7 @@ mod tests {
         assert!(state.modal.is_none());
         assert_eq!(
             state.status_message.as_deref(),
-            Some("No active local z sessions found.")
+            Some("No active local Zigzag sessions found.")
         );
     }
 
@@ -10140,7 +10148,7 @@ mod tests {
     fn switch_picker_sort_by_recent_attach_puts_largest_first_and_none_last() {
         let mut entries = vec![
             SwitchSessionEntry {
-                session_name: "z:medium".to_string(),
+                session_name: "zigzag:medium".to_string(),
                 age: None,
                 notification_count: 0,
                 notifications: vec![],
@@ -10148,7 +10156,7 @@ mod tests {
                 last_attach: Some(200),
             },
             SwitchSessionEntry {
-                session_name: "z:oldest".to_string(),
+                session_name: "zigzag:oldest".to_string(),
                 age: None,
                 notification_count: 0,
                 notifications: vec![],
@@ -10156,7 +10164,7 @@ mod tests {
                 last_attach: Some(100),
             },
             SwitchSessionEntry {
-                session_name: "z:newest".to_string(),
+                session_name: "zigzag:newest".to_string(),
                 age: None,
                 notification_count: 0,
                 notifications: vec![],
@@ -10164,7 +10172,7 @@ mod tests {
                 last_attach: Some(300),
             },
             SwitchSessionEntry {
-                session_name: "z:unknown".to_string(),
+                session_name: "zigzag:unknown".to_string(),
                 age: None,
                 notification_count: 0,
                 notifications: vec![],
@@ -10183,7 +10191,12 @@ mod tests {
                 .iter()
                 .map(|e| e.session_name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["z:newest", "z:medium", "z:oldest", "z:unknown"],
+            vec![
+                "zigzag:newest",
+                "zigzag:medium",
+                "zigzag:oldest",
+                "zigzag:unknown"
+            ],
             "large last_attach first, None last"
         );
     }
@@ -10287,14 +10300,14 @@ mod tests {
     #[test]
     fn switch_picker_compact_wide_mobile_hides_empty_detail() {
         let state = SwitchPickerState::new(
-            vec!["z:main".to_string(), "hermes:main".to_string()],
-            "z:main".to_string(),
+            vec!["zigzag:main".to_string(), "hermes:main".to_string()],
+            "zigzag:main".to_string(),
         );
 
         let out = render_switch_picker_to_string(&state, 76, 24);
 
         assert!(out.contains("Switch Session"));
-        assert!(out.contains("z:main"));
+        assert!(out.contains("zigzag:main"));
         assert!(out.contains("hermes:main"));
         assert!(out.contains("j/k"));
         assert!(out.contains("Enter"));
