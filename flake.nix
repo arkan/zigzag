@@ -15,10 +15,15 @@
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" "rust-analyzer" ];
+        rustToolchain = pkgs.rust-bin.fromRustupToolchain {
+          channel = "1.95.0";
+          components = [ "clippy" "rustfmt" "rust-src" "rust-analyzer" ];
         };
-        zigzagPackage = pkgs.callPackage ./package.nix { };
+        rustPlatform = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
+        };
+        zigzagPackage = pkgs.callPackage ./package.nix { inherit rustPlatform; };
         zigzagApp = {
           type = "app";
           program = "${zigzagPackage}/bin/zigzag";
