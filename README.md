@@ -81,36 +81,8 @@ alias z=zigzag
 Zigzag does not read old `z` paths. If you used the previous name, move local files manually:
 
 ```bash
-mkdir -p "$HOME/.config/zigzag"
-for file in config.kdl projects.kdl worktree-metadata.json session-activity.json; do
-  if [ -e "$HOME/.config/z/$file" ] && [ ! -e "$HOME/.config/zigzag/$file" ]; then
-    mv "$HOME/.config/z/$file" "$HOME/.config/zigzag/$file"
-  fi
-done
-rmdir "$HOME/.config/z" 2>/dev/null || true
-
-mkdir -p "$HOME/.local/state/zigzag"
-if [ -e "$HOME/.local/state/z/z.log" ] && [ ! -e "$HOME/.local/state/zigzag/zigzag.log" ]; then
-  mv "$HOME/.local/state/z/z.log" "$HOME/.local/state/zigzag/zigzag.log"
-fi
-for old_path in "$HOME/.local/state/z"/*; do
-  [ -e "$old_path" ] || continue
-  old_name="$(basename "$old_path")"
-  [ "$old_name" = "z.log" ] && continue
-  if [ ! -e "$HOME/.local/state/zigzag/$old_name" ]; then
-    mv "$old_path" "$HOME/.local/state/zigzag/$old_name"
-  fi
-done
-rmdir "$HOME/.local/state/z" 2>/dev/null || true
-
-mkdir -p "$HOME/.local/share"
-if [ -d "$HOME/.local/share/z" ] && [ ! -e "$HOME/.local/share/zigzag" ]; then
-  mv "$HOME/.local/share/z" "$HOME/.local/share/zigzag"
-fi
-
-if [ -e ".config/z.kdl" ] && [ ! -e ".config/zigzag.kdl" ]; then
-  mv ".config/z.kdl" ".config/zigzag.kdl"
-fi
+mv "$HOME/.config/z" "$HOME/.config/zigzag"
+mv "$HOME/.local/state/z" "$HOME/.local/state/zigzag"
 ```
 
 ### From source
