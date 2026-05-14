@@ -1,14 +1,14 @@
 {
-  "name": "z",
+  "name": "zigzag",
   "version": "1.0.0",
   "description": "TUI/CLI project manager for [Zellij](https://github.com/zellij-org/zellij) — orchestrates sessions, git worktrees, and autopilot workflows.",
-  "homepage": "https://github.com/arkan/z#readme",
+  "homepage": "https://github.com/arkan/zigzag#readme",
   "bugs": {
-    "url": "https://github.com/arkan/z/issues"
+    "url": "https://github.com/arkan/zigzag/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/arkan/z.git"
+    "url": "git+https://github.com/arkan/zigzag.git"
   },
   "license": "ISC",
   "author": "",
@@ -18,8 +18,8 @@
     "doc": "docs"
   },
   "scripts": {
-    "typecheck": "cargo check --manifest-path z/Cargo.toml --all",
-    "test": "cargo test --manifest-path z/Cargo.toml --all",
+    "typecheck": "cargo check --manifest-path zigzag/Cargo.toml --all",
+    "test": "cargo test --manifest-path zigzag/Cargo.toml --all",
     "postinstall": "bash scripts/patch-sandcastle.sh",
     "sandcastle": "npx tsx ./.sandcastle/main.ts"
   },

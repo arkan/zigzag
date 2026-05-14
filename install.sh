@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Install script for z — TUI project manager for Zellij.
-# Usage: curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | bash
+# Install script for Zigzag — TUI project manager for Zellij.
+# Usage: curl -fsSL https://raw.githubusercontent.com/arkan/zigzag/main/install.sh | bash
 set -euo pipefail
 
-REPO="arkan/z"
-BINARY="z"
-INSTALL_DIR="${Z_INSTALL_DIR:-${HOME}/.local/bin}"
+REPO="arkan/zigzag"
+BINARY="zigzag"
+INSTALL_DIR="${ZIGZAG_INSTALL_DIR:-${HOME}/.local/bin}"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ detect_target() {
 # ── resolve version ─────────────────────────────────────────────────────────
 
 resolve_version() {
-  local version="${Z_VERSION:-latest}"
+  local version="${ZIGZAG_VERSION:-latest}"
   if [ "$version" = "latest" ]; then
     need curl
     version="$(curl -fsSL -H "Accept: application/json" \
@@ -58,7 +58,7 @@ resolve_version() {
 download_and_install() {
   local version="$1" target="$2"
   local tag_version="${version#v}"
-  local archive="z-v${tag_version}-${target}.tar.gz"
+  local archive="zigzag-v${tag_version}-${target}.tar.gz"
   local url="https://github.com/${REPO}/releases/download/${version}/${archive}"
   local checksums_url="https://github.com/${REPO}/releases/download/${version}/checksums-sha256.txt"
 
@@ -96,6 +96,8 @@ download_and_install() {
   install -m 755 "${tmpdir}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 
   ok "installed ${BINARY} ${version} to ${INSTALL_DIR}/${BINARY}"
+  echo ""
+  echo "Optional short alias: add 'alias z=zigzag' to your shell profile."
 }
 
 # ── PATH check ──────────────────────────────────────────────────────────────

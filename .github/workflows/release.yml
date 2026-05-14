@@ -29,7 +29,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: z
+        working-directory: zigzag
 
     steps:
       - uses: actions/checkout@v4
@@ -45,8 +45,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            z/target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('z/Cargo.lock') }}
+            zigzag/target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('zigzag/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Install cross
@@ -64,9 +64,9 @@ jobs:
       - name: Package archive
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          ARCHIVE="z-v${VERSION}-${{ matrix.target }}.tar.gz"
+          ARCHIVE="zigzag-v${VERSION}-${{ matrix.target }}.tar.gz"
           mkdir -p staging
-          cp target/${{ matrix.target }}/release/z staging/
+          cp target/${{ matrix.target }}/release/zigzag staging/
           cp ../README.md staging/
           cd staging
           tar czf "../${ARCHIVE}" *
@@ -76,8 +76,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: z-${{ matrix.target }}
-          path: z/${{ env.ARCHIVE }}
+          name: zigzag-${{ matrix.target }}
+          path: zigzag/${{ env.ARCHIVE }}
 
   release:
     name: Publish release

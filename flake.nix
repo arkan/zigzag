@@ -1,5 +1,5 @@
 {
-  description = "z - TUI/CLI project manager for Zellij";
+  description = "Zigzag - TUI/CLI project manager for Zellij";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -18,22 +18,22 @@
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" "rust-analyzer" ];
         };
-        zPackage = pkgs.callPackage ./package.nix { };
-        zApp = {
+        zigzagPackage = pkgs.callPackage ./package.nix { };
+        zigzagApp = {
           type = "app";
-          program = "${zPackage}/bin/z";
-          meta = zPackage.meta;
+          program = "${zigzagPackage}/bin/zigzag";
+          meta = zigzagPackage.meta;
         };
       in
       {
         packages = {
-          default = zPackage;
-          z = zPackage;
+          default = zigzagPackage;
+          zigzag = zigzagPackage;
         };
 
         apps = {
-          default = zApp;
-          z = zApp;
+          default = zigzagApp;
+          zigzag = zigzagApp;
         };
 
         devShells.default = pkgs.mkShell {
@@ -46,7 +46,7 @@
           ];
 
           shellHook = ''
-            echo "z dev shell ready — rust $(rustc --version | cut -d' ' -f2), node $(node --version)"
+            echo "zigzag dev shell ready — rust $(rustc --version | cut -d' ' -f2), node $(node --version)"
           '';
         };
       }

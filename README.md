@@ -1,4 +1,4 @@
-# z
+# Zigzag
 
 **Rust TUI/CLI for [Zellij](https://github.com/zellij-org/zellij)-based development** — manage projects, git worktrees, Zellij sessions, and workflow automations from one terminal dashboard.
 
@@ -6,16 +6,16 @@
 
 ## Overview
 
-`z` is for developers who keep many repositories, branches, and terminal sessions open at once. It gives you one workflow around Zellij and git worktrees:
+`zigzag` is for developers who keep many repositories, branches, and terminal sessions open at once. It gives you one workflow around Zellij and git worktrees:
 
 - **Project dashboard** — browse configured projects, worktrees, running sessions, notifications, and git/PR/CI preview data.
-- **Worktree-first sessions** — `z open` restores the primary checkout or creates/restores a branch worktree through [`wt`](https://github.com/max-sixty/worktrunk).
+- **Worktree-first sessions** — `zigzag open` restores the primary checkout or creates/restores a branch worktree through [`wt`](https://github.com/max-sixty/worktrunk).
 - **Zellij integration** — generated layouts include shortcuts for session switching, actions, and logs.
 - **Action menu** — run contextual tools such as review, lazygit, PR opening, CI fixes, or custom commands.
 - **Autopilot workflows** — KDL-defined background workflows for CI fixes, review follow-up, merge/deploy flows, and custom automation.
 
 ```text
-┌─ z ───────────────────────────────────────────┐
+┌─ Zigzag ──────────────────────────────────────┐
 │ PROJECTS             WORKTREES                 │
 │ > myapp              main                 ●    │
 │   api                feat/login           🔔   │
@@ -28,7 +28,7 @@
 ```
 
 > [!NOTE]
-> `z` is still in early development. For deeper design context, see [`docs/PRD.md`](docs/PRD.md) and [`docs/SPECS.md`](docs/SPECS.md).
+> Zigzag is still in early development. For deeper design context, see [`docs/PRD.md`](docs/PRD.md) and [`docs/SPECS.md`](docs/SPECS.md).
 
 ## Install
 
@@ -41,32 +41,77 @@
 | [`wt`](https://github.com/max-sixty/worktrunk) | `0.34.0` | Git worktrees |
 | [GitHub CLI](https://cli.github.com/) | `2.0.0` | PR, CI, issue data |
 
-`z` checks these dependencies at startup and reports missing or outdated tools.
+Zigzag checks these dependencies at startup and reports missing or outdated tools.
 
 ### From a release
 
 ```bash
 # Latest release
-curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/arkan/zigzag/main/install.sh | bash
 
 # Specific version
-curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | Z_VERSION=v0.6.0 bash
+curl -fsSL https://raw.githubusercontent.com/arkan/zigzag/main/install.sh | ZIGZAG_VERSION=v0.6.0 bash
 
 # Custom install directory, default is ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | Z_INSTALL_DIR=/usr/local/bin bash
+curl -fsSL https://raw.githubusercontent.com/arkan/zigzag/main/install.sh | ZIGZAG_INSTALL_DIR=/usr/local/bin bash
 ```
 
 ### With Nix
 
 ```bash
 # Install from the flake
-nix profile install github:arkan/z
+nix profile install github:arkan/zigzag
 
 # Or try it without installing
-nix run github:arkan/z -- list
+nix run github:arkan/zigzag -- list
 ```
 
-The Nix package wraps `z` with the common runtime tools it shells out to: `zellij`, `wt`, `git`, `gh`, `ssh`, and `mosh`.
+The Nix package wraps `zigzag` with the common runtime tools it shells out to: `zellij`, `wt`, `git`, `gh`, `ssh`, and `mosh`.
+
+### Optional short alias
+
+Zigzag does not install a `z` symlink automatically. If you still want the short command, add this to your shell profile:
+
+```bash
+alias z=zigzag
+```
+
+### Migration from `z`
+
+Zigzag does not read old `z` paths. If you used the previous name, move local files manually:
+
+```bash
+mkdir -p "$HOME/.config/zigzag"
+for file in config.kdl projects.kdl worktree-metadata.json session-activity.json; do
+  if [ -e "$HOME/.config/z/$file" ] && [ ! -e "$HOME/.config/zigzag/$file" ]; then
+    mv "$HOME/.config/z/$file" "$HOME/.config/zigzag/$file"
+  fi
+done
+rmdir "$HOME/.config/z" 2>/dev/null || true
+
+mkdir -p "$HOME/.local/state/zigzag"
+if [ -e "$HOME/.local/state/z/z.log" ] && [ ! -e "$HOME/.local/state/zigzag/zigzag.log" ]; then
+  mv "$HOME/.local/state/z/z.log" "$HOME/.local/state/zigzag/zigzag.log"
+fi
+for old_path in "$HOME/.local/state/z"/*; do
+  [ -e "$old_path" ] || continue
+  old_name="$(basename "$old_path")"
+  [ "$old_name" = "z.log" ] && continue
+  if [ ! -e "$HOME/.local/state/zigzag/$old_name" ]; then
+    mv "$old_path" "$HOME/.local/state/zigzag/$old_name"
+  fi
+done
+rmdir "$HOME/.local/state/z" 2>/dev/null || true
+
+mkdir -p "$HOME/.local/share"
+if [ -d "$HOME/.local/share/z" ] && [ ! -e "$HOME/.local/share/zigzag" ]; then
+  mv "$HOME/.local/share/z" "$HOME/.local/share/zigzag"
+fi
+
+if [ -e ".config/z.kdl" ] && [ ! -e ".config/zigzag.kdl" ]; then
+  mv ".config/z.kdl" ".config/zigzag.kdl"
+fi
+```
 
 ### From source
 
@@ -74,14 +119,14 @@ The Nix package wraps `z` with the common runtime tools it shells out to: `zelli
 make install
 
 # Or directly
-cargo install --path z/crates/z-cli
+cargo install --path zigzag/crates/zigzag-cli
 ```
 
 ## Basic start
 
 ### 1. Register your projects
 
-Create `~/.config/z/projects.kdl`:
+Create `~/.config/zigzag/projects.kdl`:
 
 ```kdl
 project "myapp" {
@@ -96,7 +141,7 @@ project "api" {
 ### 2. Open the dashboard
 
 ```bash
-z
+zigzag
 ```
 
 Then use:
@@ -118,16 +163,16 @@ Then use:
 ### 3. Open directly from the shell
 
 ```bash
-z open myapp              # Open/restore the primary checkout session
-z open myapp feat/login   # Open/restore a branch worktree + session
-z switch                  # Pick another local z-managed session
+zigzag open myapp              # Open/restore the primary checkout session
+zigzag open myapp feat/login   # Open/restore a branch worktree + session
+zigzag switch                  # Pick another local Zigzag-managed session
 ```
 
-When a branch worktree does not exist yet, `z open <project> <branch>` creates it with `wt`, generates a Zellij layout, starts the session, then attaches to it.
+When a branch worktree does not exist yet, `zigzag open <project> <branch>` creates it with `wt`, generates a Zellij layout, starts the session, then attaches to it.
 
-### 4. Return to `z` from Zellij
+### 4. Return to Zigzag from Zellij
 
-Inside a session, press `Ctrl+O`, then `D` to detach. The Zellij session keeps running in the background, and you can return with `z` or `z open <project> [branch]`.
+Inside a session, press `Ctrl+O`, then `D` to detach. The Zellij session keeps running in the background, and you can return with `zigzag` or `zigzag open <project> [branch]`.
 
 ## Shortcuts
 
@@ -144,17 +189,17 @@ Inside a session, press `Ctrl+O`, then `D` to detach. The Zellij session keeps r
 | `d` | Delete selected worktree |
 | `D` | Run doctor diagnostics |
 | `A` / `E` / `X` | Add, edit, or delete a project |
-| `e` | Edit per-repo `.config/z.kdl` |
+| `e` | Edit per-repo `.config/zigzag.kdl` |
 | `/` | Search |
 | `?` | Help |
 
-### In `z`-managed Zellij sessions
+### In Zigzag-managed Zellij sessions
 
-`z` injects these shortcuts into generated Zellij layouts:
+Zigzag injects these shortcuts into generated Zellij layouts:
 
 | Shortcut | Action |
 |---|---|
-| `Alt+k` | Open the floating `z switch` session picker |
+| `Alt+k` | Open the floating `zigzag switch` session picker |
 | `Alt+z` | Open the floating action menu |
 | `Alt+l` | Open the floating log viewer |
 
@@ -171,29 +216,29 @@ Inside a session, press `Ctrl+O`, then `D` to detach. The Zellij session keeps r
 
 | Command | Description |
 |---|---|
-| `z` | Launch the dashboard |
-| `z list` | List configured projects and active sessions |
-| `z open <project> [branch]` | Open/restore a checkout or branch session |
-| `z close [session]` | Detach a session without deleting it |
-| `z switch` | Pick and jump to another local `z` session |
-| `z actions` | Open the action menu for the current session |
-| `z logs [-n <count>]` | Show `z` logs |
-| `z doctor [--fix]` | Diagnose or repair safe project/session issues |
-| `z session kill <project> <branch>` | Kill a Zellij session only |
-| `z worktree delete <project> <branch> [--confirm <branch>]` | Delete a worktree |
-| `z project delete <project>` | Remove a project from `projects.kdl` |
-| `z notify [session] <message>` | Add a session notification |
-| `z autopilot <subcommand>` | Manage workflow automation |
+| `zigzag` | Launch the dashboard |
+| `zigzag list` | List configured projects and active sessions |
+| `zigzag open <project> [branch]` | Open/restore a checkout or branch session |
+| `zigzag close [session]` | Detach a session without deleting it |
+| `zigzag switch` | Pick and jump to another local Zigzag session |
+| `zigzag actions` | Open the action menu for the current session |
+| `zigzag logs [-n <count>]` | Show Zigzag logs |
+| `zigzag doctor [--fix]` | Diagnose or repair safe project/session issues |
+| `zigzag session kill <project> <branch>` | Kill a Zellij session only |
+| `zigzag worktree delete <project> <branch> [--confirm <branch>]` | Delete a worktree |
+| `zigzag project delete <project>` | Remove a project from `projects.kdl` |
+| `zigzag notify [session] <message>` | Add a session notification |
+| `zigzag autopilot <subcommand>` | Manage workflow automation |
 
 ## Configuration
 
-`z` uses [KDL](https://kdl.dev) with three main files:
+Zigzag uses [KDL](https://kdl.dev) with three main files:
 
 | File | Purpose |
 |---|---|
-| `~/.config/z/projects.kdl` | Project registry |
-| `~/.config/z/config.kdl` | Global preferences, layout defaults, actions, notifications |
-| `<repo>/.config/z.kdl` | Per-repository layout, actions, and autopilot settings |
+| `~/.config/zigzag/projects.kdl` | Project registry |
+| `~/.config/zigzag/config.kdl` | Global preferences, layout defaults, actions, notifications |
+| `<repo>/.config/zigzag.kdl` | Per-repository layout, actions, and autopilot settings |
 
 Minimal global config:
 
@@ -229,8 +274,8 @@ The action menu (`r` in the dashboard, `Alt+z` in a generated Zellij session) re
 Notifications are stored in local worktree metadata and surfaced as dashboard/switcher badges. From inside a Zellij pane, `$ZELLIJ_SESSION_NAME` lets you notify the current session without naming it:
 
 ```bash
-z notify "CI finished" --level info
-z notify myapp:feat-login "Review comments arrived" --level warning
+zigzag notify "CI finished" --level info
+zigzag notify myapp:feat-login "Review comments arrived" --level warning
 ```
 
 ## Autopilot
@@ -238,9 +283,9 @@ z notify myapp:feat-login "Review comments arrived" --level warning
 Autopilot workflows are KDL-defined state machines that can run commands, send notifications, ask for confirmations, and transition on success/failure.
 
 ```bash
-z autopilot list
-z autopilot status
-z autopilot run <project> <workflow>
+zigzag autopilot list
+zigzag autopilot status
+zigzag autopilot run <project> <workflow>
 ```
 
 Built-in workflows cover common PR and deploy loops such as CI fixing, review follow-up, merge-when-ready, Dependabot auto-merge, and deploy monitoring.
@@ -250,13 +295,13 @@ Built-in workflows cover common PR and deploy loops such as CI fixing, review fo
 This repository is a Rust workspace:
 
 ```text
-z/crates/
-├── z-core       # Domain types, config, actions, traits
-├── z-cli        # CLI entry point and process/filesystem adapters
-├── z-tui        # Ratatui dashboard, switcher, logs, action picker
-├── z-autopilot  # Workflow DSL and runner
-├── z-plugin     # Future Zellij WASM plugin
-└── z-web        # Future web bridge
+zigzag/crates/
+├── zigzag-core       # Domain types, config, actions, traits
+├── zigzag-cli        # CLI entry point and process/filesystem adapters
+├── zigzag-tui        # Ratatui dashboard, switcher, logs, action picker
+├── zigzag-autopilot  # Workflow DSL and runner
+├── zigzag-plugin     # Future Zellij WASM plugin
+└── zigzag-web        # Future web bridge
 ```
 
 Common checks:
@@ -264,7 +309,7 @@ Common checks:
 ```bash
 npm run typecheck
 npm test
-cargo fmt --manifest-path z/Cargo.toml --all --check
+cargo fmt --manifest-path zigzag/Cargo.toml --all --check
 ```
 
 Further reading:

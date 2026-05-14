@@ -1,4 +1,4 @@
-# Z — Specifications
+# Zigzag — Specifications
 
 TUI + CLI project manager built on [Zellij](https://github.com/zellij-org/zellij), written in Rust.
 
@@ -8,13 +8,13 @@ See also: [PRD](./PRD.md)
 
 ## 1. Vision
 
-`z` unifies dev project management: terminal sessions, git worktrees, CI/CD monitoring, and automation via Claude — all in a beautiful TUI.
+`zigzag` unifies dev project management: terminal sessions, git worktrees, CI/CD monitoring, and automation via Claude — all in a beautiful TUI.
 
 ```
-z (no args)    → interactive TUI
-z open <proj>  → direct CLI
-z list         → list projects/sessions
-z autopilot    → automated workflows
+zigzag (no args)    → interactive TUI
+zigzag open <proj>  → direct CLI
+zigzag list         → list projects/sessions
+zigzag autopilot    → automated workflows
 ```
 
 ---
@@ -27,7 +27,7 @@ z autopilot    → automated workflows
 | [worktrunk](https://github.com/max-sixty/worktrunk) (`wt`) | Git worktree management | yes |
 | [gh](https://cli.github.com/) | GitHub CLI — PR, CI status | yes |
 
-`z` checks presence and minimum version of each tool at launch. Fails with a clear message if missing.
+`zigzag` checks presence and minimum version of each tool at launch. Fails with a clear message if missing.
 
 ---
 
@@ -36,20 +36,20 @@ z autopilot    → automated workflows
 ### 3.1 Rust Workspace
 
 ```
-z/
+zigzag/
 ├── Cargo.toml          # workspace
 ├── crates/
-│   ├── z-core/         # business logic, 100% I/O-agnostic
-│   ├── z-tui/          # ratatui frontend
-│   ├── z-cli/          # non-interactive commands
-│   ├── z-autopilot/    # state machine, workflows, triggers, notifications
-│   ├── z-plugin/       # future WASM Zellij plugin (phase 4)
-│   └── z-web/          # future web server axum (phase 5)
+│   ├── zigzag-core/         # business logic, 100% I/O-agnostic
+│   ├── zigzag-tui/          # ratatui frontend
+│   ├── zigzag-cli/          # non-interactive commands
+│   ├── zigzag-autopilot/    # state machine, workflows, triggers, notifications
+│   ├── zigzag-plugin/       # future WASM Zellij plugin (phase 4)
+│   └── zigzag-web/          # future web server axum (phase 5)
 ```
 
-### 3.2 z-core — Fundamental Constraint
+### 3.2 zigzag-core — Fundamental Constraint
 
-`z-core` is **100% I/O-agnostic**. No direct calls to `std::fs`, `std::process::Command`, or any system I/O. Everything goes through traits:
+`zigzag-core` is **100% I/O-agnostic**. No direct calls to `std::fs`, `std::process::Command`, or any system I/O. Everything goes through traits:
 
 ```rust
 trait ProjectStore {
@@ -80,19 +80,19 @@ trait Notifier {
 }
 ```
 
-**Reason**: enables compiling z-core to WASM for the Zellij plugin (phase 4) and web client (phase 5).
+**Reason**: enables compiling zigzag-core to WASM for the Zellij plugin (phase 4) and web client (phase 5).
 
 ### 3.3 Single Binary
 
-- `z` (no args) → launches ratatui TUI
-- `z <command> [args]` → direct CLI execution
+- `zigzag` (no args) → launches ratatui TUI
+- `zigzag <command> [args]` → direct CLI execution
 - Behavior like `lazygit` (TUI) vs `git` (CLI)
 
 ---
 
 ## 4. Configuration
 
-### 4.1 Global Config — `~/.config/z/config.kdl`
+### 4.1 Global Config — `~/.config/zigzag/config.kdl`
 
 ```kdl
 // Global preferences
@@ -130,7 +130,7 @@ config {
 }
 ```
 
-### 4.2 Project Config — `~/.config/z/projects.kdl`
+### 4.2 Project Config — `~/.config/zigzag/projects.kdl`
 
 ```kdl
 project "myapp" {
@@ -149,7 +149,7 @@ project "prod-api" {
 }
 ```
 
-### 4.3 Per-Repo Config — `.config/z.kdl`
+### 4.3 Per-Repo Config — `.config/zigzag.kdl`
 
 ```kdl
 // Override layout for this project
@@ -203,7 +203,7 @@ Examples:
 
 ### 5.2 Worktrees
 
-Fully managed by worktrunk (`wt`). `z` calls `wt switch`, `wt remove`, `wt list`. No custom worktree logic.
+Fully managed by worktrunk (`wt`). `zigzag` calls `wt switch`, `wt remove`, `wt list`. No custom worktree logic.
 
 ---
 
@@ -212,17 +212,17 @@ Fully managed by worktrunk (`wt`). `z` calls `wt switch`, `wt remove`, `wt list`
 ### 6.1 Session Management
 
 ```bash
-z list                        # List projects + active sessions
-z open <project> [branch]     # Open/attach a session
-z close <session>             # Detach session (keep worktree)
-z delete <session>            # Kill session + confirm worktree deletion
-z prune                       # Clean orphaned sessions
+zigzag list                        # List projects + active sessions
+zigzag open <project> [branch]     # Open/attach a session
+zigzag close <session>             # Detach session (keep worktree)
+zigzag delete <session>            # Kill session + confirm worktree deletion
+zigzag prune                       # Clean orphaned sessions
 ```
 
-### 6.2 `z open` — Workflow
+### 6.2 `zigzag open` — Workflow
 
 ```
-z open myapp
+zigzag open myapp
   → Local or remote project?
   → LOCAL:
       → Existing session for main? → attach
@@ -232,19 +232,19 @@ z open myapp
       → existing branch (existing worktree)
       → new branch → wt switch -c <branch> → create session
 
-z open myapp feat/login
+zigzag open myapp feat/login
   → Worktree exists? → attach session myapp:feat-login
   → Otherwise → wt switch -c feat/login → create session → launch layout
 
-z open prod-api feat/x    (remote project)
+zigzag open prod-api feat/x    (remote project)
   → ssh vps "cd ~/Code/prod-api && wt switch -c feat/x"
   → zellij attach https://vps.example.com:8082/prod-api:feat-x --token $ZP_VPS_TOKEN
 ```
 
-### 6.3 `z delete` — Workflow
+### 6.3 `zigzag delete` — Workflow
 
 ```
-z delete myapp:feat-login
+zigzag delete myapp:feat-login
   → Kill Zellij session myapp:feat-login
   → "Delete worktree feat/login? (y/N)"
       → y: wt remove feat/login
@@ -258,7 +258,7 @@ z delete myapp:feat-login
 ### 7.1 Main Layout
 
 ```
-┌─ z ──────────────────────────────────────────────────────────────┐
+┌─ Zigzag ─────────────────────────────────────────────────────────┐
 │                                                                   │
 │  PROJECTS                       SESSIONS                          │
 │  ─────────                      ────────                          │
@@ -312,7 +312,7 @@ z delete myapp:feat-login
 
 ### 8.2 Mechanism (phase 1)
 
-File-based: events write to `/tmp/z/notifications/{session}`. The TUI watches this directory.
+File-based: events write to `/tmp/zigzag/notifications/{session}`. The TUI watches this directory.
 
 Phase 4+: migrate to Zellij pipe / plugin events.
 
@@ -322,7 +322,7 @@ Phase 4+: migrate to Zellij pipe / plugin events.
 notifications {
     macos-native true    // macOS notification (default local)
     telegram false       // via Telegram bot
-    tui true             // in z TUI if open
+    tui true             // in Zigzag TUI if open
 }
 ```
 
@@ -337,7 +337,7 @@ Automated workflows defined in KDL. Execute action sequences in response to trig
 ### 9.2 Execution
 
 - **Background by default** — user can close their laptop
-- **Optional pane** — `z autopilot watch` to observe live
+- **Optional pane** — `zigzag autopilot watch` to observe live
 - **State persisted to disk** — survives restarts
 - **Full auto by default** — Claude commits + pushes directly
 - **Configurable**: `auto_push: false` + `review: true` for human-in-the-loop
@@ -413,7 +413,7 @@ autopilot "pr-merge-when-ready" {
     }
 
     step "cleanup" {
-        run "z delete {session}"
+        run "zigzag delete {session}"
         on-complete "notify-done"
     }
 
@@ -527,7 +527,7 @@ autopilot "deploy-sync" {
 
 ### 9.4 Custom Workflows
 
-Users can define custom workflows in the project's `.config/z.kdl`:
+Users can define custom workflows in the project's `.config/zigzag.kdl`:
 
 ```kdl
 autopilot "my-custom-workflow" {
@@ -555,7 +555,7 @@ Escape hatch: `run` accepts any shell command.
 ```
 Local machine                     Remote machine
 ─────────────                    ────────────────
-z open prod-api feat/x           zellij (systemd service)
+zigzag open prod-api feat/x           zellij (systemd service)
   → ssh vps "wt switch -c feat/x"  → port 8082 HTTPS
   → zellij attach https://...       → auth tokens
 ```
@@ -573,7 +573,7 @@ Natively supported by Zellij. Multiple users can attach the same session with di
 
 ### 10.4 Exited Sessions
 
-Exited (crashed/closed) Zellij sessions are **ignored** in `z list`. No automatic resurrection.
+Exited (crashed/closed) Zellij sessions are **ignored** in `zigzag list`. No automatic resurrection.
 
 ---
 
@@ -581,14 +581,14 @@ Exited (crashed/closed) Zellij sessions are **ignored** in `z list`. No automati
 
 | Phase | Scope | Crates |
 |-------|-------|--------|
-| **1a** | CLI: `z open`, `z list`, `z close`, `z delete`. KDL config. Dep checks. Dynamic layout generation. | z-core, z-cli |
-| **1b** | TUI: ratatui, project/session navigation, fuzzy search, basic actions | z-tui |
-| **1c** | Enriched TUI: preview pane (git + Zellij + PR/CI), Claude notifications | z-tui, z-core |
-| **2** | Cleanup: `z prune`, advanced worktrunk integration | z-core |
-| **3** | Remote: SSH setup + Zellij HTTPS attach, host/token config | z-core, z-cli |
-| **4** | Zellij WASM plugin — TUI embedded in Zellij | z-plugin |
-| **5** | Web UI — ratatui WASM + xterm.js, Leptos fallback + axum | z-web |
-| **6** | Autopilot: state machine, KDL DSL, built-in workflows, notifications | z-autopilot |
+| **1a** | CLI: `zigzag open`, `zigzag list`, `zigzag close`, `zigzag delete`. KDL config. Dep checks. Dynamic layout generation. | zigzag-core, zigzag-cli |
+| **1b** | TUI: ratatui, project/session navigation, fuzzy search, basic actions | zigzag-tui |
+| **1c** | Enriched TUI: preview pane (git + Zellij + PR/CI), Claude notifications | zigzag-tui, zigzag-core |
+| **2** | Cleanup: `zigzag prune`, advanced worktrunk integration | zigzag-core |
+| **3** | Remote: SSH setup + Zellij HTTPS attach, host/token config | zigzag-core, zigzag-cli |
+| **4** | Zellij WASM plugin — TUI embedded in Zellij | zigzag-plugin |
+| **5** | Web UI — ratatui WASM + xterm.js, Leptos fallback + axum | zigzag-web |
+| **6** | Autopilot: state machine, KDL DSL, built-in workflows, notifications | zigzag-autopilot |
 
 ---
 
@@ -596,19 +596,19 @@ Exited (crashed/closed) Zellij sessions are **ignored** in `z list`. No automati
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| 1 | Declarative project config `~/.config/z/projects.kdl` | Explicit control |
+| 1 | Declarative project config `~/.config/zigzag/projects.kdl` | Explicit control |
 | 2 | Session convention `{project}:{branch}` | Readable, unique, URL-compatible |
 | 3 | Worktrees via worktrunk (`wt`) | Mature tool |
-| 4 | `z delete` = kill session + confirm worktree | Protects unpushed work |
-| 5 | Default layout: tab claude + tab shell, override `.config/z.kdl` | Covers 90% of cases |
+| 4 | `zigzag delete` = kill session + confirm worktree | Protects unpushed work |
+| 5 | Default layout: tab claude + tab shell, override `.config/zigzag.kdl` | Covers 90% of cases |
 | 6 | `claude` on every session | Consistency |
 | 7 | KDL config everywhere | Coherent with Zellij |
 | 8 | Remote: SSH setup + zellij attach HTTPS | Worktree before session |
 | 9 | Rust | WASM pipeline |
-| 10 | Name `z` | Minimalist |
+| 10 | Name `zigzag` | Minimalist |
 | 11 | Dep check at launch, fail if missing | Clear UX |
 | 12 | Single binary: TUI without args, CLI with args | Simple |
-| 13 | z-core 100% I/O-agnostic via traits | WASM portability |
+| 13 | zigzag-core 100% I/O-agnostic via traits | WASM portability |
 | 14 | TUI ratatui, auto-detect theme | Rust standard |
 | 15 | Preview: git + Zellij + PR + CI, progressive loading | Full context |
 | 16 | Fuzzy search | Fast navigation |

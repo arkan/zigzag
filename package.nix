@@ -11,7 +11,7 @@
 }:
 
 let
-  manifest = builtins.fromTOML (builtins.readFile ./z/Cargo.toml);
+  manifest = builtins.fromTOML (builtins.readFile ./zigzag/Cargo.toml);
   runtimeDependencies = [
     zellij
     worktrunk
@@ -22,17 +22,17 @@ let
   ];
 in
 rustPlatform.buildRustPackage {
-  pname = "z";
+  pname = "zigzag";
   version = manifest.workspace.package.version;
 
-  src = lib.cleanSource ./z;
-  cargoLock.lockFile = ./z/Cargo.lock;
+  src = lib.cleanSource ./zigzag;
+  cargoLock.lockFile = ./zigzag/Cargo.lock;
 
   cargoBuildFlags = [
     "--package"
-    "z-cli"
+    "zigzag-cli"
     "--bin"
-    "z"
+    "zigzag"
   ];
   cargoTestFlags = [ "--workspace" ];
 
@@ -40,16 +40,16 @@ rustPlatform.buildRustPackage {
   nativeCheckInputs = [ git ];
 
   postInstall = ''
-    wrapProgram "$out/bin/z" \
+    wrapProgram "$out/bin/zigzag" \
       --prefix PATH : ${lib.makeBinPath runtimeDependencies}
   '';
 
   passthru.runtimeDependencies = runtimeDependencies;
 
   meta = {
-    description = "TUI/CLI project manager for Zellij-based development";
-    homepage = "https://github.com/arkan/z";
-    mainProgram = "z";
+    description = "Zigzag TUI/CLI project manager for Zellij-based development";
+    homepage = "https://github.com/arkan/zigzag";
+    mainProgram = "zigzag";
     platforms = lib.platforms.unix;
   };
 }

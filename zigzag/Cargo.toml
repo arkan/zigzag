@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "crates/zigzag-core",
+    "crates/zigzag-tui",
+    "crates/zigzag-cli",
+    "crates/zigzag-autopilot",
+    "crates/zigzag-plugin",
+    "crates/zigzag-web",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.6.0"
+edition = "2021"
+
+[workspace.dependencies]
+zigzag-core = { path = "crates/zigzag-core" }
+zigzag-tui = { path = "crates/zigzag-tui" }
+zigzag-autopilot = { path = "crates/zigzag-autopilot" }
+thiserror = "2"
+semver = "1"
+kdl = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

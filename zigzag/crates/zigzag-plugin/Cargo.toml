@@ -1,0 +1,8 @@
+[package]
+name = "zigzag-plugin"
+version.workspace = true
+edition.workspace = true
+description = "zigzag-plugin: future WASM Zellij plugin (phase 4)"
+
+[dependencies]
+zigzag-core.workspace = true

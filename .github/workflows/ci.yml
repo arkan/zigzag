@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: z
+        working-directory: zigzag
 
     steps:
       - uses: actions/checkout@v4
@@ -28,8 +28,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            z/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('z/Cargo.lock') }}
+            zigzag/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('zigzag/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Check formatting

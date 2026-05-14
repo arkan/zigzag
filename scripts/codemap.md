@@ -1,6 +1,6 @@
 # scripts/
 
-Build/devops scripts for the `z` project — Docker sandbox setup, runtime patching, and auth orchestration.
+Build/devops scripts for the `zigzag` project — Docker sandbox setup, runtime patching, and auth orchestration.
 
 ## Responsibility
 

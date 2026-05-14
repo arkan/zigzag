@@ -1,0 +1,10 @@
+[package]
+name = "zigzag-tui"
+version.workspace = true
+edition.workspace = true
+description = "zigzag-tui: ratatui-based TUI frontend for Zigzag"
+
+[dependencies]
+zigzag-core.workspace = true
+ratatui = "0.29"
+crossterm = "0.28"

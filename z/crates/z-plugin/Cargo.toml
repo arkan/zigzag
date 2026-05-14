@@ -1,8 +1,0 @@
-[package]
-name = "z-plugin"
-version.workspace = true
-edition.workspace = true
-description = "z-plugin: future WASM Zellij plugin (phase 4)"
-
-[dependencies]
-z-core.workspace = true

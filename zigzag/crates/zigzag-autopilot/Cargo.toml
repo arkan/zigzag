@@ -1,0 +1,12 @@
+[package]
+name = "zigzag-autopilot"
+version.workspace = true
+edition.workspace = true
+description = "zigzag-autopilot: state machine and workflow engine for Zigzag"
+
+[dependencies]
+zigzag-core.workspace = true
+kdl.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true

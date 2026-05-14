@@ -6,9 +6,9 @@ See also: [Main PRD](./PRD.md) | [Specs](./SPECS.md)
 
 ## Problem Statement
 
-Developers using `z` have no way to trigger contextual actions on their projects or sessions from within the TUI. Common workflows — reviewing a PR with an AI tool, fixing CI failures, opening a PR in a browser, addressing review comments — require leaving the TUI, remembering the right command, and manually providing context (branch name, PR number, project path). This friction is amplified on remote machines accessed via SSH, where browser-based actions are unavailable entirely.
+Developers using `zigzag` have no way to trigger contextual actions on their projects or sessions from within the TUI. Common workflows — reviewing a PR with an AI tool, fixing CI failures, opening a PR in a browser, addressing review comments — require leaving the TUI, remembering the right command, and manually providing context (branch name, PR number, project path). This friction is amplified on remote machines accessed via SSH, where browser-based actions are unavailable entirely.
 
-There is no extensible mechanism to define custom project-specific or global actions that can leverage the rich context `z` already has (git state, PR data, CI status, review comments).
+There is no extensible mechanism to define custom project-specific or global actions that can leverage the rich context `zigzag` already has (git state, PR data, CI status, review comments).
 
 ## Solution
 
@@ -30,8 +30,8 @@ Actions are defined at three levels (built-in, global config, per-repo config) f
 ### Action Configuration
 
 7. As a developer, I want built-in actions available by default, so that the menu is useful without any configuration
-8. As a developer, I want to define custom actions in my global config (`~/.config/z/config.kdl`), so that I have personal actions available across all projects
-9. As a developer, I want to define project-specific actions in `.config/z.kdl`, so that each project can have tailored workflows (e.g. `npm test` for Node, `cargo clippy` for Rust)
+8. As a developer, I want to define custom actions in my global config (`~/.config/zigzag/config.kdl`), so that I have personal actions available across all projects
+9. As a developer, I want to define project-specific actions in `.config/zigzag.kdl`, so that each project can have tailored workflows (e.g. `npm test` for Node, `cargo clippy` for Rust)
 10. As a developer, I want per-repo actions to override global actions of the same name, so that I can customize behavior per project
 11. As a developer, I want to specify which Zellij pane type an action runs in (`float`, `split`, `tab`), so that I can choose the right UX for each action — floating for quick scripts, tab for long-running AI tools
 12. As a developer, I want `float` as the default pane type, so that actions are non-intrusive without extra config
@@ -62,13 +62,13 @@ Actions are defined at three levels (built-in, global config, per-repo config) f
 
 26. As a developer working over SSH from iOS, I want actions to work identically on remote machines, so that I have the same capabilities everywhere
 27. As a developer on a remote machine, I want PR URLs rendered as OSC 8 hyperlinks instead of launching a browser, so that I can still access PRs from a headless server
-28. As a developer, I want action scripts to execute in the Zellij session on the machine where `z` runs, so that remote execution is transparent
+28. As a developer, I want action scripts to execute in the Zellij session on the machine where `zigzag` runs, so that remote execution is transparent
 
 ## Implementation Decisions
 
 ### Modules to Build/Modify
 
-#### New: Action Engine (in z-core)
+#### New: Action Engine (in zigzag-core)
 
 A deep module responsible for:
 - Parsing action definitions from KDL
@@ -84,7 +84,7 @@ Interface:
 
 This module is pure logic, no I/O. Testable in isolation.
 
-#### Modified: ForgeClient trait (in z-core)
+#### Modified: ForgeClient trait (in zigzag-core)
 
 Add method: `get_review_status(&self, project: &str, branch: &str) -> Result<ReviewStatus>`
 
@@ -93,11 +93,11 @@ New type:
 
 The `gh` implementation batches review data into the existing `gh pr view --json` call by requesting additional fields (`reviews`, `latestReviews`, `comments`, `commits`), comparing the latest review timestamp against the latest commit push timestamp.
 
-#### Modified: ForgeClient impl (in z-cli)
+#### Modified: ForgeClient impl (in zigzag-cli)
 
 Implement `get_review_status()` using `gh pr view --json reviews,latestReviews,commits`. Compare `lastEditedAt` / `submittedAt` of reviews against the `committedDate` of the latest commit to determine `has_new_comments`.
 
-#### Modified: TUI (z-tui)
+#### Modified: TUI (zigzag-tui)
 
 - New modal: `Modal::ActionMenu { actions: Vec<ResolvedAction>, selected: usize }`
 - New keybinding: `x` (or configurable) → build `ActionContext` from current state → call `ActionResolver` → open `Modal::ActionMenu`
@@ -106,18 +106,18 @@ Implement `get_review_status()` using `gh pr view --json reviews,latestReviews,c
 - Preview pane enrichment: display review status (comment count, "new comments" indicator)
 - Background fetch: add `get_review_status()` call to the existing refresh thread alongside PR/CI
 
-#### Modified: Config parsing (z-core / z-cli)
+#### Modified: Config parsing (zigzag-core / zigzag-cli)
 
 Extend KDL config parser to handle the `actions { ... }` block in both global and per-repo configs. Same parsing pattern as existing layout/autopilot config.
 
-#### Modified: Session Manager / main.rs (z-cli)
+#### Modified: Session Manager / main.rs (zigzag-cli)
 
 Handle `TuiAction::RunAction` by calling `zellij run` with the appropriate flags (`--floating`, `--in-place`, or creating a new tab) in the target session.
 
 ### KDL Schema
 
 ```kdl
-// In config.kdl or .config/z.kdl
+// In config.kdl or .config/zigzag.kdl
 actions {
     // Global settings
     review-tool "codex"  // default AI tool for review actions
@@ -201,7 +201,7 @@ Actions with `run` execute via `zellij run` in the target project session:
 Same-name actions are overridden (not merged) at each tier:
 1. Built-in actions (hardcoded in Rust)
 2. Global config `actions { ... }` — overrides built-in by name
-3. Per-repo `.config/z.kdl` `actions { ... }` — overrides global by name
+3. Per-repo `.config/zigzag.kdl` `actions { ... }` — overrides global by name
 
 To disable a built-in action: `action "Open PR" { disabled true }`
 
@@ -231,14 +231,14 @@ Tests should verify external behavior through the module interfaces: "given thes
 
 - Snapshot tests for rendered action menu using ratatui TestBackend
 - Navigation: up/down selection, enter triggers, escape closes
-- Prior art: existing modal tests in z-tui
+- Prior art: existing modal tests in zigzag-tui
 
 ### Prior art
 
-- `z-core` config parsing tests (KDL parsing + merge)
-- `z-core` layout generation tests (variable interpolation pattern)
-- `z-tui` modal tests (TestBackend snapshots)
-- `z-autopilot` DSL parsing tests (KDL workflow definitions, similar structure)
+- `zigzag-core` config parsing tests (KDL parsing + merge)
+- `zigzag-core` layout generation tests (variable interpolation pattern)
+- `zigzag-tui` modal tests (TestBackend snapshots)
+- `zigzag-autopilot` DSL parsing tests (KDL workflow definitions, similar structure)
 
 ## Out of Scope
 
@@ -256,4 +256,4 @@ Tests should verify external behavior through the module interfaces: "given thes
 - The `review-tool` config variable allows swapping between `codex`, `claude`, or any other CLI tool globally. Built-in action prompts reference `${review_tool}` so changing the tool is a one-line config change.
 - OSC 8 hyperlinks are the correct solution for remote/SSH scenarios. They degrade gracefully — terminals that don't support OSC 8 show the raw text, and the URL is always displayed in the status bar as fallback.
 - The `has_new_comments` condition requires comparing review timestamps against push timestamps. The `gh pr view --json` API provides both. This is a single API call batched with existing PR/CI fetches — no additional latency.
-- This feature is independent of Phase 4 (WASM plugin). The action engine lives in z-core (I/O-agnostic), so it will be available in the WASM plugin when Phase 4 ships. Pane execution will need a different implementation in the plugin context.
+- This feature is independent of Phase 4 (WASM plugin). The action engine lives in zigzag-core (I/O-agnostic), so it will be available in the WASM plugin when Phase 4 ships. Pane execution will need a different implementation in the plugin context.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE="sandcastle:z"
+IMAGE="sandcastle:zigzag"
 VOLUME="sandcastle-claude-auth"
 CONTAINER="sandcastle-login"
 

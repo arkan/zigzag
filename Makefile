@@ -1,13 +1,13 @@
-IMAGE := sandcastle:z
+IMAGE := sandcastle:zigzag
 AUTH_VOLUME := sandcastle-claude-auth
 CARGO ?= cargo
-Z_MANIFEST := z/Cargo.toml
-Z_PACKAGE := z-cli
-Z_BIN := z
-Z_CLI_PATH := z/crates/z-cli
+ZIGZAG_MANIFEST := zigzag/Cargo.toml
+ZIGZAG_PACKAGE := zigzag-cli
+ZIGZAG_BIN := zigzag
+ZIGZAG_CLI_PATH := zigzag/crates/zigzag-cli
 INSTALL_ROOT ?= $(HOME)/.local
 INSTALL_BIN_DIR := $(INSTALL_ROOT)/bin
-INSTALL_BIN := $(INSTALL_BIN_DIR)/$(Z_BIN)
+INSTALL_BIN := $(INSTALL_BIN_DIR)/$(ZIGZAG_BIN)
 
 .DEFAULT_GOAL := help
 
@@ -17,9 +17,9 @@ help:
 	@echo "Usage: make <target>"
 	@echo ""
 	@echo "Targets:"
-	@echo "  run           Run z via cargo (pass args with ARGS='...')"
-	@echo "  build         Build z binary"
-	@echo "  install       Install z binary to $(INSTALL_BIN)"
+	@echo "  run           Run zigzag via cargo (pass args with ARGS='...')"
+	@echo "  build         Build zigzag binary"
+	@echo "  install       Install zigzag binary to $(INSTALL_BIN)"
 	@echo "  clean         Clean Rust build artifacts"
 	@echo "  sandcastle    Build Docker image and run Sandcastle"
 	@echo "  login         Authenticate Claude Code in container (Claude Max/Pro)"
@@ -27,18 +27,18 @@ help:
 	@echo "  docker        Build Docker image only"
 
 run:
-	$(CARGO) run --manifest-path $(Z_MANIFEST) --package $(Z_PACKAGE) --bin $(Z_BIN) -- $(ARGS)
+	$(CARGO) run --manifest-path $(ZIGZAG_MANIFEST) --package $(ZIGZAG_PACKAGE) --bin $(ZIGZAG_BIN) -- $(ARGS)
 
 build:
-	$(CARGO) build --manifest-path $(Z_MANIFEST) --package $(Z_PACKAGE) --bin $(Z_BIN)
+	$(CARGO) build --manifest-path $(ZIGZAG_MANIFEST) --package $(ZIGZAG_PACKAGE) --bin $(ZIGZAG_BIN)
 
 install:
-	$(CARGO) build --manifest-path $(Z_MANIFEST) --package $(Z_PACKAGE) --bin $(Z_BIN) --release
+	$(CARGO) build --manifest-path $(ZIGZAG_MANIFEST) --package $(ZIGZAG_PACKAGE) --bin $(ZIGZAG_BIN) --release
 	mkdir -p "$(INSTALL_BIN_DIR)"
-	install -m 755 "z/target/release/$(Z_BIN)" "$(INSTALL_BIN)"
+	install -m 755 "zigzag/target/release/$(ZIGZAG_BIN)" "$(INSTALL_BIN)"
 
 clean:
-	$(CARGO) clean --manifest-path $(Z_MANIFEST)
+	$(CARGO) clean --manifest-path $(ZIGZAG_MANIFEST)
 
 docker:
 	docker build -t $(IMAGE) .sandcastle/
