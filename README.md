@@ -56,6 +56,18 @@ curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | Z_VERSION
 curl -fsSL https://raw.githubusercontent.com/arkan/z/main/install.sh | Z_INSTALL_DIR=/usr/local/bin bash
 ```
 
+### With Nix
+
+```bash
+# Install from the flake
+nix profile install github:arkan/z
+
+# Or try it without installing
+nix run github:arkan/z -- list
+```
+
+The Nix package wraps `z` with the common runtime tools it shells out to: `zellij`, `wt`, `git`, `gh`, `ssh`, and `mosh`.
+
 ### From source
 
 ```bash

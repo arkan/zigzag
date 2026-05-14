@@ -18,8 +18,24 @@
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" "rust-analyzer" ];
         };
+        zPackage = pkgs.callPackage ./package.nix { };
+        zApp = {
+          type = "app";
+          program = "${zPackage}/bin/z";
+          meta = zPackage.meta;
+        };
       in
       {
+        packages = {
+          default = zPackage;
+          z = zPackage;
+        };
+
+        apps = {
+          default = zApp;
+          z = zApp;
+        };
+
         devShells.default = pkgs.mkShell {
           buildInputs = [
             rustToolchain

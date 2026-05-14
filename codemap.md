@@ -7,7 +7,8 @@
 - `README.md`: Human-facing overview, install instructions, usage, configuration, and architecture orientation.
 - `package.json`: Repository utility manifest. Exposes `npm test` as `cargo test --manifest-path z/Cargo.toml --all`, `npm run typecheck` as workspace `cargo check`, and a Sandcastle postinstall patch hook.
 - `Makefile`: Developer command shortcuts for building/installing the Rust CLI.
-- `flake.nix`: Nix development environment and reproducible dependency shell.
+- `flake.nix`: Nix development environment plus default `z` package/app outputs for `nix build`, `nix run`, and `nix profile install`.
+- `package.nix`: Reusable Nix package expression for the Rust `z` CLI, wrapping common runtime tools (`zellij`, `wt`, `git`, `gh`, `ssh`, `mosh`).
 - `install.sh`: Release installer that places the `z` binary into the selected install directory.
 - `.opencode/plugins/z-notify.js`: OpenCode notification bridge that shells out to `z notify` when an OpenCode session becomes idle, needs permission, or errors.
 - `z/Cargo.toml`: Rust workspace manifest for all runtime crates.
