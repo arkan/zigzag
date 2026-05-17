@@ -4,7 +4,7 @@ use zigzag_core::domain::{
     derive_session_name, Session, SessionLink, WorktreeIdentity, WorktreeStatus,
 };
 
-use crate::ProjectEntry;
+use crate::{sort_project_entries_by_active_worktrees, ProjectEntry};
 
 /// Data returned by a background refresh thread.
 pub struct RefreshData {
@@ -102,6 +102,8 @@ pub fn merge_refresh(
     // Update notifications.
     *notifications = data.notifications;
 
+    sort_project_entries_by_active_worktrees(entries);
+
     // Restore cursor by name.
     let new_project_idx = sel_project_name
         .as_ref()
@@ -148,7 +150,7 @@ pub fn merge_refresh(
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use zigzag_core::domain::Project;
+    use zigzag_core::domain::{DiscoveredWorktree, Project, WorktreeEntry};
 
     fn make_project(name: &str) -> Project {
         Project {
@@ -164,6 +166,42 @@ mod tests {
             project: make_project(name),
             worktrees: vec![],
             sessions: sessions.iter().map(|b| Session::new(name, b)).collect(),
+            workflows: vec![],
+            repo_actions: vec![],
+        }
+    }
+
+    fn make_entry_with_worktree(name: &str, active: bool) -> ProjectEntry {
+        let project = make_project(name);
+        let session = Session::new(name, "main");
+        ProjectEntry {
+            project: project.clone(),
+            worktrees: vec![WorktreeEntry {
+                discovered: DiscoveredWorktree {
+                    identity: WorktreeIdentity {
+                        host: project.host.clone(),
+                        project_root: project.path.clone(),
+                        worktree_path: project.path.clone(),
+                    },
+                    project_name: project.name.clone(),
+                    branch: Some("main".to_string()),
+                    is_primary_checkout: true,
+                },
+                status: if active {
+                    WorktreeStatus::Active
+                } else {
+                    WorktreeStatus::Inactive
+                },
+                diagnostics: vec![],
+                safety: None,
+                session_link: if active {
+                    SessionLink::Active(session.clone())
+                } else {
+                    SessionLink::None
+                },
+                metadata: None,
+            }],
+            sessions: if active { vec![session] } else { vec![] },
             workflows: vec![],
             repo_actions: vec![],
         }
@@ -333,5 +371,25 @@ mod tests {
         assert_eq!(result.selected_session, 0);
         assert_eq!(entries[0].sessions.len(), 2);
         assert_eq!(entries[1].sessions.len(), 1);
+    }
+
+    #[test]
+    fn active_projects_move_first_after_merge_and_selection_follows_name() {
+        let mut entries = vec![
+            make_entry_with_worktree("alpha", false),
+            make_entry_with_worktree("beta", false),
+        ];
+        let mut notifications = HashSet::new();
+        let data = make_refresh(vec![("alpha", vec!["main"]), ("beta", vec![])]);
+
+        let result = merge_refresh(&mut entries, &mut notifications, data, 1, 0);
+
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.project.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        assert_eq!(result.selected_project, 1);
+        assert_eq!(entries[0].worktrees[0].status, WorktreeStatus::Active);
     }
 }
