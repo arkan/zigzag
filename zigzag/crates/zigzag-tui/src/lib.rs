@@ -106,6 +106,21 @@ pub struct ProjectEntry {
     pub repo_actions: Vec<ActionDef>,
 }
 
+fn project_entry_has_active_worktree(entry: &ProjectEntry) -> bool {
+    entry
+        .worktrees
+        .iter()
+        .any(|wt| matches!(wt.status, WorktreeStatus::Active))
+}
+
+/// Keep projects with active environments at the top of the dashboard list.
+///
+/// Sorting is stable, so the configured project order is preserved within the
+/// active and inactive groups.
+pub(crate) fn sort_project_entries_by_active_worktrees(entries: &mut [ProjectEntry]) {
+    entries.sort_by_key(|entry| !project_entry_has_active_worktree(entry));
+}
+
 /// Minimal workflow descriptor used by the TUI workflow selector modal.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowInfo {
@@ -534,6 +549,8 @@ pub enum PreviewData {
     Error(String),
 }
 
+const PREVIEW_LOAD_TIMEOUT: Duration = Duration::from_secs(8);
+
 // ---------------------------------------------------------------------------
 // TUI state
 // ---------------------------------------------------------------------------
@@ -555,6 +572,8 @@ pub struct TuiState {
     pub preview_key: String,
     /// Receiver for the in-flight async git fetch, if any.
     pub preview_rx: Option<mpsc::Receiver<Result<GitInfo, String>>>,
+    /// Time when the current git preview fetch started.
+    preview_started_at: Option<Instant>,
     /// Receiver for the in-flight async forge/Zellij fetch (PR, CI, session info).
     pub(crate) forge_rx: Option<mpsc::Receiver<Result<PreviewExtraData, String>>>,
     /// Session names (e.g. `"myapp:feat-login"`) that have pending notifications.
@@ -603,6 +622,9 @@ impl TuiState {
         remote_preview_fn: Arc<dyn Fn(&str, &str) -> Result<GitInfo, String> + Send + Sync>,
         refresher: Arc<dyn SessionRefresher>,
     ) -> Self {
+        let mut entries = entries;
+        sort_project_entries_by_active_worktrees(&mut entries);
+
         Self {
             entries,
             selected_project: 0,
@@ -617,6 +639,7 @@ impl TuiState {
             preview_data: PreviewData::Loading,
             preview_key: String::new(),
             preview_rx: None,
+            preview_started_at: None,
             forge_rx: None,
             notifications: HashSet::new(),
             modal: None,
@@ -640,6 +663,7 @@ impl TuiState {
         notifications: HashSet<String>,
     ) {
         self.entries = entries;
+        sort_project_entries_by_active_worktrees(&mut self.entries);
         self.notifications = notifications;
         self.refresh_rx = None;
         self.state_revision = self.state_revision.saturating_add(1);
@@ -844,6 +868,7 @@ impl TuiState {
 
         self.preview_key = key;
         self.preview_data = PreviewData::Loading;
+        self.preview_started_at = Some(Instant::now());
         let context = PreviewContext {
             project_path,
             host,
@@ -899,7 +924,16 @@ impl TuiState {
         let outcome = match &self.preview_rx {
             Some(rx) => match rx.try_recv() {
                 Ok(result) => Some(result),
-                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Empty) => {
+                    if self
+                        .preview_started_at
+                        .is_some_and(|started_at| started_at.elapsed() > PREVIEW_LOAD_TIMEOUT)
+                    {
+                        Some(Err("preview fetch timed out".to_string()))
+                    } else {
+                        None
+                    }
+                }
                 // Sender dropped without sending (e.g. thread panicked).
                 Err(mpsc::TryRecvError::Disconnected) => {
                     Some(Err("preview fetch failed (worker dropped)".to_string()))
@@ -910,6 +944,7 @@ impl TuiState {
         if let Some(result) = outcome {
             self.preview_data = preview_state::apply_git_preview_result(result);
             self.preview_rx = None;
+            self.preview_started_at = None;
         }
     }
 
@@ -1760,6 +1795,8 @@ pub fn run_tui(
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let initial_project_name =
+        initial_project.and_then(|idx| entries.get(idx).map(|entry| entry.project.name.clone()));
 
     let mut state = TuiState::with_preview_source(
         entries,
@@ -1775,7 +1812,12 @@ pub fn run_tui(
     state.review_tool = review_tool;
     state.notifications = notifications;
     state.status_message = status_message;
-    if let Some(idx) = initial_project {
+    if let Some(idx) = initial_project_name.as_deref().and_then(|name| {
+        state
+            .entries
+            .iter()
+            .position(|entry| entry.project.name == name)
+    }) {
         state.selected_project = idx;
     }
     // Kick off the first preview fetch immediately.
@@ -4950,6 +4992,52 @@ mod tests {
         ]
     }
 
+    #[test]
+    fn project_entries_sort_active_worktrees_first_stably() {
+        let alpha = make_project("alpha", false);
+        let beta = make_project("beta", false);
+        let gamma = make_project("gamma", false);
+        let delta = make_project("delta", false);
+        let mut entries = vec![
+            ProjectEntry {
+                project: alpha,
+                worktrees: vec![],
+                sessions: vec![],
+                workflows: vec![],
+                repo_actions: vec![],
+            },
+            ProjectEntry {
+                project: beta.clone(),
+                worktrees: vec![make_worktree_entry(&beta, "main", true)],
+                sessions: vec![Session::new("beta", "main")],
+                workflows: vec![],
+                repo_actions: vec![],
+            },
+            ProjectEntry {
+                project: gamma.clone(),
+                worktrees: vec![make_worktree_entry(&gamma, "main", true)],
+                sessions: vec![Session::new("gamma", "main")],
+                workflows: vec![],
+                repo_actions: vec![],
+            },
+            ProjectEntry {
+                project: delta,
+                worktrees: vec![],
+                sessions: vec![],
+                workflows: vec![],
+                repo_actions: vec![],
+            },
+        ];
+
+        sort_project_entries_by_active_worktrees(&mut entries);
+
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.project.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["beta", "gamma", "alpha", "delta"]);
+    }
+
     fn switch_entry(session_name: &str) -> SwitchSessionEntry {
         SwitchSessionEntry {
             session_name: session_name.to_string(),
@@ -5781,6 +5869,33 @@ mod tests {
             "should remain Loading when channel is open but empty"
         );
         assert!(state.preview_rx.is_some(), "preview_rx should still be set");
+    }
+
+    #[test]
+    fn poll_preview_times_out_long_running_fetch() {
+        let mut state = TuiState::new(
+            make_entries(),
+            Navigation::Arrows,
+            mock_forge(),
+            mock_remote_preview(),
+            mock_refresher(),
+        );
+        let (_tx, rx) = mpsc::channel::<Result<GitInfo, String>>();
+        state.preview_rx = Some(rx);
+        state.preview_started_at =
+            Some(Instant::now() - PREVIEW_LOAD_TIMEOUT - Duration::from_secs(1));
+        state.preview_data = PreviewData::Loading;
+
+        state.poll_preview();
+
+        assert!(
+            matches!(state.preview_data, PreviewData::Error(_)),
+            "long-running preview fetch should transition to Error"
+        );
+        assert!(
+            state.preview_rx.is_none(),
+            "timed-out preview should clear rx"
+        );
     }
 
     #[test]
